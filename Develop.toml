@@ -1,0 +1,46 @@
+[Revise]
+is_dependency = false
+
+[Bas3Lux]
+deps = "d42e847f-a626-42f1-ae57-4f9c06181514"
+is_dependency = true
+is_direct_dependency = true
+
+[Bas3Surrogates_Core]
+is_dependency = true
+is_direct_dependency = false
+
+[Bas3_Core]
+is_dependency = true
+is_direct_dependency = false
+
+[Bas3SciML_Core]
+is_dependency = true
+is_direct_dependency = false
+
+[Bas3IGABOptimization]
+deps = "5757303b-19cd-48cf-8d22-d1bf9b5c0aff"
+is_dependency = true
+is_direct_dependency = true
+
+[Bas3GaussianProcess]
+is_dependency = true
+is_direct_dependency = false
+
+[Bas3QuasiMonteCarlo]
+is_dependency = true
+is_direct_dependency = false
+
+[Bas3]
+deps = "af0a1cfc-538f-4bb2-b0da-fbf558d56e16"
+is_dependency = true
+is_direct_dependency = true
+
+[Bas3GradientOptimization]
+deps = "768800b6-af41-427f-aca6-6c9b3ebc2520"
+is_dependency = true
+is_direct_dependency = true
+
+[Bas3Random]
+is_dependency = true
+is_direct_dependency = false

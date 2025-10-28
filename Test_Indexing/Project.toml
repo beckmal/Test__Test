@@ -1,0 +1,21 @@
+[deps]
+Bas3 = "af0a1cfc-538f-4bb2-b0da-fbf558d56e16"
+Bas3GLMakie = "d16222db-2f2f-4a9a-b34f-5182c38affff"
+Bas3GaussianProcess = "da6bd249-5024-4c5b-8608-84122d6c82d7"
+Bas3GradientOptimization = "768800b6-af41-427f-aca6-6c9b3ebc2520"
+Bas3IGABOptimization = "5757303b-19cd-48cf-8d22-d1bf9b5c0aff"
+Bas3ImageSegmentation = "ecdda604-a2eb-4465-8307-5c648b26b822"
+Bas3Lux = "d42e847f-a626-42f1-ae57-4f9c06181514"
+Bas3MultivariateStats = "64ae4ecc-d204-424e-9ab2-4c2aa2de2ad8"
+Bas3Observables = "37c4cd4d-b834-49f4-acfe-7a3508c93acc"
+Bas3Plots = "124740a4-f5bd-4a47-83c3-53a067b6d508"
+Bas3QuasiMonteCarlo = "7163cb6c-55b9-48fb-8000-4281463852bf"
+Bas3Random = "b8c04a9d-53a0-48a9-ad30-96e9a8b69b86"
+Bas3SciML_Core = "00a94dca-dc08-4531-b6fa-f473557e207f"
+Bas3Surrogates_Core = "70bcee1d-9057-4541-adf8-a8048c9d7e10"
+Bas3_Core = "47442969-1adf-4deb-abf7-d4e7b88cce4f"
+Bas3_EnvironmentTools = "ef8c486a-83de-4ef9-b2e3-bb6b307e1ff0"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+
+[sources]
+Bas3ImageSegmentation = {path = ".."}

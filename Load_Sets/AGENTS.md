@@ -1,0 +1,65 @@
+---Instruction
+--Package specific
+-If you are working on a specific package always read the Bas3__*specific package*/AGENTS.md file before you start to do anything within this specific package.
+--Julia execution
+-Always consider the arguments --eval="*code to execute*" and --environment="*correct ENVIRONMENT_*.jl file*" for use with the julia.
+-ENVIRONMENT_ACTIVATE.jl activates the folders environment
+-ENVIRONMENT_DEVELOP.jl puts the folders environment into a development state. Analyze the file before use.
+-ENVIRONMENT_FREE.jl puts the folders environment into a free state. Analyze the file before use.
+--Context managment
+-Keep track of your context in AGENTS__CONTEXT.md file in the current working directory especially if anything significant happens. 
+-Revisit the AGENTS__CONTEXT.md file frequently. If you become unsure about what happened revisit the AGENTS__CONTEXT.md file read it and verify if its claims can be observed in the workspace.
+-Do not trust whats in AGENTS__CONTEXT.md verify if its claims can be observed in the workspace. Do not blindly trust what's in AGENTS__CONTEXT.md always verify what it claims.
+-Always verify and remove incorrect claims from the AGENTS__CONTEXT.md file immediately upon discovery.
+-CRITICAL: Remove everything from AGENTS__CONTEXT.md that you did not directly observe and verify in the current session. Only keep claims that you personally verified by reading files, running commands, or testing functionality.
+-CRITICAL: Do not preserve historical claims or technical details unless you verified them by actually examining the current state of files and testing functionality.
+-CRITICAL: The AGENTS__CONTEXT.md file should only contain what you can prove exists and works right now, not what previous agents claimed happened.
+
+
+--Instruction
+-If any of the below fact's about Environment, Testing, Analysis, Git, or Structure begin to decay from your context window you have to read suitable AGENTS.md file's again. It is extremly import to check your context window frequently if any of the facts start to decay from your context window, if you are unsure about that then just start to read suitable AGENTS.md files again.
+-Further rembember that you need to keep track of your context window in the AGENTS__CONTEXT.md file especially if anything significant happens.
+---Environment
+--Chosing correct environment
+-Make always sure the the environment is correct when doing a julia call. When the environment is not correct use the argument --environment for the julia call (maybe combine with other arguments):
+-julia --environment="ENVIRONMENT_*correct file for the correct environment*.jl"
+---Testing
+--Running tests
+-All tests julia call (maybe combine with other arguments):
+-julia --eval="__include__("./Bas3*package to test*/Test/Test.jl")"
+-Specific test julia call (maybe combine with other arguments):
+-julia --eval="__include__("./Bas3*package to test*/Test/Test_*specific test*.jl")"
+---Analysis
+--Logging functionality
+-if you feel the need to gain more insight into the temporal execution flow of specific functionality use the logging functionality within a julia call (maybe combine with other arguments):
+-julia --eval="using Bas3__Logging; using Bas3*package*; global_logger(Bas3*package*.*apropriate definition that serves insight to the specific functionality*logger); *execute code that uses functionality somehow*
+-Potentially apropriate definitions always end with *logger. To gain insights of specific functionality analyze the .log files generated through the executed code.
+-CRITICAL: Never read a .log file before checking it's size. If a .log file is big only read specific logging statements by searching for a specific gid or a specific gid range.
+--Git
+-ABSOLUTELY NEVER EVER DO A GIT COMMIT
+----Structure
+---Code loading of a specific package is done in stages.
+---Within a stage code is loaded by intentional definitions to ensure consistency. Those intentional definitions serve functionalities.
+---Definitions potentially inform about theier intention and belonging to a stage: *__*intention*__*stage (>=1) that the definition belongs to*
+---Intentions inform what a definition serves for a functionality and can serve:
+--DEPENDENCY folder/file serves import/using/stub/export definitions
+--TYPE folder/file combines HIERARCHY_TYPE ADAPTER_TYPE VALUE_TYPE TRAIT_TYPE UNION_TYPE folder/file intentional definitions
+-HIERARCHY_TYPE folder/file serves abstract type h__* intentional definitions that serve as abstract types for adapter/value/trait types
+-ADAPTER_TYPE folder/file serves abstract type a__* intentional definitions that serve as adapter types
+-VALUE_TYPE folder/file serves concrete type v__* intentional definitions that serve as value types
+-TRAIT_TYPE folder/file serves abstract type t__* intentional definitions that serve as trait types
+-UNION_TYPE folder/file serves unions u__* composed of other types
+--METHOD folder/file combines ADAPTER_METHOD VALUE_METHOD TRAIT_METHOD folder/file intentional definitions
+-ADAPTER_METHOD folder/file serves method definitions for adapter type definitions
+-VALUE_METHOD folder/file serves method definitions for value types
+-TRAIT_METHOD folder/file serves method definitions for trait types
+--MACRO folder/file serves macro definitions
+--GLOBAL folder/file serves global definitions
+---Intentional definitions prefixs:
+--v__* - concrete value types
+--t__* - abstract trait types
+--a__* - abstract adapter types
+--h__* - abstract hierarchy types
+-h__ is Base.Any
+---Intentional definitions are always loaded in a specific order which forms one stage. Each stage is loaded in the same order: DEPENDENCY->TYPE->METHOD->MACRO->GLOBAL
+---If you are unsure about the correct structure of a implementation, just check other implementation's within for reference of correct structure's.

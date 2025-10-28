@@ -1,0 +1,48 @@
+name = "Bas3ImageSegmentation"
+uuid = "ecdda604-a2eb-4465-8307-5c648b26b822"
+authors = ["K11BN367 <alexander592beckmann@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+Augmentor = "02898b10-1f73-11ea-317c-6393d7073e15"
+Bas3 = "af0a1cfc-538f-4bb2-b0da-fbf558d56e16"
+Bas3GaussianProcess = "da6bd249-5024-4c5b-8608-84122d6c82d7"
+Bas3GradientOptimization = "768800b6-af41-427f-aca6-6c9b3ebc2520"
+Bas3IGABOptimization = "5757303b-19cd-48cf-8d22-d1bf9b5c0aff"
+Bas3Lux = "d42e847f-a626-42f1-ae57-4f9c06181514"
+Bas3QuasiMonteCarlo = "7163cb6c-55b9-48fb-8000-4281463852bf"
+Bas3Random = "b8c04a9d-53a0-48a9-ad30-96e9a8b69b86"
+Bas3SciML_Core = "00a94dca-dc08-4531-b6fa-f473557e207f"
+Bas3Surrogates_Core = "70bcee1d-9057-4541-adf8-a8048c9d7e10"
+Bas3_Core = "47442969-1adf-4deb-abf7-d4e7b88cce4f"
+ColorSchemes = "35d6a980-a343-548e-a6ea-1d62b119f2f4"
+ColorTypes = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
+Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+ImageMagick = "6218d12a-5da1-5696-b52f-db25d2ecc6d1"
+Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+MLUtils = "f1d291b0-491e-4a28-83b9-f70985020b54"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+RecursiveArrayTools = "731186ca-8d62-57ce-b412-fbd966d074cd"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
+
+[weakdeps]
+Bas3GLMakie = "d16222db-2f2f-4a9a-b34f-5182c38affff"
+Bas3Observables = "37c4cd4d-b834-49f4-acfe-7a3508c93acc"
+Bas3Plots = "124740a4-f5bd-4a47-83c3-53a067b6d508"
+
+[extensions]
+Bas3GLMakie_Bas3ImageSegmentation = ["Bas3GLMakie", "Bas3Plots", "Bas3Observables"]
+
+[compat]
+Distributed = "1.11.0"
+JLD2 = "0.5.15"
+XLSX = "0.10.4"
+
+[workspace]
+projects = ["WoundAnalyzer/Master", "WoundAnalyzer/Worker"]

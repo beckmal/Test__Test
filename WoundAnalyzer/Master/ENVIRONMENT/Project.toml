@@ -1,0 +1,4 @@
+[deps]
+Bas3_Core = "47442969-1adf-4deb-abf7-d4e7b88cce4f"
+Bas3_EnvironmentTools = "ef8c486a-83de-4ef9-b2e3-bb6b307e1ff0"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
