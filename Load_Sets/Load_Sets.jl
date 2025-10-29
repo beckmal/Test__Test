@@ -46,10 +46,11 @@ catch
     import Base.length
     import Base.minimum
     import Base.maximum
-    println("Loading Random, Mmap, Statistics...")
+    println("Loading Random, Mmap, Statistics, LinearAlgebra...")
     using Random
     using Mmap
     using Statistics
+    using LinearAlgebra
     println("Loading JLD2...")
     using Bas3ImageSegmentation.JLD2
 
@@ -60,6 +61,11 @@ catch
     println("=== Reporters initialized ===")
     Dict()
 end
+
+# Import LinearAlgebra.eigen at module level for PCA in extract_white_mask
+import LinearAlgebra: eigen
+import Base: abs
+
 const input_type = @__(Bas3ImageSegmentation.c__Image_Data{Float32,(:red, :green, :blue)})
 const raw_output_type = @__(Bas3ImageSegmentation.c__Image_Data{Float32,(:scar, :redness, :hematoma, :necrosis, :background)})
 #output_type = raw_output_type
@@ -68,9 +74,34 @@ const output_type = @__(Bas3ImageSegmentation.c__Image_Data{Float32,(:foreground
 
 import Bas3.convert
 
+# Function to resolve paths based on operating system
+# Converts C:/ paths to /mnt/c/ on WSL and vice versa
+function resolve_path(relative_path::String)
+    if Sys.iswindows()
+        # Running on native Windows
+        # Convert /mnt/c/ to C:/ if needed
+        if startswith(relative_path, "/mnt/")
+            drive_letter = uppercase(relative_path[6])
+            rest_of_path = replace(relative_path[8:end], "/" => "\\")
+            return "$(drive_letter):\\$(rest_of_path)"
+        else
+            return relative_path
+        end
+    else
+        # Running on Linux/WSL
+        # Convert C:/ to /mnt/c/ if needed
+        if occursin(r"^[A-Za-z]:[/\\]", relative_path)
+            drive_letter = lowercase(relative_path[1])
+            rest_of_path = replace(relative_path[4:end], "\\" => "/")
+            return "/mnt/$(drive_letter)/$(rest_of_path)"
+        else
+            return relative_path
+        end
+    end
+end
 
-
-base_path = "/mnt/c/Syncthing/Datasets"
+# Base path for datasets - will be converted based on OS
+base_path = resolve_path("C:/Syncthing/Datasets")
 const sets = try
     sets
 catch
@@ -78,10 +109,10 @@ catch
         regenerate_images = false
         temp_sets = []
 
-        _length = 306
+        _length = 10  # Only load first 10 images for testing
         _index_array = shuffle(1:_length)
         if regenerate_images == false
-            println("Loading original sets from disk...")
+            println("Loading original sets from disk (first $((_length)) images)...")
             for index in 1:_length
                 println("  Loading set $(index)/$(_length)")
                 @time begin
@@ -95,8 +126,8 @@ catch
                 println("  Loading image $(index)/$(_length)")
                 @time begin
                     input, output = @__(Bas3ImageSegmentation.load_input_and_output(
-                        #"/mnt/f/Woundanalyze/MuHa - Bilder",
-                         "/mnt/c/Syncthing/MuHa - Bilder",
+                        #resolve_path("F:/Woundanalyze/MuHa - Bilder"),
+                         resolve_path("C:/Syncthing/MuHa - Bilder"),
                         _index_array[index];
                         input_type=input_type,
                         output_type=raw_output_type,
@@ -262,7 +293,7 @@ end
 # Statistics and Visualization for Original Images
 # ============================================================================
 
-@__(begin
+begin
     println("\n=== Computing Dataset Statistics ===")
     
     # Extract class names from output type
@@ -298,6 +329,16 @@ end
         for class in classes
     )
     
+    # Compute normalized statistics (sum to 1.0)
+    local sum_of_means = sum(statistics[class].mean for class in classes)
+    local normalized_statistics = Dict(
+        class => (
+            mean = statistics[class].mean / sum_of_means,
+            std = statistics[class].std / sum_of_means
+        )
+        for class in classes
+    )
+    
     # Print results
     println("\nTotal pixels across all images: ", total_pixels)
     println("\nClass totals (absolute):")
@@ -315,13 +356,158 @@ end
     end
     println("Total proportion: ", total_proportion)
     
+    println("\nNormalized class statistics (sum to 1.0):")
+    local total_normalized = 0.0
+    for class in classes
+        println("  $class:")
+        println("    mean: ", normalized_statistics[class].mean)
+        println("    std:  ", normalized_statistics[class].std)
+        total_normalized += normalized_statistics[class].mean
+    end
+    println("Total normalized: ", total_normalized)
+    
+    # ============================================================================
+    # Bounding Box Metrics Computation
+    # ============================================================================
+    
+    println("\n=== Computing Bounding Box Metrics ===")
+    
+    # Define non-background classes for bounding box analysis
+    local bbox_classes = filter(c -> c != :background, classes)
+    
+    # Initialize storage for bounding box metrics per class (excluding background)
+    local bbox_metrics = Dict(
+        class => Dict(
+            :widths => Float64[],
+            :heights => Float64[],
+            :aspect_ratios => Float64[]
+        )
+        for class in bbox_classes
+    )
+    
+    # Process each output image
+    println("Analyzing bounding boxes for $(length(outputs)) images (excluding background)...")
+    for (img_idx, output_image) in enumerate(outputs)
+        local output_data = data(output_image)
+        
+        # Process each class
+        for (class_idx, class) in enumerate(classes)
+            # Skip background class
+            if class == :background
+                continue
+            end
+            
+            # Extract binary mask for this class (threshold at 0.5)
+            local class_mask = output_data[:, :, class_idx] .> 0.5
+            
+            # Skip if no pixels for this class
+            if !any(class_mask)
+                continue
+            end
+            
+            # Label connected components
+            local labeled = Bas3ImageSegmentation.label_components(class_mask)
+            local num_components = maximum(labeled)
+            
+            # Process each connected component
+            for component_id in 1:num_components
+                # Get mask for this component
+                local component_mask = labeled .== component_id
+                
+                # Find all pixels in this component
+                local pixel_coords = findall(component_mask)
+                
+                if isempty(pixel_coords)
+                    continue
+                end
+                
+                # Extract row and column indices
+                local row_indices = Float64[p[1] for p in pixel_coords]
+                local col_indices = Float64[p[2] for p in pixel_coords]
+                
+                # Compute centroid
+                local centroid_row = sum(row_indices) / length(row_indices)
+                local centroid_col = sum(col_indices) / length(col_indices)
+                
+                # Center the coordinates
+                local centered_rows = row_indices .- centroid_row
+                local centered_cols = col_indices .- centroid_col
+                
+                # Compute covariance matrix for PCA
+                local n = length(centered_rows)
+                local cov_matrix = [
+                    sum(centered_rows .* centered_rows) / n   sum(centered_rows .* centered_cols) / n;
+                    sum(centered_rows .* centered_cols) / n   sum(centered_cols .* centered_cols) / n
+                ]
+                
+                # Compute eigenvectors (principal directions)
+                local eigen_result = eigen(cov_matrix)
+                local principal_axes = eigen_result.vectors
+                
+                # Project points onto principal axes
+                local proj_axis1 = centered_rows .* principal_axes[1, 2] .+ centered_cols .* principal_axes[2, 2]
+                local proj_axis2 = centered_rows .* principal_axes[1, 1] .+ centered_cols .* principal_axes[2, 1]
+                
+                # Find min/max along each principal axis
+                local min_proj1, max_proj1 = extrema(proj_axis1)
+                local min_proj2, max_proj2 = extrema(proj_axis2)
+                
+                # Calculate oriented bounding box dimensions
+                local rotated_width = max_proj1 - min_proj1
+                local rotated_height = max_proj2 - min_proj2
+                
+                # Calculate aspect ratio (avoid division by zero)
+                local aspect_ratio = if min(rotated_width, rotated_height) > 0
+                    max(rotated_width, rotated_height) / min(rotated_width, rotated_height)
+                else
+                    1.0  # Default to 1.0 if one dimension is zero
+                end
+                
+                # Store metrics (using rotated bounding box dimensions)
+                push!(bbox_metrics[class][:widths], Float64(rotated_width))
+                push!(bbox_metrics[class][:heights], Float64(rotated_height))
+                push!(bbox_metrics[class][:aspect_ratios], aspect_ratio)
+            end
+        end
+    end
+    
+    # Compute aggregate statistics for each class
+    println("\nBounding Box Statistics by Class:")
+    println("="^70)
+    
+    local bbox_statistics = Dict(
+        class => Dict(
+            :mean_width => isempty(bbox_metrics[class][:widths]) ? 0.0 : mean(bbox_metrics[class][:widths]),
+            :std_width => isempty(bbox_metrics[class][:widths]) ? 0.0 : std(bbox_metrics[class][:widths]),
+            :mean_height => isempty(bbox_metrics[class][:heights]) ? 0.0 : mean(bbox_metrics[class][:heights]),
+            :std_height => isempty(bbox_metrics[class][:heights]) ? 0.0 : std(bbox_metrics[class][:heights]),
+            :mean_aspect_ratio => isempty(bbox_metrics[class][:aspect_ratios]) ? 0.0 : mean(bbox_metrics[class][:aspect_ratios]),
+            :std_aspect_ratio => isempty(bbox_metrics[class][:aspect_ratios]) ? 0.0 : std(bbox_metrics[class][:aspect_ratios]),
+            :num_components => length(bbox_metrics[class][:widths])
+        )
+        for class in bbox_classes
+    )
+    
+    for class in bbox_classes
+        local stats = bbox_statistics[class]
+        println("\n$class:")
+        println("  Number of components: ", stats[:num_components])
+        println("  Average width:  ", round(stats[:mean_width], digits=2), " ± ", round(stats[:std_width], digits=2), " pixels")
+        println("  Average height: ", round(stats[:mean_height], digits=2), " ± ", round(stats[:std_height], digits=2), " pixels")
+        println("  Average aspect ratio: ", round(stats[:mean_aspect_ratio], digits=2), " ± ", round(stats[:std_aspect_ratio], digits=2))
+    end
+    
+    println("\n" * "="^70)
+    
     # Create visualizations
     println("\nGenerating visualizations...")
-    local fgr = Figure(size=(1600, 900))
     
-    # Add title using Label in proper grid position
-    local title_label = Bas3GLMakie.GLMakie.Label(
-        fgr[1, 1:3], 
+    # Figure 1: Class Statistics
+    local stats_fig = Figure(size=(1200, 900))
+    
+    # Add title for statistics figure
+    local stats_title = Bas3GLMakie.GLMakie.Label(
+        stats_fig[1, 1:2], 
         "Original Dataset Statistics ($(length(sets)) images)", 
         fontsize=24,
         font=:bold,
@@ -330,80 +516,1040 @@ end
     
     local num_classes = length(classes)
     
+    # Calculate max and min values for non-background classes (for zoomed plots)
+    local non_background_classes = filter(c -> c != :background, classes)
+    # For axs3: use raw proportions
+    local max_total_proportion = maximum(class_totals[class] / total_pixels for class in non_background_classes)
+    local min_total_proportion = minimum(class_totals[class] / total_pixels for class in non_background_classes)
+    local range_total_proportion = max_total_proportion - min_total_proportion
+    local padding_total = range_total_proportion * 0.1
+    # For axs4: use normalized statistics with std
+    local max_normalized_with_std = maximum(normalized_statistics[class].mean + normalized_statistics[class].std for class in non_background_classes)
+    local min_normalized_with_std = minimum(normalized_statistics[class].mean - normalized_statistics[class].std for class in non_background_classes)
+    local range_normalized = max_normalized_with_std - min_normalized_with_std
+    local padding_normalized = range_normalized * 0.1
+    
+    println("\nAxis limit calculations:")
+    println("Non-background classes: ", non_background_classes)
+    println("Max normalized (mean+std): ", max_normalized_with_std)
+    println("Min normalized (mean-std): ", min_normalized_with_std)
+    println("Range: ", range_normalized, ", Padding (10%): ", padding_normalized)
+    println("Axis 4 y-limits: [", min_normalized_with_std - padding_normalized, ", ", max_normalized_with_std + padding_normalized, "]")
+    for class in non_background_classes
+        local mean_val = normalized_statistics[class].mean
+        local std_val = normalized_statistics[class].std
+        println("  $class: mean=$mean_val, std=$std_val, mean-std=$(mean_val - std_val), mean+std=$(mean_val + std_val)")
+    end
+    
     # Axis 1: Total class areas as proportions
     local axs1 = Bas3GLMakie.GLMakie.Axis(
-        fgr[2, 1]; 
+        stats_fig[2, 1]; 
         xticks=(1:num_classes, [string.(classes)...]), 
         title="Total Class Areas", 
         ylabel="Proportion of Total Pixels", 
         xlabel="Class"
     )
     
-    # Axis 2: Mean class areas with standard deviation
+    # Axis 2: Mean class areas with standard deviation (normalized to sum to 1)
     local axs2 = Bas3GLMakie.GLMakie.Axis(
-        fgr[2, 2]; 
+        stats_fig[2, 2]; 
         xticks=(1:num_classes, [string.(classes)...]), 
-        title="Mean Class Areas with Std Dev", 
-        ylabel="Proportion of Total Pixels", 
+        title="Mean Class Areas with Std Dev (Normalized)", 
+        ylabel="Normalized Proportion", 
         xlabel="Class"
     )
     
-    # Axis 3: Image viewer
+    # Axis 3: Total class areas (zoomed to non-background classes)
     local axs3 = Bas3GLMakie.GLMakie.Axis(
-        fgr[2, 3];
-        title="Image Viewer",
-        aspect=Bas3GLMakie.GLMakie.DataAspect()
+        stats_fig[3, 1]; 
+        xticks=(1:num_classes, [string.(classes)...]), 
+        title="Total Class Areas (Zoomed)", 
+        ylabel="Proportion of Total Pixels", 
+        xlabel="Class",
+        limits=(nothing, nothing, min_total_proportion - padding_total, max_total_proportion + padding_total)
     )
-    Bas3GLMakie.GLMakie.hidedecorations!(axs3)
+    
+    # Axis 4: Mean class areas (zoomed to non-background classes)
+    local axs4 = Bas3GLMakie.GLMakie.Axis(
+        stats_fig[3, 2]; 
+        xticks=(1:num_classes, [string.(classes)...]), 
+        title="Mean Class Areas with Std Dev (Zoomed)", 
+        ylabel="Normalized Proportion", 
+        xlabel="Class",
+        limits=(nothing, nothing, min_normalized_with_std - padding_normalized, max_normalized_with_std + padding_normalized)
+    )
+    
+    # Define colors for all classes (matching Bas3ImageSegmentation package)
+    # Order: scar, redness, hematoma, necrosis, background
+    local stats_class_colors = [:red, :green, :blue, :yellow, :black]
     
     # Plot data
     for (i, class) in enumerate(classes)
-        # Plot total proportions
-        Bas3GLMakie.scatter!(axs1, i, class_totals[class] / total_pixels; markersize=10)
+        local color = stats_class_colors[i]
         
-        # Plot means with error bars
-        mean_val = statistics[class].mean
-        std_val = statistics[class].std
+        # Plot total proportions (axs1 and axs3)
+        total_prop = class_totals[class] / total_pixels
+        Bas3GLMakie.GLMakie.scatter!(axs1, i, total_prop; markersize=10, color=color)
+        Bas3GLMakie.GLMakie.scatter!(axs3, i, total_prop; markersize=10, color=color)
+        
+        # Plot normalized means with error bars (axs2 and axs4)
+        mean_val = normalized_statistics[class].mean
+        std_val = normalized_statistics[class].std
         Bas3GLMakie.GLMakie.errorbars!(
             axs2, 
             [i], 
             [mean_val], 
             [std_val], 
             [std_val]; 
-            whiskerwidth=10
+            whiskerwidth=10,
+            color=color
         )
+        Bas3GLMakie.GLMakie.scatter!(axs2, i, mean_val; markersize=10, color=color)
+        
+        Bas3GLMakie.GLMakie.errorbars!(
+            axs4, 
+            [i], 
+            [mean_val], 
+            [std_val], 
+            [std_val]; 
+            whiskerwidth=10,
+            color=color
+        )
+        Bas3GLMakie.GLMakie.scatter!(axs4, i, mean_val; markersize=10, color=color)
     end
     
-    # Add slider for image selection
-    local slider = Bas3GLMakie.GLMakie.Slider(
-        fgr[3, 1:3],
-        range=1:length(sets),
-        startvalue=1
-    )
+    # Display and save statistics figure in its own window
+    display(Bas3GLMakie.GLMakie.Screen(), stats_fig)
+    Bas3GLMakie.GLMakie.save("dataset_class_statistics.png", stats_fig)
+    println("Saved class statistics to dataset_class_statistics.png")
     
-    local slider_label = Bas3GLMakie.GLMakie.Label(
-        fgr[4, 1:3],
-        Bas3GLMakie.GLMakie.lift(i -> "Image: $i / $(length(sets))", slider.value),
-        fontsize=16,
+    # ============================================================================
+    # Figure 2: Detailed Bounding Box Metrics Visualization
+    # ============================================================================
+    
+    println("Generating detailed bounding box metrics visualization...")
+    
+    local bbox_fig = Figure(size=(1600, 800))
+    
+    # Add title
+    Bas3GLMakie.GLMakie.Label(
+        bbox_fig[1, 1:3], 
+        "Bounding Box Metrics - Detailed Analysis (Non-Background Classes)", 
+        fontsize=24,
+        font=:bold,
         halign=:center
     )
     
-    # Display initial image using the image() function
-    local current_image = Bas3GLMakie.GLMakie.Observable(rotr90(image(sets[1][1])))
+    local num_bbox_classes = length(bbox_classes)
     
-    # Update image when slider changes
-    Bas3GLMakie.GLMakie.on(slider.value) do idx
-        # Get RGB image using the image() function and rotate for correct orientation
-        img_data = rotr90(image(sets[idx][1]))
-        current_image[] = img_data
+    # Top Row: Three average plots
+    # Axis 1: Width distribution with error bars
+    local bbox_ax1 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[2, 1]; 
+        xticks=(1:num_bbox_classes, [string.(bbox_classes)...]), 
+        title="Average Width per Class", 
+        ylabel="Width (pixels)", 
+        xlabel="Class"
+    )
+    
+    # Axis 2: Height distribution with error bars
+    local bbox_ax2 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[2, 2]; 
+        xticks=(1:num_bbox_classes, [string.(bbox_classes)...]), 
+        title="Average Height per Class", 
+        ylabel="Height (pixels)", 
+        xlabel="Class"
+    )
+    
+    # Axis 3: Aspect ratio distribution with error bars
+    local bbox_ax3 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[2, 3]; 
+        xticks=(1:num_bbox_classes, [string.(bbox_classes)...]), 
+        title="Average Aspect Ratio per Class", 
+        ylabel="Aspect Ratio (longer/shorter)", 
+        xlabel="Class"
+    )
+    
+    # Bottom Row: Two plots
+    # Axis 4: Width vs Height scatter plot
+    local bbox_ax4 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[3, 1:2]; 
+        title="Width vs Height by Class", 
+        xlabel="Width (pixels)", 
+        ylabel="Height (pixels)"
+    )
+    
+    # Axis 5: Number of components per class
+    local bbox_ax5 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[3, 3]; 
+        xticks=(1:num_bbox_classes, [string.(bbox_classes)...]), 
+        title="Number of Components per Class", 
+        ylabel="Count", 
+        xlabel="Class"
+    )
+    
+    # Define colors for each non-background class (matching Bas3ImageSegmentation package)
+    # scar: RGB(1,0,0)=red, redness: RGB(0,1,0)=green, hematoma: RGB(0,0,1)=blue, necrosis: RGB(1,1,0)=yellow
+    local class_colors = [:red, :green, :blue, :yellow]
+    
+    # Plot data for each class (non-background only)
+    for (i, class) in enumerate(bbox_classes)
+        local stats = bbox_statistics[class]
+        
+        # Skip if no components
+        if stats[:num_components] == 0
+            continue
+        end
+        
+        local color = class_colors[i]
+        
+        # Axis 1: Width with error bars
+        Bas3GLMakie.GLMakie.errorbars!(
+            bbox_ax1, 
+            [i], 
+            [stats[:mean_width]], 
+            [stats[:std_width]], 
+            [stats[:std_width]]; 
+            whiskerwidth=10,
+            color=color
+        )
+        Bas3GLMakie.GLMakie.scatter!(bbox_ax1, i, stats[:mean_width]; markersize=12, color=color)
+        
+        # Axis 2: Height with error bars
+        Bas3GLMakie.GLMakie.errorbars!(
+            bbox_ax2, 
+            [i], 
+            [stats[:mean_height]], 
+            [stats[:std_height]], 
+            [stats[:std_height]]; 
+            whiskerwidth=10,
+            color=color
+        )
+        Bas3GLMakie.GLMakie.scatter!(bbox_ax2, i, stats[:mean_height]; markersize=12, color=color)
+        
+        # Axis 3: Aspect ratio with error bars
+        Bas3GLMakie.GLMakie.errorbars!(
+            bbox_ax3, 
+            [i], 
+            [stats[:mean_aspect_ratio]], 
+            [stats[:std_aspect_ratio]], 
+            [stats[:std_aspect_ratio]]; 
+            whiskerwidth=10,
+            color=color
+        )
+        Bas3GLMakie.GLMakie.scatter!(bbox_ax3, i, stats[:mean_aspect_ratio]; markersize=12, color=color)
+        
+        # Axis 4: Width vs Height scatter
+        local widths = bbox_metrics[class][:widths]
+        local heights = bbox_metrics[class][:heights]
+        Bas3GLMakie.GLMakie.scatter!(
+            bbox_ax4, 
+            widths, 
+            heights; 
+            markersize=8, 
+            color=(color, 0.6),
+            label=string(class)
+        )
+        
+        # Axis 5: Number of components
+        Bas3GLMakie.GLMakie.barplot!(bbox_ax5, [i], [stats[:num_components]]; color=color, width=0.6)
     end
     
-    # Display the image
-    Bas3GLMakie.GLMakie.image!(axs3, current_image)
+    # Add legend to scatter plot
+    Bas3GLMakie.GLMakie.axislegend(bbox_ax4, position=:rt)
     
-    display(fgr)  # Comment out to avoid GUI blocking
+    # Add reference line (y=x) to scatter plot
+    local all_widths = vcat([bbox_metrics[class][:widths] for class in bbox_classes]...)
+    local all_heights = vcat([bbox_metrics[class][:heights] for class in bbox_classes]...)
+    local max_dim_all = maximum(vcat(all_widths, all_heights))
+    Bas3GLMakie.GLMakie.lines!(bbox_ax4, [0, max_dim_all], [0, max_dim_all]; color=:black, linestyle=:dash, linewidth=1, label="y=x")
+    
+    # Display and save bounding box figure
+    display(Bas3GLMakie.GLMakie.Screen(), bbox_fig)
+    Bas3GLMakie.GLMakie.save("dataset_bounding_box_metrics.png", bbox_fig)
+    println("Saved bounding box metrics to dataset_bounding_box_metrics.png")
+    
+    # Figure 2: Image Visualization with White Region Detection
+    local fgr = Figure(size=(1200, 1000))
+    #Bas3GLMakie.GLMakie.rowsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Aspect(1, 1))
+
+    # Add title for image figure
+    local img_title = Bas3GLMakie.GLMakie.Label(
+
+        fgr[1, 1:3], 
+        "Image Visualization with White Region Detection", 
+        fontsize=24,
+        font=:bold,
+        halign=:center
+    )
+    
+    # Axis 3: Input Image with Segmentation Overlay and White Region Detection
+    local axs3 = Bas3GLMakie.GLMakie.Axis(
+        fgr[2:3, 1:2];
+        title="Input Image with Segmentation + White Region Detection",
+        aspect=Bas3GLMakie.GLMakie.DataAspect()
+    )
+    Bas3GLMakie.GLMakie.hidedecorations!(axs3)
+    
+    # Parameter control panel in column 3 (spans rows 2-4 for proper height alignment)
+    local param_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[2:3, 3])
+    
+    # Panel title
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[1, 1:2],
+        "White Region Parameters",
+        fontsize=18,
+        font=:bold,
+        halign=:center
+    )
+    
+    # Threshold parameter - label and textbox side by side
+    local threshold_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[2, 1],
+        placeholder="0.7",
+        stored_string="0.7",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[2, 2],
+        "Threshold (0.0-1.0)",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Min component area parameter - label and textbox side by side
+    local min_area_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[3, 1],
+        placeholder="8000",
+        stored_string="8000",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[3, 2],
+        "Min Area (pixels)",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Preferred aspect ratio parameter - label and textbox side by side
+    local aspect_ratio_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[4, 1],
+        placeholder="5.0",
+        stored_string="5.0",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[4, 2],
+        "Preferred Aspect Ratio",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Aspect ratio weight parameter - label and textbox side by side
+    local aspect_weight_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[5, 1],
+        placeholder="0.6",
+        stored_string="0.6",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[5, 2],
+        "Aspect Weight (0.0-1.0)",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Update button - spans both columns
+    local update_params_button = Bas3GLMakie.GLMakie.Button(
+        param_grid[6, 1:2],
+        label="Update Detection",
+        fontsize=14
+    )
+    
+    # Error/status message label - spans both columns
+    local param_status_label = Bas3GLMakie.GLMakie.Label(
+        param_grid[7, 1:2],
+        "",
+        fontsize=12,
+        halign=:center,
+        color=:red
+    )
+    
+    # Navigation controls in a separate GridLayout
+    local nav_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[4, 1:3])
+    # Add navigation buttons and textbox for image selection
+    local prev_button = Bas3GLMakie.GLMakie.Button(
+        nav_grid[1, 1],
+        label="← Previous",
+        fontsize=14
+    )
+    
+    local textbox = Bas3GLMakie.GLMakie.Textbox(
+        nav_grid[1, 2],
+        placeholder="Enter image number (1-$(length(sets)))",
+        stored_string="1"
+    )
+    
+    local next_button = Bas3GLMakie.GLMakie.Button(
+        nav_grid[1, 3],
+        label="Next →",
+        fontsize=14
+    )
+    
+    local textbox_label = Bas3GLMakie.GLMakie.Label(
+        nav_grid[2, 1:3],
+        "Image: 1 / $(length(sets))",
+        fontsize=16,
+        halign=:center
+    )
+    #Bas3GLMakie.GLMakie.rowsize!(fgr.layout, 5, Bas3GLMakie.GLMakie.Fixed(10))
+    # White region extraction function - finds best white region with rotated bounding box
+    # Uses PCA to find oriented bounding box and selects component with highest combined score
+    # based on density and aspect ratio preference
+    #
+    # Parameters:
+    #   - threshold: RGB threshold for white detection (default: 0.8, range: 0.0-1.0)
+    #   - min_component_area: minimum area in pixels to consider a component (default: 100)
+    #   - preferred_aspect_ratio: target aspect ratio (longer/shorter dimension) (default: 5.0 for 1:5 ratio)
+    #   - aspect_ratio_weight: weight for aspect ratio vs density (default: 0.5, range: 0.0-1.0)
+    #       * 0.0 = purely density-based selection (ignores aspect ratio)
+    #       * 0.5 = balanced between density and aspect ratio
+    #       * 1.0 = purely aspect ratio-based selection (ignores density)
+    #
+    # Returns: (mask, size, percentage, num_components, bbox, density, rotated_corners, rotation_angle, aspect_ratio)
+    function extract_white_mask(img; threshold=0.7, min_component_area=100, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.5)
+        rgb_data = data(img)
+        # Initial white mask - all pixels with RGB >= threshold
+        white_mask_all = (rgb_data[:,:,1] .>= threshold) .& 
+                         (rgb_data[:,:,2] .>= threshold) .& 
+                         (rgb_data[:,:,3] .>= threshold)
+        
+        # Label all connected components
+        labeled = Bas3ImageSegmentation.label_components(white_mask_all)
+        num_components = maximum(labeled)
+        
+        if num_components == 0
+            # No white regions found
+            return white_mask_all, 0, 0.0, 0, (0, 0, 0, 0), 0.0, Float64[], 0.0
+        end
+        
+        # Analyze each connected component
+        best_label = 0
+        best_score = 0.0  # Combined score (density + aspect ratio match)
+        best_density = 0.0
+        best_rotated_corners = Float64[]
+        best_rotation_angle = 0.0
+        best_size = 0
+        best_aspect_ratio = 0.0
+        
+        for label in 1:num_components
+            # Get mask for this component
+            component_mask = labeled .== label
+            component_size = sum(component_mask)
+            
+            # Skip if below minimum area
+            if component_size < min_component_area
+                continue
+            end
+            
+            # Get all pixel coordinates for this component
+            pixel_coords = findall(component_mask)
+            if isempty(pixel_coords)
+                continue
+            end
+            
+            # Extract row and column indices
+            row_indices = Float64[p[1] for p in pixel_coords]
+            col_indices = Float64[p[2] for p in pixel_coords]
+            
+            # Compute centroid
+            centroid_row = sum(row_indices) / length(row_indices)
+            centroid_col = sum(col_indices) / length(col_indices)
+            
+            # Center the coordinates
+            centered_rows = row_indices .- centroid_row
+            centered_cols = col_indices .- centroid_col
+            
+            # Compute covariance matrix for PCA
+            n = length(centered_rows)
+            cov_matrix = [
+                sum(centered_rows .* centered_rows) / n   sum(centered_rows .* centered_cols) / n;
+                sum(centered_rows .* centered_cols) / n   sum(centered_cols .* centered_cols) / n
+            ]
+            
+            # Compute eigenvectors (principal directions)
+            eigen_result = eigen(cov_matrix)
+            principal_axes = eigen_result.vectors
+            
+            # Project points onto principal axes
+            proj_axis1 = centered_rows .* principal_axes[1, 2] .+ centered_cols .* principal_axes[2, 2]
+            proj_axis2 = centered_rows .* principal_axes[1, 1] .+ centered_cols .* principal_axes[2, 1]
+            
+            # Find min/max along each principal axis
+            min_proj1, max_proj1 = extrema(proj_axis1)
+            min_proj2, max_proj2 = extrema(proj_axis2)
+            
+            # Calculate oriented bounding box area
+            rotated_width = max_proj1 - min_proj1
+            rotated_height = max_proj2 - min_proj2
+            rotated_bbox_area = rotated_width * rotated_height
+            
+            # Compute density with rotated bounding box
+            rotated_density = component_size / rotated_bbox_area
+            
+            # Calculate rotation angle
+            rotation_angle = atan(principal_axes[1, 2], principal_axes[2, 2])
+            
+            # Compute corners of rotated rectangle in original coordinates
+            corners_proj = [
+                (min_proj1, min_proj2),
+                (max_proj1, min_proj2),
+                (max_proj1, max_proj2),
+                (min_proj1, max_proj2)
+            ]
+            
+            corners_original = map(corners_proj) do (p1, p2)
+                row = centroid_row + p1 * principal_axes[1, 2] + p2 * principal_axes[1, 1]
+                col = centroid_col + p1 * principal_axes[2, 2] + p2 * principal_axes[2, 1]
+                (row, col)
+            end
+            
+            # Calculate aspect ratio (always >= 1, using longer/shorter dimension)
+            aspect_ratio = max(rotated_width, rotated_height) / min(rotated_width, rotated_height)
+            
+            # Compute aspect ratio score (0 to 1, higher is better match)
+            # Uses exponential decay from the preferred aspect ratio
+            aspect_ratio_score = exp(-abs(aspect_ratio - preferred_aspect_ratio) / preferred_aspect_ratio)
+            
+            # Normalize density to 0-1 range (assuming density typically < 1.0)
+            normalized_density = min(rotated_density, 1.0)
+            
+            # Combined score: weighted average of density and aspect ratio match
+            combined_score = (1.0 - aspect_ratio_weight) * normalized_density + aspect_ratio_weight * aspect_ratio_score
+            
+            # Select component with highest combined score
+            if combined_score > best_score
+                best_score = combined_score
+                best_density = rotated_density
+                best_label = label
+                best_rotated_corners = vcat([[c[1], c[2]] for c in corners_original]...)
+                best_rotation_angle = rotation_angle
+                best_size = component_size
+                best_aspect_ratio = aspect_ratio
+            end
+        end
+        
+        if best_label == 0
+            # No components met the minimum area requirement
+            return white_mask_all, 0, 0.0, num_components, 0.0, Float64[], 0.0, 0.0
+        end
+        
+        # Create mask with only the densest component
+        white_mask = labeled .== best_label
+        
+        total_pixels = size(rgb_data, 1) * size(rgb_data, 2)
+        white_percentage = (best_size / total_pixels) * 100
+        
+        return white_mask, best_size, white_percentage, num_components, best_density, best_rotated_corners, best_rotation_angle, best_aspect_ratio
+    end
+    
+    # Contour extraction using boundary detection
+    function extract_contours(mask)
+        # Find boundary pixels (pixels adjacent to background)
+        h, w = size(mask)
+        contour_points = Tuple{Int, Int}[]
+        
+        for i in 1:h
+            for j in 1:w
+                if mask[i, j]
+                    is_boundary = false
+                    
+                    # Check 4-connected neighbors (up, down, left, right)
+                    for (di, dj) in [(-1,0), (1,0), (0,-1), (0,1)]
+                        ni, nj = i + di, j + dj
+                        if ni < 1 || ni > h || nj < 1 || nj > w || !mask[ni, nj]
+                            is_boundary = true
+                            break
+                        end
+                    end
+                    
+                    if is_boundary
+                        push!(contour_points, (i, j))
+                    end
+                end
+            end
+        end
+        
+        return contour_points
+    end
+    
+    # Initial white region extraction (densest component with configurable min area and aspect ratio preference)
+    local init_white_mask, init_white_count, init_white_pct, init_total_components, init_density, init_rotated_corners, init_rotation_angle, init_aspect_ratio = extract_white_mask(sets[1][1]; threshold=0.7, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6)
+    local init_contours = extract_contours(init_white_mask)
+    
+    # Helper function to create RGBA overlay from boolean mask with contours and rotated bounding boxes
+    function create_white_overlay(mask, contours, rotated_corners)
+        # Create RGBA overlay: red with 70% opacity for white regions, transparent elsewhere
+        overlay = map(mask) do is_white
+            if is_white
+                Bas3ImageSegmentation.RGBA{Float32}(1.0f0, 0.0f0, 0.0f0, 0.7f0)  # Red with 70% alpha
+            else
+                Bas3ImageSegmentation.RGBA{Float32}(0.0f0, 0.0f0, 0.0f0, 0.0f0)  # Transparent
+            end
+        end
+        
+        # Draw contours in bright yellow for better visibility
+        for (i, j) in contours
+            overlay[i, j] = Bas3ImageSegmentation.RGBA{Float32}(1.0f0, 1.0f0, 0.0f0, 1.0f0)  # Bright yellow
+        end
+        
+        # Draw rotated bounding box in magenta (100% opacity) using line drawing
+        if !isempty(rotated_corners) && length(rotated_corners) >= 8
+            h, w = size(overlay)
+            # Extract 4 corners from the flat array
+            corners = [
+                (rotated_corners[1], rotated_corners[2]),
+                (rotated_corners[3], rotated_corners[4]),
+                (rotated_corners[5], rotated_corners[6]),
+                (rotated_corners[7], rotated_corners[8])
+            ]
+            
+            # Draw lines between consecutive corners
+            for i in 1:4
+                next_i = (i % 4) + 1
+                r1, c1 = corners[i]
+                r2, c2 = corners[next_i]
+                
+                # Simple line drawing using interpolation
+                steps = max(abs(r2 - r1), abs(c2 - c1))
+                if steps > 0
+                    for step in 0:Int(ceil(steps))
+                        t = step / steps
+                        r = Int(round(r1 + t * (r2 - r1)))
+                        c = Int(round(c1 + t * (c2 - c1)))
+                        if r >= 1 && r <= h && c >= 1 && c <= w
+                            overlay[r, c] = Bas3ImageSegmentation.RGBA{Float32}(1.0f0, 0.0f0, 1.0f0, 1.0f0)  # Magenta
+                        end
+                    end
+                end
+            end
+        end
+        
+        return rotr90(overlay)
+    end
+    
+    # Function to extract rotated bounding boxes for all classes in an image
+    function extract_class_bboxes(output_image)
+        local output_data = data(output_image)
+        local bboxes_by_class = Dict{Symbol, Vector{Vector{Float64}}}()
+        
+        # Process each non-background class
+        for (class_idx, class) in enumerate(classes)
+            if class == :background
+                continue
+            end
+            
+            bboxes_by_class[class] = []
+            
+            # Extract binary mask for this class (threshold at 0.5)
+            local class_mask = output_data[:, :, class_idx] .> 0.5
+            
+            # Skip if no pixels for this class
+            if !any(class_mask)
+                continue
+            end
+            
+            # Label connected components
+            local labeled = Bas3ImageSegmentation.label_components(class_mask)
+            local num_components = maximum(labeled)
+            
+            # Process each connected component
+            for component_id in 1:num_components
+                # Get mask for this component
+                local component_mask = labeled .== component_id
+                
+                # Find all pixels in this component
+                local pixel_coords = findall(component_mask)
+                
+                if isempty(pixel_coords)
+                    continue
+                end
+                
+                # Extract row and column indices
+                local row_indices = Float64[p[1] for p in pixel_coords]
+                local col_indices = Float64[p[2] for p in pixel_coords]
+                
+                # Compute centroid
+                local centroid_row = sum(row_indices) / length(row_indices)
+                local centroid_col = sum(col_indices) / length(col_indices)
+                
+                # Center the coordinates
+                local centered_rows = row_indices .- centroid_row
+                local centered_cols = col_indices .- centroid_col
+                
+                # Compute covariance matrix for PCA
+                local n = length(centered_rows)
+                local cov_matrix = [
+                    sum(centered_rows .* centered_rows) / n   sum(centered_rows .* centered_cols) / n;
+                    sum(centered_rows .* centered_cols) / n   sum(centered_cols .* centered_cols) / n
+                ]
+                
+                # Compute eigenvectors (principal directions)
+                local eigen_result = eigen(cov_matrix)
+                local principal_axes = eigen_result.vectors
+                
+                # Project points onto principal axes
+                local proj_axis1 = centered_rows .* principal_axes[1, 2] .+ centered_cols .* principal_axes[2, 2]
+                local proj_axis2 = centered_rows .* principal_axes[1, 1] .+ centered_cols .* principal_axes[2, 1]
+                
+                # Find min/max along each principal axis
+                local min_proj1, max_proj1 = extrema(proj_axis1)
+                local min_proj2, max_proj2 = extrema(proj_axis2)
+                
+                # Compute corners of rotated rectangle in original coordinates
+                local corners_proj = [
+                    (min_proj1, min_proj2),
+                    (max_proj1, min_proj2),
+                    (max_proj1, max_proj2),
+                    (min_proj1, max_proj2)
+                ]
+                
+                local corners_original = map(corners_proj) do (p1, p2)
+                    row = centroid_row + p1 * principal_axes[1, 2] + p2 * principal_axes[1, 1]
+                    col = centroid_col + p1 * principal_axes[2, 2] + p2 * principal_axes[2, 1]
+                    [row, col]
+                end
+                
+                # Flatten to [r1, c1, r2, c2, r3, c3, r4, c4]
+                local rotated_corners = vcat(corners_original...)
+                
+                push!(bboxes_by_class[class], rotated_corners)
+            end
+        end
+        
+        return bboxes_by_class
+    end
+    
+    # Display initial input and output images using the image() function
+    local current_input_image = Bas3GLMakie.GLMakie.Observable(rotr90(image(sets[1][1])))
+    local current_output_image = Bas3GLMakie.GLMakie.Observable(rotr90(image(sets[1][2])))
+    local current_white_overlay = Bas3GLMakie.GLMakie.Observable(create_white_overlay(init_white_mask, init_contours, init_rotated_corners))
+    local current_class_bboxes = Bas3GLMakie.GLMakie.Observable(extract_class_bboxes(sets[1][2]))
+    
+    # White region statistics label
+    #=
+    local white_stats_label = Bas3GLMakie.GLMakie.Label(
+        fgr[3, 1:3],
+        "White region: $(init_white_count) pixels ($(round(init_white_pct, digits=2))%) | Density: $(round(init_density*100, digits=1))% | Components: $(init_total_components) | BBox: $(init_bbox[2]-init_bbox[1]+1)x$(init_bbox[4]-init_bbox[3]+1) | Rotation: $(round(rad2deg(init_rotation_angle), digits=1))° | Aspect: $(round(init_aspect_ratio, digits=2)):1",
+        fontsize=14,
+        halign=:center
+    )
+        =#
+    
+    # Flag to prevent recursive callback triggering
+    local updating_from_button = Ref(false)
+    
+    # Helper function to update the image display (core logic without textbox update)
+    function update_image_display_internal(idx, threshold=0.7, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6)
+        # Validate the input
+        if idx < 1 || idx > length(sets)
+            textbox_label.text = "Invalid input! Enter a number between 1 and $(length(sets))"
+            return false
+        end
+        
+        # Update label to show current image
+        textbox_label.text = "Image: $idx / $(length(sets))"
+        
+        # Get input RGB image (sets[idx][1] is the input image)
+        input_img = rotr90(image(sets[idx][1]))
+        current_input_image[] = input_img
+        
+        # Get output segmentation image (sets[idx][2] is the output/ground truth)
+        output_img = rotr90(image(sets[idx][2]))
+        current_output_image[] = output_img
+        
+        # Extract white regions and contours (densest component with min area filter and aspect ratio preference)
+        white_mask, white_count, white_pct, total_components, density, rotated_corners, rotation_angle, aspect_ratio = extract_white_mask(sets[idx][1]; threshold=threshold, min_component_area=min_component_area, preferred_aspect_ratio=preferred_aspect_ratio, aspect_ratio_weight=aspect_ratio_weight)
+        contours = extract_contours(white_mask)
+        current_white_overlay[] = create_white_overlay(white_mask, contours, rotated_corners)
+        
+        # Extract class bounding boxes
+        current_class_bboxes[] = extract_class_bboxes(sets[idx][2])
+        
+        # Update statistics label
+        #white_stats_label.text = "White region: $(white_count) pixels ($(round(white_pct, digits=2))%) | Density: $(round(density*100, digits=1))% | Components: $(total_components) | BBox: $(bbox_height)x$(bbox_width) | Rotation: $(round(rad2deg(rotation_angle), digits=1))° | Aspect: $(round(aspect_ratio, digits=2)):1"
+        
+        return true
+    end
+    
+    # Update images when textbox value changes
+    Bas3GLMakie.GLMakie.on(textbox.stored_string) do str
+        # Skip if being updated from button click
+        if updating_from_button[]
+            println("[DEBUG] Textbox callback skipped (button update)")
+            return
+        end
+        
+        println("[DEBUG] Textbox callback triggered with value: '$str'")
+        # Parse the input string to an integer
+        idx = tryparse(Int, str)
+        
+        if idx !== nothing
+            println("[DEBUG] Updating to image $idx")
+            # Read parameter values from textboxes
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            
+            # Use defaults if parsing fails
+            threshold = threshold === nothing ? 0.7 : threshold
+            min_area = min_area === nothing ? 8000 : min_area
+            aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+            aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+            
+            update_image_display_internal(idx, threshold, min_area, aspect_ratio, aspect_weight)
+        else
+            println("[DEBUG] Invalid input: $str")
+            textbox_label.text = "Invalid input! Enter a number between 1 and $(length(sets))"
+        end
+    end
+    
+    # Previous button callback
+    Bas3GLMakie.GLMakie.on(prev_button.clicks) do n
+        println("[DEBUG] Previous button clicked (click #$n)")
+        current_idx = tryparse(Int, textbox.stored_string[])
+        println("[DEBUG] Current index: $current_idx")
+        if current_idx !== nothing && current_idx > 1
+            new_idx = current_idx - 1
+            println("[DEBUG] Going to image: $new_idx")
+            
+            # Read parameter values from textboxes
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            
+            # Use defaults if parsing fails
+            threshold = threshold === nothing ? 0.7 : threshold
+            min_area = min_area === nothing ? 8000 : min_area
+            aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+            aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+            
+            # Update images
+            if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight)
+                # Update textbox without triggering callback
+                updating_from_button[] = true
+                textbox.stored_string[] = string(new_idx)
+                updating_from_button[] = false
+                println("[DEBUG] Successfully updated to image $new_idx")
+            end
+        else
+            println("[DEBUG] Cannot go previous (at minimum or invalid)")
+        end
+    end
+    
+    # Next button callback
+    Bas3GLMakie.GLMakie.on(next_button.clicks) do n
+        println("[DEBUG] Next button clicked (click #$n)")
+        current_idx = tryparse(Int, textbox.stored_string[])
+        println("[DEBUG] Current index: $current_idx")
+        if current_idx !== nothing && current_idx < length(sets)
+            new_idx = current_idx + 1
+            println("[DEBUG] Going to image: $new_idx")
+            
+            # Read parameter values from textboxes
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            
+            # Use defaults if parsing fails
+            threshold = threshold === nothing ? 0.7 : threshold
+            min_area = min_area === nothing ? 8000 : min_area
+            aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+            aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+            
+            # Update images
+            if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight)
+                # Update textbox without triggering callback
+                updating_from_button[] = true
+                textbox.stored_string[] = string(new_idx)
+                updating_from_button[] = false
+                println("[DEBUG] Successfully updated to image $new_idx")
+            end
+        else
+            println("[DEBUG] Cannot go next (at maximum or invalid)")
+        end
+    end
+    
+    # Update parameters button callback
+    Bas3GLMakie.GLMakie.on(update_params_button.clicks) do n
+        println("[DEBUG] Update Parameters button clicked (click #$n)")
+        
+        # Clear status message
+        param_status_label.text = ""
+        param_status_label.color = :green
+        
+        # Parse and validate all parameters
+        threshold = tryparse(Float64, threshold_textbox.stored_string[])
+        min_area = tryparse(Int, min_area_textbox.stored_string[])
+        aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+        aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+        
+        # Validation checks
+        validation_errors = String[]
+        
+        if threshold === nothing
+            push!(validation_errors, "Threshold must be a number")
+        elseif threshold < 0.0 || threshold > 1.0
+            push!(validation_errors, "Threshold must be 0.0-1.0")
+        end
+        
+        if min_area === nothing
+            push!(validation_errors, "Min Area must be a number")
+        elseif min_area <= 0
+            push!(validation_errors, "Min Area must be > 0")
+        end
+        
+        if aspect_ratio === nothing
+            push!(validation_errors, "Aspect Ratio must be a number")
+        elseif aspect_ratio < 1.0
+            push!(validation_errors, "Aspect Ratio must be >= 1.0")
+        end
+        
+        if aspect_weight === nothing
+            push!(validation_errors, "Aspect Weight must be a number")
+        elseif aspect_weight < 0.0 || aspect_weight > 1.0
+            push!(validation_errors, "Aspect Weight must be 0.0-1.0")
+        end
+        
+        # If validation fails, show error
+        if !isempty(validation_errors)
+            param_status_label.text = join(validation_errors, " | ")
+            param_status_label.color = :red
+            println("[DEBUG] Validation errors: ", validation_errors)
+            return
+        end
+        
+        # Get current image index
+        current_idx = tryparse(Int, textbox.stored_string[])
+        if current_idx === nothing
+            param_status_label.text = "Invalid image index"
+            param_status_label.color = :red
+            return
+        end
+        
+        # Update the display with new parameters
+        println("[DEBUG] Updating with parameters: threshold=$threshold, min_area=$min_area, aspect_ratio=$aspect_ratio, aspect_weight=$aspect_weight")
+        if update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight)
+            param_status_label.text = "Parameters updated successfully!"
+            param_status_label.color = :green
+            println("[DEBUG] Parameters updated successfully")
+        else
+            param_status_label.text = "Failed to update"
+            param_status_label.color = :red
+            println("[DEBUG] Failed to update parameters")
+        end
+    end
+    
+    println("\n[INFO] Navigation controls ready:")
+    println("  - Type a number (1-10) in the textbox and press Enter")
+    println("  - Click '← Previous' to go to previous image")
+    println("  - Click 'Next →' to go to next image")
+    println("  - Debug output will show when controls are used\n")
+    
+    # Display the input image
+    Bas3GLMakie.GLMakie.image!(axs3, current_input_image)
+    
+    # Overlay the segmentation output with 25% transparency (alpha=0.75)
+    Bas3GLMakie.GLMakie.image!(axs3, current_output_image; alpha=0.75)
+    
+    # Overlay the white region detection with red fill and yellow contours
+    Bas3GLMakie.GLMakie.image!(axs3, current_white_overlay)
+    
+    # Draw bounding boxes for each class with 50% alpha
+    # Colors match the segmentation class colors from Bas3ImageSegmentation
+    local bbox_colors_map = Dict(
+        :scar => (:red, 0.5),        # RGB(1, 0, 0)
+        :redness => (:green, 0.5),   # RGB(0, 1, 0)
+        :hematoma => (:blue, 0.5),   # RGB(0, 0, 1)
+        :necrosis => (:yellow, 0.5)  # RGB(1, 1, 0)
+    )
+    
+    # Store references to bbox plot objects so we can delete them
+    local bbox_plot_objects = []
+    
+    # Function to draw bounding boxes (will be called when observable updates)
+    Bas3GLMakie.GLMakie.on(current_class_bboxes) do bboxes_dict
+        # Delete all previous bbox drawings
+        for plot_obj in bbox_plot_objects
+            Bas3GLMakie.GLMakie.delete!(axs3, plot_obj)
+        end
+        empty!(bbox_plot_objects)
+        
+        # Get image height for coordinate transformation
+        local output_data = data(sets[1][2])
+        local img_height = size(output_data, 1)
+        
+        # Draw new bounding boxes
+        for (class, bboxes) in bboxes_dict
+            local color = get(bbox_colors_map, class, (:white, 0.5))
+            
+            for rotated_corners in bboxes
+                # rotated_corners is [r1, c1, r2, c2, r3, c3, r4, c4]
+                if length(rotated_corners) < 8
+                    continue
+                end
+                
+                # Extract 4 corners
+                local corners = [
+                    (rotated_corners[1], rotated_corners[2]),
+                    (rotated_corners[3], rotated_corners[4]),
+                    (rotated_corners[5], rotated_corners[6]),
+                    (rotated_corners[7], rotated_corners[8])
+                ]
+                
+                # Transform coordinates for rotr90 display
+                # rotr90 transforms: (row, col) -> (col, height - row + 1)
+                local x_coords = Float64[]
+                local y_coords = Float64[]
+                
+                for (row, col) in corners
+                    push!(x_coords, col)
+                    push!(y_coords, img_height - row + 1)
+                end
+                
+                # Close the rectangle
+                push!(x_coords, corners[1][2])
+                push!(y_coords, img_height - corners[1][1] + 1)
+                
+                local line_plot = Bas3GLMakie.GLMakie.lines!(axs3, x_coords, y_coords; color=color, linewidth=2)
+                push!(bbox_plot_objects, line_plot)
+            end
+        end
+    end
+    
+    # Trigger initial drawing
+    Bas3GLMakie.GLMakie.notify(current_class_bboxes)
+    
+    # Display image visualization figure in its own window
+    display(Bas3GLMakie.GLMakie.Screen(), fgr)
+    
+    # Save the image visualization figure
+    Bas3GLMakie.GLMakie.save("dataset_with_white_regions.png", fgr)
+    println("Saved image visualization to dataset_with_white_regions.png")
+    
     println("\nStatistics computation complete.")
-end)
+    println("Three figures created:")
+    println("  1. Class Statistics Figure (dataset_class_statistics.png)")
+    println("  2. Bounding Box Metrics Figure (dataset_bounding_box_metrics.png)")
+    println("  3. Image Visualization Figure (dataset_with_white_regions.png)")
+    
+
+    
+    println("\nClosing windows...")
+end
 
 println("\n=== Testing sets variable ===")
 println("Type of sets: ", typeof(sets))
