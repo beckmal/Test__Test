@@ -717,7 +717,7 @@ begin
         stats_fig[2, 2]; 
         xticks=(1:num_classes, get_german_names(classes)), 
         title="Klassenflächenverteilung (normalisiert)", 
-        ylabel="Normalisierter Anteil", 
+        ylabel="Anteil der Gesamtpixel", 
         xlabel="Klasse"
     )
     
@@ -726,7 +726,7 @@ begin
         stats_fig[2, 3]; 
         xticks=(1:num_classes, get_german_names(classes)), 
         title="Klassenfläche Mittelwert ± Std (normalisiert)", 
-        ylabel="Normalisierter Anteil", 
+        ylabel="Anteil der Gesamtpixel", 
         xlabel="Klasse"
     )
     
@@ -749,7 +749,7 @@ begin
         stats_fig[3, 2]; 
         xticks=(1:num_classes, get_german_names(classes)), 
         title="Klassenflächenverteilung (normalisiert; gezoomt)", 
-        ylabel="Normalisierter Anteil", 
+        ylabel="Anteil der Gesamtpixel", 
         xlabel="Klasse",
         limits=(nothing, nothing, min_normalized_with_std - padding_normalized, max_normalized_with_std + padding_normalized)
     )
@@ -759,7 +759,7 @@ begin
         stats_fig[3, 3]; 
         xticks=(1:num_classes, get_german_names(classes)), 
         title="Klassenfläche Mittelwert ± Std (normalisiert; gezoomt)", 
-        ylabel="Normalisierter Anteil", 
+        ylabel="Anteil der Gesamtpixel", 
         xlabel="Klasse",
         limits=(nothing, nothing, min_normalized_with_std - padding_normalized, max_normalized_with_std + padding_normalized)
     )
@@ -770,7 +770,8 @@ begin
     
     # Define colors for all classes (matching Bas3ImageSegmentation package)
     # Order: scar, redness, hematoma, necrosis, background
-    local stats_class_colors = [:red, :green, :blue, :yellow, :black]
+    # Narbe (scar) -> RGB(0,255,0), Rötung (redness) -> RGB(255,0,0), Hämatom (hematoma) -> goldenrod (visible yellow), Nekrose (necrosis) -> RGB(0,0,255)
+    local stats_class_colors = [Bas3GLMakie.GLMakie.RGBf(0, 1, 0), Bas3GLMakie.GLMakie.RGBf(1, 0, 0), :goldenrod, Bas3GLMakie.GLMakie.RGBf(0, 0, 1), :black]
     
     # Prepare data for boxplots
     # Normalized per-image data (for axs2 and axs4): normalize each image's class areas to sum to 1.0
@@ -827,10 +828,10 @@ begin
         class_outlier_percentages_normalized[class] = normalized_outlier_pct
         
         # Axis 1: Bar plot for total proportions
-        Bas3GLMakie.GLMakie.barplot!(axs1, [i], [total_prop]; color=color, width=0.6)
+        Bas3GLMakie.GLMakie.barplot!(axs1, [i], [total_prop]; color=color, width=0.6, label=class_names_de[class])
         
         # Axis 3: Bar plot for total proportions (zoomed)
-        Bas3GLMakie.GLMakie.barplot!(axs3, [i], [total_prop]; color=color, width=0.6)
+        Bas3GLMakie.GLMakie.barplot!(axs3, [i], [total_prop]; color=color, width=0.6, label=class_names_de[class])
         
         # Axis 2: Boxplot for normalized data
         Bas3GLMakie.GLMakie.boxplot!(
@@ -839,7 +840,8 @@ begin
             normalized_data; 
             color=(color, 0.6),
             show_outliers=false,
-            width=0.6
+            width=0.6,
+            label=class_names_de[class]
         )
         # Scatter only outliers for axs2
         if sum(normalized_outlier_mask) > 0
@@ -863,7 +865,8 @@ begin
             normalized_data; 
             color=(color, 0.6),
             show_outliers=false,
-            width=0.6
+            width=0.6,
+            label=class_names_de[class]
         )
         # Scatter only outliers for axs4
         if sum(normalized_outlier_mask) > 0
@@ -883,7 +886,7 @@ begin
         # Axis 5: Mean+Std error bars (normalized)
         local mean_val = normalized_statistics[class].mean
         local std_val = normalized_statistics[class].std
-        Bas3GLMakie.GLMakie.scatter!(axs5, i, mean_val; markersize=10, color=color)
+        Bas3GLMakie.GLMakie.scatter!(axs5, i, mean_val; markersize=10, color=color, label=class_names_de[class])
         Bas3GLMakie.GLMakie.errorbars!(
             axs5, 
             [i], 
@@ -895,7 +898,7 @@ begin
         )
         
         # Axis 6: Mean+Std error bars (zoomed)
-        Bas3GLMakie.GLMakie.scatter!(axs6, i, mean_val; markersize=10, color=color)
+        Bas3GLMakie.GLMakie.scatter!(axs6, i, mean_val; markersize=10, color=color, label=class_names_de[class])
         Bas3GLMakie.GLMakie.errorbars!(
             axs6, 
             [i], 
@@ -907,35 +910,39 @@ begin
         )
     end
     
-    # Build legend text with per-class outlier percentages for normalized data
-    local legend_lines_normalized = String[]
-    for class in classes
-        push!(legend_lines_normalized, "$(class_names_de[class]): $(round(class_outlier_percentages_normalized[class], digits=1))%")
+    # Add legend showing per-class outlier percentages for axs2 with colored text
+    local y_position = 0.98
+    local y_spacing = 0.05
+    for (i, class) in enumerate(classes)
+        local color = stats_class_colors[i]
+        local legend_text = "$(class_names_de[class]): $(round(class_outlier_percentages_normalized[class], digits=1))%"
+        Bas3GLMakie.GLMakie.text!(
+            axs2,
+            0.75, y_position - (i-1) * y_spacing;
+            text=legend_text,
+            align=(:center, :top),
+            fontsize=12,
+            space=:relative,
+            color=color,
+            font=:bold
+        )
     end
     
-    # Add legend showing per-class outlier percentages for axs2
-    Bas3GLMakie.GLMakie.text!(
-        axs2,
-        0.5, 0.98;
-        text=join(legend_lines_normalized, "\n"),
-        align=(:center, :top),
-        fontsize=10,
-        space=:relative,
-        color=:black,
-        font=:bold
-    )
-    
-    # Add legend showing per-class outlier percentages for axs4
-    Bas3GLMakie.GLMakie.text!(
-        axs4,
-        0.5, 0.98;
-        text=join(legend_lines_normalized, "\n"),
-        align=(:center, :top),
-        fontsize=10,
-        space=:relative,
-        color=:black,
-        font=:bold
-    )
+    # Add legend showing per-class outlier percentages for axs4 with colored text
+    for (i, class) in enumerate(classes)
+        local color = stats_class_colors[i]
+        local legend_text = "$(class_names_de[class]): $(round(class_outlier_percentages_normalized[class], digits=1))%"
+        Bas3GLMakie.GLMakie.text!(
+            axs4,
+            0.75, y_position - (i-1) * y_spacing;
+            text=legend_text,
+            align=(:center, :top),
+            fontsize=12,
+            space=:relative,
+            color=color,
+            font=:bold
+        )
+    end
     
     # Add mean ± std legends for axs5 and axs6
     local y_position = 0.98
@@ -987,7 +994,7 @@ begin
     
     # Add title
     Bas3GLMakie.GLMakie.Label(
-        bbox_fig[1, 1:3],
+        bbox_fig[1, 1:12],
         "Begrenzungsrahmenstatistik Gesamtdatensatz ($(length(sets)) Bilder)",
         fontsize=24,
         font=:bold,
@@ -999,7 +1006,7 @@ begin
     # Row 2: Three boxplot distributions
     # Axis 1: Width distribution
     local bbox_ax1 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[2, 1]; 
+        bbox_fig[2, 1:4]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Breitenverteilung pro Klasse", 
         ylabel="Breite [px]", 
@@ -1008,7 +1015,7 @@ begin
     
     # Axis 2: Height distribution
     local bbox_ax2 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[2, 2]; 
+        bbox_fig[2, 5:8]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Höhenverteilung pro Klasse", 
         ylabel="Höhe [px]", 
@@ -1017,7 +1024,7 @@ begin
     
     # Axis 3: Aspect ratio distribution
     local bbox_ax3 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[2, 3]; 
+        bbox_fig[2, 9:12]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Seitenverhältnisverteilung pro Klasse", 
         ylabel="Seitenverhältnis", 
@@ -1027,7 +1034,7 @@ begin
     # Row 3: Mean ± Std plots
     # Axis 6: Width mean ± std
     local bbox_ax6 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[3, 1]; 
+        bbox_fig[3, 1:4]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Breite Mittelwert ± Std pro Klasse", 
         ylabel="Breite [px]", 
@@ -1036,7 +1043,7 @@ begin
     
     # Axis 7: Height mean ± std
     local bbox_ax7 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[3, 2]; 
+        bbox_fig[3, 5:8]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Höhe Mittelwert ± Std pro Klasse", 
         ylabel="Höhe [px]", 
@@ -1045,25 +1052,45 @@ begin
     
     # Axis 8: Aspect ratio mean ± std
     local bbox_ax8 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[3, 3]; 
+        bbox_fig[3, 9:12]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Seitenverhältnis Mittelwert ± Std pro Klasse", 
         ylabel="Seitenverhältnis", 
         xlabel="Klasse"
     )
     
-    # Row 4: Bottom plots
-    # Axis 4: Width vs Height scatter plot
-    local bbox_ax4 = Bas3GLMakie.GLMakie.Axis(
+    # Row 4: Bottom plots - Width vs Height at different scales + Component count
+    # Axis 4: Width vs Height scatter plots at different scales
+    local bbox_ax4_1 = Bas3GLMakie.GLMakie.Axis(
         bbox_fig[4, 1:2]; 
-        title="Breite vs Höhe pro Klasse", 
+        title="Breite vs Höhe (0-300px)", 
         xlabel="Breite [px]", 
-        ylabel="Höhe [px]"
+        ylabel="Höhe [px]",
+        aspect=1,
+        limits=(0, 300, 0, 300)
     )
     
-    # Axis 5: Number of components per class
+    local bbox_ax4_2 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[4, 3:4]; 
+        title="Breite vs Höhe (0-600px)", 
+        xlabel="Breite [px]", 
+        ylabel="Höhe [px]",
+        aspect=1,
+        limits=(0, 600, 0, 600)
+    )
+    
+    local bbox_ax4_3 = Bas3GLMakie.GLMakie.Axis(
+        bbox_fig[4, 5:6]; 
+        title="Breite vs Höhe (0-900px)", 
+        xlabel="Breite [px]", 
+        ylabel="Höhe [px]",
+        aspect=1,
+        limits=(0, 900, 0, 900)
+    )
+    
+    # Axis 5: Number of components per class (in same row)
     local bbox_ax5 = Bas3GLMakie.GLMakie.Axis(
-        bbox_fig[4, 3]; 
+        bbox_fig[4, 7:12]; 
         xticks=(1:num_bbox_classes, get_german_names(bbox_classes)), 
         title="Anzahl Begrenzungsrahmen pro Klasse", 
         ylabel="Anzahl", 
@@ -1071,8 +1098,9 @@ begin
     )
     
     # Define colors for each non-background class (matching Bas3ImageSegmentation package)
-    # scar: RGB(1,0,0)=red, redness: RGB(0,1,0)=green, hematoma: RGB(0,0,1)=blue, necrosis: RGB(1,1,0)=yellow
-    local class_colors = [:red, :green, :blue, :yellow]
+    # Order: scar, redness, hematoma, necrosis
+    # Narbe (scar) -> RGB(0,255,0), Rötung (redness) -> RGB(255,0,0), Hämatom (hematoma) -> goldenrod (visible yellow), Nekrose (necrosis) -> RGB(0,0,255)
+    local class_colors = [Bas3GLMakie.GLMakie.RGBf(0, 1, 0), Bas3GLMakie.GLMakie.RGBf(1, 0, 0), :goldenrod, Bas3GLMakie.GLMakie.RGBf(0, 0, 1)]
     
     # Store per-class outlier percentages for each metric
     local class_outlier_pct_width = Dict{Symbol, Float64}()
@@ -1106,7 +1134,8 @@ begin
             widths; 
             color=(color, 0.6),
             show_outliers=false,
-            width=0.6
+            width=0.6,
+            label=class_names_de[class]
         )
         # Scatter only outliers
         if sum(width_outlier_mask) > 0
@@ -1136,7 +1165,8 @@ begin
             heights; 
             color=(color, 0.6),
             show_outliers=false,
-            width=0.6
+            width=0.6,
+            label=class_names_de[class]
         )
         # Scatter only outliers
         if sum(height_outlier_mask) > 0
@@ -1166,7 +1196,8 @@ begin
             aspect_ratios; 
             color=(color, 0.6),
             show_outliers=false,
-            width=0.6
+            width=0.6,
+            label=class_names_de[class]
         )
         # Scatter only outliers
         if sum(aspect_outlier_mask) > 0
@@ -1183,19 +1214,11 @@ begin
             )
         end
         
-        # Axis 4: Width vs Height scatter
+        # Axis 4: Compute regression slopes (plotting will happen later)
         local widths = bbox_metrics[class][:widths]
         local heights = bbox_metrics[class][:heights]
-        Bas3GLMakie.GLMakie.scatter!(
-            bbox_ax4, 
-            widths, 
-            heights; 
-            markersize=8, 
-            color=(color, 0.6),
-            label=string(class)
-        )
         
-        # Add linear regression line for this class
+        # Compute linear regression line for this class
         if length(widths) >= 2  # Need at least 2 points for regression
             # Compute linear regression: height = slope * width + intercept
             # Using least squares: slope = cov(x,y) / var(x)
@@ -1210,27 +1233,11 @@ begin
                 
                 # Store slope for text annotation
                 class_slopes[class] = slope
-                
-                # Generate line points
-                local w_min = minimum(widths)
-                local w_max = maximum(widths)
-                local w_range = range(w_min, w_max, length=100)
-                local h_pred = slope .* w_range .+ intercept
-                
-                # Plot regression line (removed label for legend)
-                Bas3GLMakie.GLMakie.lines!(
-                    bbox_ax4,
-                    w_range,
-                    h_pred;
-                    color=color,
-                    linewidth=2,
-                    linestyle=:solid
-                )
             end
         end
         
         # Axis 5: Number of components
-        Bas3GLMakie.GLMakie.barplot!(bbox_ax5, [i], [stats[:num_components]]; color=color, width=0.6)
+        Bas3GLMakie.GLMakie.barplot!(bbox_ax5, [i], [stats[:num_components]]; color=color, width=0.6, label=class_names_de[class])
     end
     
     # Populate Row 3: Mean ± Std plots
@@ -1255,7 +1262,8 @@ begin
             [width_mean];
             markersize=12,
             color=color,
-            marker=:circle
+            marker=:circle,
+            label=class_names_de[class]
         )
         Bas3GLMakie.GLMakie.errorbars!(
             bbox_ax6,
@@ -1279,7 +1287,8 @@ begin
             [height_mean];
             markersize=12,
             color=color,
-            marker=:circle
+            marker=:circle,
+            label=class_names_de[class]
         )
         Bas3GLMakie.GLMakie.errorbars!(
             bbox_ax7,
@@ -1303,7 +1312,8 @@ begin
             [aspect_mean];
             markersize=12,
             color=color,
-            marker=:circle
+            marker=:circle,
+            label=class_names_de[class]
         )
         Bas3GLMakie.GLMakie.errorbars!(
             bbox_ax8,
@@ -1325,68 +1335,79 @@ begin
     Bas3GLMakie.GLMakie.linkxaxes!(bbox_ax2, bbox_ax7)
     Bas3GLMakie.GLMakie.linkxaxes!(bbox_ax3, bbox_ax8)
     
-    # Build legend texts with per-class outlier percentages
-    local legend_lines_width = String[]
-    local legend_lines_height = String[]
-    local legend_lines_aspect = String[]
+    # Add legends showing per-class outlier percentages with colored text
+    local y_position = 0.98
+    local y_spacing = 0.05
     
-    for class in bbox_classes
-        push!(legend_lines_width, "$(class_names_de[class]): $(round(class_outlier_pct_width[class], digits=1))%")
-        push!(legend_lines_height, "$(class_names_de[class]): $(round(class_outlier_pct_height[class], digits=1))%")
-        push!(legend_lines_aspect, "$(class_names_de[class]): $(round(class_outlier_pct_aspect[class], digits=1))%")
+    # Width outliers for bbox_ax1
+    for (i, class) in enumerate(bbox_classes)
+        local color = class_colors[i]
+        local legend_text = "$(class_names_de[class]): $(round(class_outlier_pct_width[class], digits=1))%"
+        Bas3GLMakie.GLMakie.text!(
+            bbox_ax1,
+            0.75, y_position - (i-1) * y_spacing;
+            text=legend_text,
+            align=(:center, :top),
+            fontsize=12,
+            space=:relative,
+            color=color,
+            font=:bold
+        )
     end
     
-    # Add legends showing per-class outlier percentages
-    Bas3GLMakie.GLMakie.text!(
-        bbox_ax1,
-        0.5, 0.98;
-        text=join(legend_lines_width, "\n"),
-        align=(:center, :top),
-        fontsize=10,
-        space=:relative,
-        color=:black,
-        font=:bold
-    )
+    # Height outliers for bbox_ax2
+    for (i, class) in enumerate(bbox_classes)
+        local color = class_colors[i]
+        local legend_text = "$(class_names_de[class]): $(round(class_outlier_pct_height[class], digits=1))%"
+        Bas3GLMakie.GLMakie.text!(
+            bbox_ax2,
+            0.75, y_position - (i-1) * y_spacing;
+            text=legend_text,
+            align=(:center, :top),
+            fontsize=12,
+            space=:relative,
+            color=color,
+            font=:bold
+        )
+    end
     
-    Bas3GLMakie.GLMakie.text!(
-        bbox_ax2,
-        0.5, 0.98;
-        text=join(legend_lines_height, "\n"),
-        align=(:center, :top),
-        fontsize=10,
-        space=:relative,
-        color=:black,
-        font=:bold
-    )
+    # Aspect ratio outliers for bbox_ax3
+    for (i, class) in enumerate(bbox_classes)
+        local color = class_colors[i]
+        local legend_text = "$(class_names_de[class]): $(round(class_outlier_pct_aspect[class], digits=1))%"
+        Bas3GLMakie.GLMakie.text!(
+            bbox_ax3,
+            0.75, y_position - (i-1) * y_spacing;
+            text=legend_text,
+            align=(:center, :top),
+            fontsize=12,
+            space=:relative,
+            color=color,
+            font=:bold
+        )
+    end
     
-    Bas3GLMakie.GLMakie.text!(
-        bbox_ax3,
-        0.5, 0.98;
-        text=join(legend_lines_aspect, "\n"),
-        align=(:center, :top),
-        fontsize=10,
-        space=:relative,
-        color=:black,
-        font=:bold
-    )
-    
-    # Add slope text annotations to Width vs Height scatter plot
+    # Add slope text annotations to Width vs Height scatter plots
     local y_position = 0.98  # Start from top
     local y_spacing = 0.05   # Spacing between lines
     for (i, class) in enumerate(bbox_classes)
         if haskey(class_slopes, class)
             local color = class_colors[i]
-            local slope_text = "Steigung: $(round(class_slopes[class], digits=2))"
-            Bas3GLMakie.GLMakie.text!(
-                bbox_ax4,
-                0.02, y_position - (i-1) * y_spacing;
-                text=slope_text,
-                align=(:left, :top),
-                fontsize=12,
-                space=:relative,
-                color=color,
-                font=:bold
-            )
+            local slope_text = "$(class_names_de[class]): $(round(class_slopes[class], digits=2))"
+            
+            # Add text to all three axes
+            for ax in [bbox_ax4_1, bbox_ax4_2, bbox_ax4_3]
+                Bas3GLMakie.GLMakie.text!(
+                    ax,
+                    0.02, y_position - (i-1) * y_spacing;
+                    text=slope_text,
+                    align=(:left, :top),
+                    fontsize=12,
+                    space=:relative,
+                    color=color,
+                    font=:bold
+                )
+            end
         end
     end
     
@@ -1453,11 +1474,76 @@ begin
         )
     end
     
-    # Add reference line (y=x) to scatter plot
-    local all_widths = vcat([bbox_metrics[class][:widths] for class in bbox_classes]...)
-    local all_heights = vcat([bbox_metrics[class][:heights] for class in bbox_classes]...)
-    local max_dim_all = maximum(vcat(all_widths, all_heights))
-    Bas3GLMakie.GLMakie.lines!(bbox_ax4, [0, max_dim_all], [0, max_dim_all]; color=:black, linestyle=:dash, linewidth=1, label="y=x")
+    # Add reference lines (y=x) to scatter plots FIRST (so they appear underneath)
+    Bas3GLMakie.GLMakie.lines!(bbox_ax4_1, [0, 300], [0, 300]; color=:black, linestyle=:dash, linewidth=1, label="y=x")
+    Bas3GLMakie.GLMakie.lines!(bbox_ax4_2, [0, 600], [0, 600]; color=:black, linestyle=:dash, linewidth=1, label="y=x")
+    Bas3GLMakie.GLMakie.lines!(bbox_ax4_3, [0, 900], [0, 900]; color=:black, linestyle=:dash, linewidth=1, label="y=x")
+    
+    # Plot scatter points SECOND (on top of reference lines, before regression lines)
+    for (i, class) in enumerate(bbox_classes)
+        local stats = bbox_statistics[class]
+        
+        # Skip if no components
+        if stats[:num_components] == 0
+            continue
+        end
+        
+        local color = class_colors[i]
+        local widths = bbox_metrics[class][:widths]
+        local heights = bbox_metrics[class][:heights]
+        
+        # Plot scatter points on all three axes
+        for ax in [bbox_ax4_1, bbox_ax4_2, bbox_ax4_3]
+            Bas3GLMakie.GLMakie.scatter!(
+                ax, 
+                widths, 
+                heights; 
+                markersize=8, 
+                color=(color, 0.6),
+                label=class_names_de[class]
+            )
+        end
+    end
+    
+    # Plot regression lines LAST (on top of scatter points)
+    for (i, class) in enumerate(bbox_classes)
+        local stats = bbox_statistics[class]
+        
+        # Skip if no components
+        if stats[:num_components] == 0
+            continue
+        end
+        
+        local color = class_colors[i]
+        
+        # Plot regression line if slope was computed
+        if haskey(class_slopes, class)
+            local widths = bbox_metrics[class][:widths]
+            local heights = bbox_metrics[class][:heights]
+            local slope = class_slopes[class]
+            local mean_w = mean(widths)
+            local mean_h = mean(heights)
+            local intercept = mean_h - slope * mean_w
+            
+            # Generate line points
+            local w_min = minimum(widths)
+            local w_max = maximum(widths)
+            local w_range = range(w_min, w_max, length=100)
+            local h_pred = slope .* w_range .+ intercept
+            
+            # Plot regression line on all three axes
+            for ax in [bbox_ax4_1, bbox_ax4_2, bbox_ax4_3]
+                Bas3GLMakie.GLMakie.lines!(
+                    ax,
+                    w_range,
+                    h_pred;
+                    color=color,
+                    linewidth=2,
+                    linestyle=:solid
+                )
+            end
+        end
+    end
     
     # Display and save bounding box figure
     display(Bas3GLMakie.GLMakie.Screen(), bbox_fig)
@@ -1544,9 +1630,12 @@ begin
             bins=50, 
             color=(color, 0.5),
             normalization=:pdf,
-            label=string(channel)
+            label=channel_names_de[channel]
         )
     end
+    
+    # Add legend to histogram (top right)
+    Bas3GLMakie.GLMakie.axislegend(channel_ax2; position=:rt, labelsize=12)
     
     # channel_ax1 in middle of right column
     local channel_ax1 = Bas3GLMakie.GLMakie.Axis(
@@ -1569,7 +1658,8 @@ begin
             [stats.mean];
             markersize=12,
             color=color,
-            marker=:circle
+            marker=:circle,
+            label=channel_names_de[channel]
         )
         Bas3GLMakie.GLMakie.errorbars!(
             channel_ax1,
@@ -1582,6 +1672,9 @@ begin
             linewidth=2
         )
     end
+    
+    # Add legend to mean intensity plot (top right)
+    Bas3GLMakie.GLMakie.axislegend(channel_ax1; position=:rt, labelsize=12)
     
     # channel_ax3 at bottom of right column
     local channel_ax3 = Bas3GLMakie.GLMakie.Axis(
@@ -1629,23 +1722,27 @@ begin
             per_image_means;
             color=(color, 0.6),
             show_outliers=true,
-            width=0.6
+            width=0.6,
+            label=channel_names_de[channel]
         )
     end
+    
+    # Add legend to boxplot (top right)
+    Bas3GLMakie.GLMakie.axislegend(channel_ax3; position=:rt, labelsize=12)
     
     # Build legend text with per-channel outlier percentages
     local legend_lines_channel = String[]
     for channel in channel_names
-        push!(legend_lines_channel, "$(channel): $(round(channel_outlier_percentages[channel], digits=1))%")
+        push!(legend_lines_channel, "$(channel_names_de[channel]): $(round(channel_outlier_percentages[channel], digits=1))%")
     end
     
-    # Add legend showing per-channel outlier percentages (top center)
+    # Add legend showing per-channel outlier percentages (top left to avoid legend)
     Bas3GLMakie.GLMakie.text!(
         channel_ax3,
-        0.5, 0.98;
+        0.02, 0.98;
         text=join(legend_lines_channel, "\n"),
-        align=(:center, :top),
-        fontsize=10,
+        align=(:left, :top),
+        fontsize=12,
         space=:relative,
         color=:black,
         font=:bold
@@ -1660,27 +1757,32 @@ begin
     local red_min = minimum(red_means)
     local red_max = maximum(red_means)
     local red_range = red_max - red_min
+    local red_padding = red_range * 0.1
     
     local green_min = minimum(green_means)
     local green_max = maximum(green_means)
     local green_range = green_max - green_min
+    local green_padding = green_range * 0.1
     
     local blue_min = minimum(blue_means)
     local blue_max = maximum(blue_means)
     local blue_range = blue_max - blue_min
+    local blue_padding = blue_range * 0.1
     
     # Red vs Green (channel_ax4) - Bottom plot
     # X-axis: Red, Y-axis: Green
-    Bas3GLMakie.GLMakie.scatter!(channel_ax4, red_means, green_means; markersize=10, color=(:black, 0.6))
+    # Create RGB colors with Blue=0 for each point
+    local rg_colors = [Bas3GLMakie.GLMakie.RGB(r, g, 0.0) for (r, g) in zip(red_means, green_means)]
+    Bas3GLMakie.GLMakie.scatter!(channel_ax4, red_means, green_means; markersize=10, color=rg_colors)
     # Add diagonal reference line using the overlapping range
     local rg_min = max(red_min, green_min)
     local rg_max = min(red_max, green_max)
     if rg_min < rg_max
         Bas3GLMakie.GLMakie.lines!(channel_ax4, [rg_min, rg_max], [rg_min, rg_max]; color=:gray, linestyle=:dash, linewidth=1)
     end
-    # Set axis limits - linked x-axis with ax5 (both Red), y-axis uses Green
-    Bas3GLMakie.GLMakie.xlims!(channel_ax4, red_min, red_max)
-    Bas3GLMakie.GLMakie.ylims!(channel_ax4, green_min, green_max)
+    # Set axis limits with 10% padding - linked x-axis with ax5 (both Red), y-axis uses Green
+    Bas3GLMakie.GLMakie.xlims!(channel_ax4, red_min - red_padding, red_max + red_padding)
+    Bas3GLMakie.GLMakie.ylims!(channel_ax4, green_min - green_padding, green_max + green_padding)
     
     # Compute and display correlation coefficient
     local corr_rg = cor(red_means, green_means)
@@ -1689,51 +1791,55 @@ begin
         red_min + 0.05 * red_range,
         green_max - 0.05 * green_range;
         text="r = $(round(corr_rg, digits=3))",
-        fontsize=14,
+        fontsize=12,
         align=(:left, :top)
     )
     
     # Red vs Blue (channel_ax5) - Middle plot
     # X-axis: Red, Y-axis: Blue
-    Bas3GLMakie.GLMakie.scatter!(channel_ax5, red_means, blue_means; markersize=10, color=(:black, 0.6))
+    # Create RGB colors with Green=0 for each point
+    local rb_colors = [Bas3GLMakie.GLMakie.RGB(r, 0.0, b) for (r, b) in zip(red_means, blue_means)]
+    Bas3GLMakie.GLMakie.scatter!(channel_ax5, red_means, blue_means; markersize=10, color=rb_colors)
     # Add diagonal reference line using the overlapping range
     local rb_min = max(red_min, blue_min)
     local rb_max = min(red_max, blue_max)
     if rb_min < rb_max
         Bas3GLMakie.GLMakie.lines!(channel_ax5, [rb_min, rb_max], [rb_min, rb_max]; color=:gray, linestyle=:dash, linewidth=1)
     end
-    # Set axis limits - linked x-axis with ax4 (both Red), linked y-axis with ax6 (both Blue)
-    Bas3GLMakie.GLMakie.xlims!(channel_ax5, red_min, red_max)
-    Bas3GLMakie.GLMakie.ylims!(channel_ax5, blue_min, blue_max)
+    # Set axis limits with 10% padding - linked x-axis with ax4 (both Red), linked y-axis with ax6 (both Blue)
+    Bas3GLMakie.GLMakie.xlims!(channel_ax5, red_min - red_padding, red_max + red_padding)
+    Bas3GLMakie.GLMakie.ylims!(channel_ax5, blue_min - blue_padding, blue_max + blue_padding)
     local corr_rb = cor(red_means, blue_means)
     Bas3GLMakie.GLMakie.text!(
         channel_ax5,
         red_min + 0.05 * red_range,
         blue_max - 0.05 * blue_range;
         text="r = $(round(corr_rb, digits=3))",
-        fontsize=14,
+        fontsize=12,
         align=(:left, :top)
     )
     
     # Green vs Blue (channel_ax6) - Top plot
     # X-axis: Green, Y-axis: Blue
-    Bas3GLMakie.GLMakie.scatter!(channel_ax6, green_means, blue_means; markersize=10, color=(:black, 0.6))
+    # Create RGB colors with Red=0 for each point
+    local gb_colors = [Bas3GLMakie.GLMakie.RGB(0.0, g, b) for (g, b) in zip(green_means, blue_means)]
+    Bas3GLMakie.GLMakie.scatter!(channel_ax6, green_means, blue_means; markersize=10, color=gb_colors)
     # Add diagonal reference line using the overlapping range
     local gb_min = max(green_min, blue_min)
     local gb_max = min(green_max, blue_max)
     if gb_min < gb_max
         Bas3GLMakie.GLMakie.lines!(channel_ax6, [gb_min, gb_max], [gb_min, gb_max]; color=:gray, linestyle=:dash, linewidth=1)
     end
-    # Set axis limits - x-axis uses Green (should match y-axis of ax4), linked y-axis with ax5 (both Blue)
-    Bas3GLMakie.GLMakie.xlims!(channel_ax6, green_min, green_max)
-    Bas3GLMakie.GLMakie.ylims!(channel_ax6, blue_min, blue_max)
+    # Set axis limits with 10% padding - x-axis uses Green (should match y-axis of ax4), linked y-axis with ax5 (both Blue)
+    Bas3GLMakie.GLMakie.xlims!(channel_ax6, green_min - green_padding, green_max + green_padding)
+    Bas3GLMakie.GLMakie.ylims!(channel_ax6, blue_min - blue_padding, blue_max + blue_padding)
     local corr_gb = cor(green_means, blue_means)
     Bas3GLMakie.GLMakie.text!(
         channel_ax6,
         green_min + 0.05 * green_range,
         blue_max - 0.05 * blue_range;
         text="r = $(round(corr_gb, digits=3))",
-        fontsize=14,
+        fontsize=12,
         align=(:left, :top)
     )
     
@@ -1955,6 +2061,34 @@ begin
         fontsize=11,
         halign=:center,
         color=:gray
+    )
+    
+    # Add separator
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[13, 1:2],
+        "─────────────────────",
+        fontsize=12,
+        halign=:center
+    )
+    
+    # Overlay Control
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[14, 1:2],
+        "Überlagerungen",
+        fontsize=16,
+        font=:bold,
+        halign=:center
+    )
+    
+    local segmentation_toggle = Bas3GLMakie.GLMakie.Toggle(
+        param_grid[15, 1],
+        active=true
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[15, 2],
+        "Segmentierung anzeigen",
+        fontsize=14,
+        halign=:left
     )
     
     # Navigation controls in a separate GridLayout
@@ -3080,6 +3214,17 @@ begin
         end
     end
     
+    # Segmentation toggle callback - control visibility of segmentation and white overlays
+    Bas3GLMakie.GLMakie.on(segmentation_toggle.active) do active
+        segmentation_overlay_plot.visible = active
+        white_overlay_plot.visible = active
+        # Update bounding box visibility
+        for plot_obj in bbox_plot_objects
+            plot_obj.visible = active
+        end
+        println("[DEBUG] Segmentation overlay ", active ? "enabled" : "disabled")
+    end
+    
     # Mouse click event handler for region selection
     Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mousebutton, priority = 2) do event
         if event.button == Bas3GLMakie.GLMakie.Mouse.left && event.action == Bas3GLMakie.GLMakie.Mouse.press
@@ -3188,10 +3333,12 @@ begin
     Bas3GLMakie.GLMakie.image!(axs3, current_input_image)
     
     # Overlay the segmentation output with 25% transparency (alpha=0.75)
-    Bas3GLMakie.GLMakie.image!(axs3, current_output_image; alpha=0.75)
+    # Store reference to control visibility
+    local segmentation_overlay_plot = Bas3GLMakie.GLMakie.image!(axs3, current_output_image; alpha=0.75)
     
     # Overlay the white region detection with red fill and yellow contours
-    Bas3GLMakie.GLMakie.image!(axs3, current_white_overlay)
+    # Store reference to control visibility
+    local white_overlay_plot = Bas3GLMakie.GLMakie.image!(axs3, current_white_overlay)
     
     # Draw selection rectangle (cyan with semi-transparent fill)
     Bas3GLMakie.GLMakie.poly!(axs3, selection_rect, 
@@ -3231,7 +3378,7 @@ begin
         local output_data = data(sets[1][2])
         local img_height = size(output_data, 1)
         
-        # Draw new bounding boxes
+        # Draw new bounding boxes (only if segmentation is visible)
         for (class, bboxes) in bboxes_dict
             local color = get(bbox_colors_map, class, (:white, 0.5))
             
@@ -3263,7 +3410,7 @@ begin
                 push!(x_coords, corners[1][2])
                 push!(y_coords, img_height - corners[1][1] + 1)
                 
-                local line_plot = Bas3GLMakie.GLMakie.lines!(axs3, x_coords, y_coords; color=color, linewidth=2)
+                local line_plot = Bas3GLMakie.GLMakie.lines!(axs3, x_coords, y_coords; color=color, linewidth=2, visible=segmentation_toggle.active[])
                 push!(bbox_plot_objects, line_plot)
             end
         end
