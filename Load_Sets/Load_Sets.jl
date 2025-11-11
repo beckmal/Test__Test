@@ -3355,12 +3355,12 @@ begin
         visible = Bas3GLMakie.GLMakie.@lift(!isempty($preview_rect)))
     
     # Draw bounding boxes for each class with 50% alpha
-    # Colors match the segmentation class colors from Bas3ImageSegmentation
+    # Colors match line 774: scar=GREEN, redness=RED, hematoma=goldenrod, necrosis=BLUE
     local bbox_colors_map = Dict(
-        :scar => (:red, 0.5),        # RGB(1, 0, 0)
-        :redness => (:green, 0.5),   # RGB(0, 1, 0)
-        :hematoma => (:blue, 0.5),   # RGB(0, 0, 1)
-        :necrosis => (:yellow, 0.5)  # RGB(1, 1, 0)
+        :scar => (:green, 0.5),        # RGB(0, 1, 0)
+        :redness => (:red, 0.5),       # RGB(1, 0, 0)
+        :hematoma => (:goldenrod, 0.5), # goldenrod
+        :necrosis => (:blue, 0.5)      # RGB(0, 0, 1)
     )
     
     # Store references to bbox plot objects so we can delete them

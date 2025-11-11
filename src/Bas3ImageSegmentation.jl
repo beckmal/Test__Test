@@ -40,10 +40,10 @@ module Bas3ImageSegmentation
     const shape_color = Dict(
         :background => v_RGB(0, 0, 0),
         :foreground => v_RGB(1, 1, 1),
-        :scar => v_RGB(1, 0, 0),
-        :redness => v_RGB(0, 1, 0),
-        :hematoma => v_RGB(0, 0, 1),
-        :necrosis => v_RGB(1, 1, 0)
+        :scar => v_RGB(0, 1, 0),       # GREEN
+        :redness => v_RGB(1, 0, 0),    # RED
+        :hematoma => v_RGB(0.854902, 0.647059, 0.12549), # goldenrod approximation
+        :necrosis => v_RGB(0, 0, 1)    # BLUE
     )
     
     struct v_Binary end
