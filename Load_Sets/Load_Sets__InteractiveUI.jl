@@ -1,0 +1,1509 @@
+# Load_Sets__InteractiveUI.jl
+# Interactive visualization module - Figure 4
+
+"""
+    create_interactive_figure(sets, input_type, raw_output_type)
+
+Creates an interactive visualization figure with:
+- Image viewer with segmentation overlay
+- White region detection with PCA-based oriented bounding boxes
+- Interactive parameter controls (threshold, min area, aspect ratio, etc.)
+- Dual statistics panels (full image vs white region)
+- Region selection tool for constrained detection
+- Navigation controls for browsing dataset
+
+# Arguments
+- `sets`: Vector of (input_image, output_image) tuples
+- `input_type`: Input image type
+- `raw_output_type`: Raw output image type
+
+# Returns
+- `Figure`: GLMakie Figure object with interactive UI
+
+# Dependencies
+Requires functions from:
+- Load_Sets__ConnectedComponents: extract_white_mask, find_connected_components
+- Load_Sets__Morphology: morphological_close, morphological_open
+- Load_Sets__Utilities: compute_skewness
+- Load_Sets__Colors: CLASS_COLORS_RGB
+
+# Example
+```julia
+include("Load_Sets__Core.jl")
+include("Load_Sets__InteractiveUI.jl")
+
+sets = load_original_sets(306, false)
+fig = create_interactive_figure(sets, input_type, raw_output_type)
+display(GLMakie.Screen(), fig)
+```
+"""
+function create_interactive_figure(sets, input_type, raw_output_type)
+    # Get classes from raw_output_type using shape()
+    classes = shape(raw_output_type)
+    
+    # Figure 4: Image Visualization with White Region Detection
+    # New Layout: Marker Extraction - Dewarped - Image - Full Image Stats - White Region Stats - Controls
+    local fgr = Figure(size=(2400, 1000))
+
+    # Add title for image figure
+    local img_title = Bas3GLMakie.GLMakie.Label(
+        fgr[1, 1:6], 
+        "Interaktive Bildvisualisierung mit Markererkennung und Entzerrung",
+        fontsize=24,
+        font=:bold,
+        halign=:center
+    )
+    
+    # Column 1: Marker Extraction Visualization (top half)
+    local axs_markers = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 1][1, 1];
+        title="Extrahierte Markierungen",
+        aspect=Bas3GLMakie.GLMakie.DataAspect()
+    )
+    Bas3GLMakie.GLMakie.hidedecorations!(axs_markers)
+    
+    # Column 1: Dewarped Image (bottom half)
+    local axs_dewarped = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 1][2, 1];
+        title="Entzerrtes Bild",
+        aspect=Bas3GLMakie.GLMakie.DataAspect()
+    )
+    Bas3GLMakie.GLMakie.hidedecorations!(axs_dewarped)
+    
+    # Column 2: Input Image with Segmentation Overlay and White Region Detection
+    local axs3 = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 2];
+        title="Eingabebild mit Segmentierung + Markererkennung",
+        aspect=Bas3GLMakie.GLMakie.DataAspect()
+    )
+    Bas3GLMakie.GLMakie.hidedecorations!(axs3)
+    
+    # Column 3: Full Image Statistics Plots (stacked vertically)
+    # Axis for Mean ± Std per Channel
+    local full_mean_ax = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 3][1, 1];
+        xticks=(1:3, ["Rot", "Grün", "Blau"]),
+        title="Gesamtbild: Intensität Mittelwert ± Std",
+        ylabel="Intensität",
+        xlabel=""
+    )
+    
+    # Axis for Boxplot per Channel
+    local full_box_ax = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 3][2, 1];
+        xticks=(1:3, ["Rot", "Grün", "Blau"]),
+        title="Gesamtbild: Intensitätsverteilung",
+        ylabel="Intensität",
+        xlabel=""
+    )
+    
+    # Axis for RGB Histogram
+    local full_hist_ax = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 3][3, 1];
+        title="Gesamtbild: RGB-Kanäle Histogramm",
+        ylabel="Dichte",
+        xlabel="Intensität"
+    )
+    
+    # Column 4: White Region Statistics Plots (stacked vertically)
+    # Axis for Mean ± Std per Channel
+    local region_mean_ax = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 4][1, 1];
+        xticks=(1:3, ["Rot", "Grün", "Blau"]),
+        title="Marker: Intensität Mittelwert ± Std",
+        ylabel="Intensität",
+        xlabel=""
+    )
+    
+    # Axis for Boxplot per Channel
+    local region_box_ax = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 4][2, 1];
+        xticks=(1:3, ["Rot", "Grün", "Blau"]),
+        title="Marker: Intensitätsverteilung",
+        ylabel="Intensität",
+        xlabel=""
+    )
+    
+    # Axis for RGB Histogram
+    local region_hist_ax = Bas3GLMakie.GLMakie.Axis(
+        fgr[2, 4][3, 1];
+        title="Marker: RGB-Kanäle Histogramm",
+        ylabel="Dichte",
+        xlabel="Intensität"
+    )
+    
+    # Column 5: Parameter control panel
+    local param_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[2, 5])
+    
+    # Set row and column sizes
+    Bas3GLMakie.GLMakie.rowsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Fixed(50))  # Title row
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Fixed(400)) # Marker/dewarped column
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 3, Bas3GLMakie.GLMakie.Fixed(300)) # Full image stats column
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 4, Bas3GLMakie.GLMakie.Fixed(300)) # White region stats column
+    
+    # Panel title
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[1, 1:2],
+        "Regionsparameter",
+        fontsize=18,
+        font=:bold,
+        halign=:center
+    )
+    
+    # Threshold parameter - label and textbox side by side
+    local threshold_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[2, 1],
+        placeholder="0.7",
+        stored_string="0.7",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[2, 2],
+        "Schwellwert (0.0-1.0)",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Min component area parameter - label and textbox side by side
+    local min_area_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[3, 1],
+        placeholder="8000",
+        stored_string="8000",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[3, 2],
+        "Min. Fläche [px]",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Preferred aspect ratio parameter - label and textbox side by side
+    local aspect_ratio_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[4, 1],
+        placeholder="5.0",
+        stored_string="5.0",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[4, 2],
+        "Bevorzugtes Seitenverhältnis",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Aspect ratio weight parameter - label and textbox side by side
+    local aspect_weight_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[5, 1],
+        placeholder="0.6",
+        stored_string="0.6",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[5, 2],
+        "Seitenverhältnis-Gewichtung (0.0-1.0)",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Kernel size for morphological operations
+    local kernel_size_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[6, 1],
+        placeholder="3",
+        stored_string="3",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[6, 2],
+        "Kernelgröße (0-7)",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Error/status message label - spans both columns
+    local param_status_label = Bas3GLMakie.GLMakie.Label(
+        param_grid[7, 1:2],
+        "",
+        fontsize=12,
+        halign=:center,
+        color=:red
+    )
+    
+    # Add separator
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[8, 1:2],
+        "─────────────────────",
+        fontsize=12,
+        halign=:center
+    )
+    
+    # Region Selection Controls
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[9, 1:2],
+        "Regionsauswahl",
+        fontsize=16,
+        font=:bold,
+        halign=:center
+    )
+    
+    local selection_toggle = Bas3GLMakie.GLMakie.Toggle(
+        param_grid[10, 1],
+        active=false
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[10, 2],
+        "Auswahl aktivieren",
+        fontsize=14,
+        halign=:left
+    )
+    
+    local clear_selection_button = Bas3GLMakie.GLMakie.Button(
+        param_grid[11, 1:2],
+        label="Auswahl löschen",
+        fontsize=14
+    )
+    
+    local selection_status_label = Bas3GLMakie.GLMakie.Label(
+        param_grid[12, 1:2],
+        "Auswahl deaktiviert",
+        fontsize=11,
+        halign=:center,
+        color=:gray
+    )
+    
+    # Add separator
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[13, 1:2],
+        "─────────────────────",
+        fontsize=12,
+        halign=:center
+    )
+    
+    # Overlay Control
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[14, 1:2],
+        "Überlagerungen",
+        fontsize=16,
+        font=:bold,
+        halign=:center
+    )
+    
+    local segmentation_toggle = Bas3GLMakie.GLMakie.Toggle(
+        param_grid[15, 1],
+        active=true
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[15, 2],
+        "Segmentierung anzeigen",
+        fontsize=14,
+        halign=:left
+    )
+    
+    # Navigation controls in a separate GridLayout
+    local nav_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[3, 1:4])
+    # Add navigation buttons and textbox for image selection
+    local prev_button = Bas3GLMakie.GLMakie.Button(
+        nav_grid[1, 1],
+        label="← Vorheriges",
+        fontsize=14
+    )
+    
+    local textbox = Bas3GLMakie.GLMakie.Textbox(
+        nav_grid[1, 2],
+        placeholder="Bildnummer eingeben (1-$(length(sets)))",
+        stored_string="1"
+    )
+    
+    local next_button = Bas3GLMakie.GLMakie.Button(
+        nav_grid[1, 3],
+        label="Nächstes →",
+        fontsize=14
+    )
+    
+    local textbox_label = Bas3GLMakie.GLMakie.Label(
+        nav_grid[2, 1:3],
+        "Bild: 1 / $(length(sets))",
+        fontsize=16,
+        halign=:center
+    )
+    
+    # Contour extraction using boundary detection
+    function extract_contours(mask)
+        # Find boundary pixels (pixels adjacent to background)
+        h, w = size(mask)
+        contour_points = Tuple{Int, Int}[]
+        
+        for i in 1:h
+            for j in 1:w
+                if mask[i, j]
+                    is_boundary = false
+                    
+                    # Check 4-connected neighbors (up, down, left, right)
+                    for (di, dj) in [(-1,0), (1,0), (0,-1), (0,1)]
+                        ni, nj = i + di, j + dj
+                        if ni < 1 || ni > h || nj < 1 || nj > w || !mask[ni, nj]
+                            is_boundary = true
+                            break
+                        end
+                    end
+                    
+                    if is_boundary
+                        push!(contour_points, (i, j))
+                    end
+                end
+            end
+        end
+        
+        return contour_points
+    end
+    
+    # Helper functions for region selection
+    
+    # Convert axis coordinates to image pixel coordinates
+    # Input axis shows rotr90(image), so need to reverse transform
+    function axis_to_pixel(point_axis, img_height, img_width)
+        # rotr90 rotates 90 degrees clockwise
+        # Original image is H×W (height × width)
+        # After rotr90, it becomes W×H (cols become rows, rows become cols)
+        # 
+        # Forward transform: rotated[orig_col, H - orig_row + 1] = original[orig_row, orig_col]
+        # Inverse transform: 
+        #   orig_row = H - rot_col + 1
+        #   orig_col = rot_row
+        #
+        # point_axis is in rotated space: (rot_row, rot_col)
+        # which corresponds to (x, y) in axis coordinates
+        rot_row = round(Int, point_axis[1])
+        rot_col = round(Int, point_axis[2])
+        
+        # Convert to original image coordinates
+        orig_row = img_height - rot_col + 1
+        orig_col = rot_row
+        
+        return (orig_row, orig_col)
+    end
+    
+    # Create rectangle polygon from two corners
+    function make_rectangle(c1, c2)
+        x_min, x_max = minmax(c1[1], c2[1])
+        y_min, y_max = minmax(c1[2], c2[2])
+        return Bas3GLMakie.GLMakie.Point2f[
+            Bas3GLMakie.GLMakie.Point2f(x_min, y_min),
+            Bas3GLMakie.GLMakie.Point2f(x_max, y_min),
+            Bas3GLMakie.GLMakie.Point2f(x_max, y_max),
+            Bas3GLMakie.GLMakie.Point2f(x_min, y_max),
+            Bas3GLMakie.GLMakie.Point2f(x_min, y_min)  # Close the loop
+        ]
+    end
+    
+    # Note: White region extraction removed - now using only detect_calibration_markers() for consistency
+    # The white overlay will be created from the detected markers
+    
+    # Helper function to create marker visualization image
+    function create_marker_visualization(img, markers)
+        # Get image dimensions
+        local img_data = data(img)
+        local h, w = size(img_data, 1), size(img_data, 2)
+        
+        # Create a grayscale visualization showing detected markers
+        local viz = zeros(Bas3ImageSegmentation.RGB{Float32}, h, w)
+        
+        # Only show the best marker (largest one - first in sorted list)
+        # Each image should have only one marker
+        if !isempty(markers)
+            local best_marker = markers[1]  # Markers are sorted by size (largest first)
+            # Fill marker region with white
+            viz[best_marker.mask] .= Bas3ImageSegmentation.RGB{Float32}(1.0f0, 1.0f0, 1.0f0)
+        end
+        
+        # Overlay will be drawn separately with scatter and lines
+        return rotr90(viz)
+    end
+    
+    # Helper function to attempt dewarping with markers
+    function try_dewarp_image(img, params)
+        try
+            # Step 1: Detect markers using current parameters (single detection for both viz and dewarping)
+            local markers = detect_calibration_markers(img;
+                threshold=params[:threshold],
+                min_area=params[:min_area],
+                min_aspect_ratio=params[:aspect_ratio] * 0.8,
+                max_aspect_ratio=params[:aspect_ratio] * 1.2,
+                kernel_size=params[:kernel_size],
+                region=params[:region])
+            
+            # Provide detailed feedback about detection results
+            if isempty(markers)
+                local region_text = isnothing(params[:region]) ? "full image" : "selected region"
+                return rotr90(image(img)), markers, false, "⚠️ No markers found in $region_text (try adjusting threshold/min area)"
+            elseif length(markers) < 4
+                return rotr90(image(img)), markers, false, "⚠️ Only $(length(markers))/4 markers detected (need at least 4 for dewarping)"
+            else
+                # Dewarp using the detected markers directly (no re-detection)
+                # This ensures visualization and dewarping use the same markers
+                
+                # Get image data and size
+                local img_data = Bas3ImageSegmentation.data(img)
+                local img_size = (size(img_data, 1), size(img_data, 2))
+                
+                # Step 2: Define canonical positions
+                local canonical_positions = define_canonical_positions(
+                    markers, :corners_4;
+                    image_size=img_size)
+                
+                # Step 3: Establish correspondence
+                local source_points, target_points = establish_correspondence(
+                    markers, canonical_positions;
+                    method=:spatial_order)
+                
+                # Step 4 & 5: Warp image using TPS transformation
+                local dewarped = warp_image_tps(img, source_points, target_points;
+                    output_size=nothing,
+                    regularization=0.0)
+                
+                local message = "✓ Dewarped with $(length(markers)) markers"
+                return rotr90(image(dewarped)), markers, true, message
+            end
+        catch e
+            # Provide specific error information
+            local error_msg = "❌ Error: $(typeof(e).__name__) - $(sprint(showerror, e))"
+            return rotr90(image(img)), MarkerInfo[], false, error_msg
+        end
+    end
+    
+    # Initial marker detection and dewarping attempt
+    local init_params = Dict(:threshold => 0.7, :min_area => 8000, :aspect_ratio => 5.0, :kernel_size => 3, :region => nothing)
+    local init_dewarped, init_markers, init_success, init_message = try_dewarp_image(sets[1][1], init_params)
+    local init_marker_viz = create_marker_visualization(sets[1][1], init_markers)
+    
+    # Helper function to create RGBA overlay from MarkerInfo (uses only the best/first marker)
+    function create_white_overlay(img, markers)
+        # Get image dimensions
+        local img_data = data(img)
+        local h, w = size(img_data, 1), size(img_data, 2)
+        
+        # Create RGBA overlay: red with 70% opacity for marker regions, transparent elsewhere
+        local overlay = fill(Bas3ImageSegmentation.RGBA{Float32}(0.0f0, 0.0f0, 0.0f0, 0.0f0), h, w)
+        
+        # Only show the best marker (largest one - first in sorted list)
+        if !isempty(markers)
+            local best_marker = markers[1]
+            
+            # Fill marker region with red at 70% opacity
+            for idx in findall(best_marker.mask)
+                overlay[idx] = Bas3ImageSegmentation.RGBA{Float32}(1.0f0, 0.0f0, 0.0f0, 0.7f0)
+            end
+            
+            # Extract contours from the marker mask
+            local contours = extract_contours(best_marker.mask)
+            
+            # Draw contours in bright yellow for better visibility
+            for (i, j) in contours
+                overlay[i, j] = Bas3ImageSegmentation.RGBA{Float32}(1.0f0, 1.0f0, 0.0f0, 1.0f0)
+            end
+            
+            # Draw rotated bounding box in magenta using the marker's corner information
+            if !isempty(best_marker.corners) && length(best_marker.corners) >= 8
+                # Extract 4 corners from the flat array
+                local corners = [
+                    (best_marker.corners[1], best_marker.corners[2]),
+                    (best_marker.corners[3], best_marker.corners[4]),
+                    (best_marker.corners[5], best_marker.corners[6]),
+                    (best_marker.corners[7], best_marker.corners[8])
+                ]
+                
+                # Draw lines between consecutive corners
+                for i in 1:4
+                    local next_i = (i % 4) + 1
+                    local r1, c1 = corners[i]
+                    local r2, c2 = corners[next_i]
+                    
+                    # Simple line drawing using interpolation
+                    local steps = max(abs(r2 - r1), abs(c2 - c1))
+                    if steps > 0
+                        for step in 0:Int(ceil(steps))
+                            local t = step / steps
+                            local r = Int(round(r1 + t * (r2 - r1)))
+                            local c = Int(round(c1 + t * (c2 - c1)))
+                            if r >= 1 && r <= h && c >= 1 && c <= w
+                                overlay[r, c] = Bas3ImageSegmentation.RGBA{Float32}(1.0f0, 0.0f0, 1.0f0, 1.0f0)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        return rotr90(overlay)
+    end
+    
+    # Function to extract rotated bounding boxes for all classes in an image
+    function extract_class_bboxes(output_image)
+        local output_data = data(output_image)
+        local bboxes_by_class = Dict{Symbol, Vector{Vector{Float64}}}()
+        
+        # Process each non-background class
+        for (class_idx, class) in enumerate(classes)
+            if class == :background
+                continue
+            end
+            
+            bboxes_by_class[class] = []
+            
+            # Extract binary mask for this class (threshold at 0.5)
+            local class_mask = output_data[:, :, class_idx] .> 0.5
+            
+            # Skip if no pixels for this class
+            if !any(class_mask)
+                continue
+            end
+            
+            # Label connected components
+            local labeled = Bas3ImageSegmentation.label_components(class_mask)
+            local num_components = maximum(labeled)
+            
+            # Process each connected component
+            for component_id in 1:num_components
+                # Get mask for this component
+                local component_mask = labeled .== component_id
+                
+                # Find all pixels in this component
+                local pixel_coords = findall(component_mask)
+                
+                if isempty(pixel_coords)
+                    continue
+                end
+                
+                # Extract row and column indices
+                local row_indices = Float64[p[1] for p in pixel_coords]
+                local col_indices = Float64[p[2] for p in pixel_coords]
+                
+                # Compute centroid
+                local centroid_row = sum(row_indices) / length(row_indices)
+                local centroid_col = sum(col_indices) / length(col_indices)
+                
+                # Center the coordinates
+                local centered_rows = row_indices .- centroid_row
+                local centered_cols = col_indices .- centroid_col
+                
+                # Compute covariance matrix for PCA
+                local n = length(centered_rows)
+                local cov_matrix = [
+                    sum(centered_rows .* centered_rows) / n   sum(centered_rows .* centered_cols) / n;
+                    sum(centered_rows .* centered_cols) / n   sum(centered_cols .* centered_cols) / n
+                ]
+                
+                # Compute eigenvectors (principal directions)
+                local eigen_result = eigen(cov_matrix)
+                local principal_axes = eigen_result.vectors
+                
+                # Project points onto principal axes
+                local proj_axis1 = centered_rows .* principal_axes[1, 2] .+ centered_cols .* principal_axes[2, 2]
+                local proj_axis2 = centered_rows .* principal_axes[1, 1] .+ centered_cols .* principal_axes[2, 1]
+                
+                # Find min/max along each principal axis
+                local min_proj1, max_proj1 = extrema(proj_axis1)
+                local min_proj2, max_proj2 = extrema(proj_axis2)
+                
+                # Compute corners of rotated rectangle in original coordinates
+                local corners_proj = [
+                    (min_proj1, min_proj2),
+                    (max_proj1, min_proj2),
+                    (max_proj1, max_proj2),
+                    (min_proj1, max_proj2)
+                ]
+                
+                local corners_original = map(corners_proj) do (p1, p2)
+                    row = centroid_row + p1 * principal_axes[1, 2] + p2 * principal_axes[1, 1]
+                    col = centroid_col + p1 * principal_axes[2, 2] + p2 * principal_axes[2, 1]
+                    [row, col]
+                end
+                
+                # Flatten to [r1, c1, r2, c2, r3, c3, r4, c4]
+                local rotated_corners = vcat(corners_original...)
+                
+                push!(bboxes_by_class[class], rotated_corners)
+            end
+        end
+        
+        return bboxes_by_class
+    end
+    
+    # Compute channel statistics for white regions only
+    function compute_white_region_channel_stats(image, white_mask)
+        # Extract RGB data - use data() to get raw array, then permute to (channels, height, width)
+        raw_data = data(image)  # Returns (height, width, 3)
+        rgb_data = permutedims(raw_data, (3, 1, 2))  # Convert to (3, height, width)
+        
+        # Initialize result dictionaries
+        stats = Dict{Symbol, Dict{Symbol, Float64}}()
+        
+        # Get channel names
+        channel_names = if size(rgb_data, 1) == 3
+            [:red, :green, :blue]
+        else
+            error("Image must have 3 color channels (RGB)")
+        end
+        
+        # Count white pixels
+        white_pixel_count = sum(white_mask)
+        
+        if white_pixel_count == 0
+            # No white pixels - return zeros
+            for (i, ch) in enumerate(channel_names)
+                stats[ch] = Dict(:mean => 0.0, :std => 0.0, :skewness => 0.0)
+            end
+            return stats, 0
+        end
+        
+        # Extract white pixel values for each channel
+        for (i, ch) in enumerate(channel_names)
+            channel_data = rgb_data[i, :, :]
+            white_values = channel_data[white_mask]
+            
+            # Compute statistics
+            ch_mean = mean(white_values)
+            ch_std = std(white_values)
+            
+            # Compute skewness manually
+            n = length(white_values)
+            if n > 2 && ch_std > 0
+                centered = white_values .- ch_mean
+                m3 = sum(centered .^ 3) / n
+                ch_skewness = m3 / (ch_std ^ 3)
+            else
+                ch_skewness = 0.0
+            end
+            
+            stats[ch] = Dict(
+                :mean => ch_mean,
+                :std => ch_std,
+                :skewness => ch_skewness
+            )
+        end
+        
+        return stats, white_pixel_count
+    end
+    
+    # Display initial input and output images using the image() function
+    local current_input_image = Bas3GLMakie.GLMakie.Observable(rotr90(image(sets[1][1])))
+    local current_output_image = Bas3GLMakie.GLMakie.Observable(rotr90(image(sets[1][2])))
+    local current_white_overlay = Bas3GLMakie.GLMakie.Observable(create_white_overlay(sets[1][1], init_markers))
+    local current_class_bboxes = Bas3GLMakie.GLMakie.Observable(extract_class_bboxes(sets[1][2]))
+    
+    # Observables for marker visualization and dewarping
+    local current_marker_viz = Bas3GLMakie.GLMakie.Observable(init_marker_viz)
+    local current_markers = Bas3GLMakie.GLMakie.Observable(init_markers)
+    local current_dewarped_image = Bas3GLMakie.GLMakie.Observable(init_dewarped)
+    local dewarp_success = Bas3GLMakie.GLMakie.Observable(init_success)
+    local dewarp_message = Bas3GLMakie.GLMakie.Observable(init_message)
+    
+    # Region selection observables
+    local selection_active = Bas3GLMakie.GLMakie.Observable(false)
+    local selection_corner1 = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f(0, 0))
+    local selection_corner2 = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f(0, 0))
+    local selection_complete = Bas3GLMakie.GLMakie.Observable(false)
+    local selection_rect = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
+    local preview_rect = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
+    
+    # Flag to prevent recursive callback triggering
+    local updating_from_button = Ref(false)
+    
+    # Helper function to update the image display (core logic without textbox update)
+    function update_image_display_internal(idx, threshold=0.7, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3)
+        # Validate the input
+        if idx < 1 || idx > length(sets)
+            textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
+            return false
+        end
+        
+        # Update label to show current image
+        textbox_label.text = "Bild: $idx / $(length(sets))"
+        
+        # Get input RGB image (sets[idx][1] is the input image)
+        input_img = rotr90(image(sets[idx][1]))
+        current_input_image[] = input_img
+        
+        # Get output segmentation image (sets[idx][2] is the output/ground truth)
+        output_img = rotr90(image(sets[idx][2]))
+        current_output_image[] = output_img
+        
+        # Apply region constraint if selection is complete
+        local region = nothing
+        if selection_complete[]
+            img = sets[idx][1]
+            img_height = size(data(img), 1)
+            img_width = size(data(img), 2)
+            
+            c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
+            c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
+            
+            # Ensure correct ordering (min to max)
+            r_min, r_max = minmax(c1_px[1], c2_px[1])
+            c_min, c_max = minmax(c1_px[2], c2_px[2])
+            
+            region = (r_min, r_max, c_min, c_max)
+        end
+        
+        # Extract class bounding boxes
+        current_class_bboxes[] = extract_class_bboxes(sets[idx][2])
+        
+        # Update marker visualization and dewarping (single detection for both)
+        local params = Dict(:threshold => threshold, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :kernel_size => kernel_size, :region => region)
+        local dewarped_img, markers, success, message = try_dewarp_image(sets[idx][1], params)
+        
+        # STATE PRESERVATION: Only update visualization if markers were detected
+        # This prevents UI corruption when detection fails
+        if !isempty(markers)
+            current_marker_viz[] = create_marker_visualization(sets[idx][1], markers)
+            current_markers[] = markers
+            current_dewarped_image[] = dewarped_img
+            current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
+        else
+            # Keep previous marker visualization but show warning
+            # Update message to show failure but don't corrupt the display
+            if isnothing(region)
+                # Full image detection failed - clear markers
+                current_marker_viz[] = create_marker_visualization(sets[idx][1], MarkerInfo[])
+                current_markers[] = MarkerInfo[]
+                current_white_overlay[] = create_white_overlay(sets[idx][1], MarkerInfo[])
+            end
+            # If region detection failed, keep previous markers visible
+        end
+        
+        dewarp_success[] = success
+        dewarp_message[] = message
+        
+        # Compute full-image channel statistics
+        local input_img_original = sets[idx][1]  # Original image (not rotated)
+        local raw_data = data(input_img_original)  # Returns (height, width, 3)
+        local rgb_data = permutedims(raw_data, (3, 1, 2))  # Convert to (3, height, width)
+        
+        # Full image stats
+        local full_r_mean = mean(rgb_data[1, :, :])
+        local full_g_mean = mean(rgb_data[2, :, :])
+        local full_b_mean = mean(rgb_data[3, :, :])
+        
+        local full_r_std = std(rgb_data[1, :, :])
+        local full_g_std = std(rgb_data[2, :, :])
+        local full_b_std = std(rgb_data[3, :, :])
+        
+        # Compute skewness for full image
+        function compute_channel_skewness(channel_data)
+            ch_mean = mean(channel_data)
+            ch_std = std(channel_data)
+            n = length(channel_data)
+            if n > 2 && ch_std > 0
+                centered = channel_data .- ch_mean
+                m3 = sum(centered .^ 3) / n
+                return m3 / (ch_std ^ 3)
+            else
+                return 0.0
+            end
+        end
+        
+        local full_r_skew = compute_channel_skewness(rgb_data[1, :, :])
+        local full_g_skew = compute_channel_skewness(rgb_data[2, :, :])
+        local full_b_skew = compute_channel_skewness(rgb_data[3, :, :])
+        
+        # Plot full image statistics
+        # Clear previous plots
+        empty!(full_mean_ax)
+        empty!(full_box_ax)
+        empty!(full_hist_ax)
+        
+        # Plot 1: Mean ± Std for full image
+        local channel_colors = [:red, :green, :blue]
+        local full_means = [full_r_mean, full_g_mean, full_b_mean]
+        local full_stds = [full_r_std, full_g_std, full_b_std]
+        
+        for i in 1:3
+            Bas3GLMakie.GLMakie.scatter!(
+                full_mean_ax,
+                [i],
+                [full_means[i]];
+                markersize=12,
+                color=channel_colors[i],
+                marker=:circle
+            )
+            Bas3GLMakie.GLMakie.errorbars!(
+                full_mean_ax,
+                [i],
+                [full_means[i]],
+                [full_stds[i]],
+                [full_stds[i]];
+                whiskerwidth=10,
+                color=channel_colors[i],
+                linewidth=2
+            )
+        end
+        
+        # Plot 2: Boxplot for full image
+        local full_red_values = vec(rgb_data[1, :, :])
+        local full_green_values = vec(rgb_data[2, :, :])
+        local full_blue_values = vec(rgb_data[3, :, :])
+        
+        Bas3GLMakie.GLMakie.boxplot!(
+            full_box_ax,
+            fill(1, length(full_red_values)),
+            full_red_values;
+            color=(:red, 0.6),
+            show_outliers=true,
+            width=0.6
+        )
+        Bas3GLMakie.GLMakie.boxplot!(
+            full_box_ax,
+            fill(2, length(full_green_values)),
+            full_green_values;
+            color=(:green, 0.6),
+            show_outliers=true,
+            width=0.6
+        )
+        Bas3GLMakie.GLMakie.boxplot!(
+            full_box_ax,
+            fill(3, length(full_blue_values)),
+            full_blue_values;
+            color=(:blue, 0.6),
+            show_outliers=true,
+            width=0.6
+        )
+        
+        # Plot 3: RGB Histogram for full image
+        Bas3GLMakie.GLMakie.hist!(
+            full_hist_ax,
+            full_red_values;
+            bins=50,
+            color=(:red, 0.5),
+            normalization=:pdf,
+            label="Red"
+        )
+        Bas3GLMakie.GLMakie.hist!(
+            full_hist_ax,
+            full_green_values;
+            bins=50,
+            color=(:green, 0.5),
+            normalization=:pdf,
+            label="Green"
+        )
+        Bas3GLMakie.GLMakie.hist!(
+            full_hist_ax,
+            full_blue_values;
+            bins=50,
+            color=(:blue, 0.5),
+            normalization=:pdf,
+            label="Blue"
+        )
+        
+        # Refresh axis limits for full image plots
+        Bas3GLMakie.GLMakie.autolimits!(full_mean_ax)
+        Bas3GLMakie.GLMakie.autolimits!(full_box_ax)
+        Bas3GLMakie.GLMakie.autolimits!(full_hist_ax)
+        
+        # Compute marker region channel statistics (using the best marker)
+        if !isempty(markers)
+            local best_marker = markers[1]
+            local marker_mask = best_marker.mask
+            local white_stats, white_pixel_count = compute_white_region_channel_stats(input_img_original, marker_mask)
+            
+            local white_r_mean = white_stats[:red][:mean]
+            local white_g_mean = white_stats[:green][:mean]
+            local white_b_mean = white_stats[:blue][:mean]
+            
+            local white_r_std = white_stats[:red][:std]
+            local white_g_std = white_stats[:green][:std]
+            local white_b_std = white_stats[:blue][:std]
+            
+            local white_r_skew = white_stats[:red][:skewness]
+            local white_g_skew = white_stats[:green][:skewness]
+            local white_b_skew = white_stats[:blue][:skewness]
+            
+            # Extract pixel values for plotting
+            local raw_data_plot = data(input_img_original)  # Returns (height, width, 3)
+            local rgb_data_plot = permutedims(raw_data_plot, (3, 1, 2))  # Convert to (3, height, width)
+            local red_values = rgb_data_plot[1, :, :][marker_mask]
+            local green_values = rgb_data_plot[2, :, :][marker_mask]
+            local blue_values = rgb_data_plot[3, :, :][marker_mask]
+            
+            # Clear previous plots
+            empty!(region_mean_ax)
+            empty!(region_box_ax)
+            empty!(region_hist_ax)
+            
+            # Plot 1: Mean ± Std
+            local channel_colors = [:red, :green, :blue]
+            local means = [white_r_mean, white_g_mean, white_b_mean]
+            local stds = [white_r_std, white_g_std, white_b_std]
+            
+            for i in 1:3
+                Bas3GLMakie.GLMakie.scatter!(
+                    region_mean_ax,
+                    [i],
+                    [means[i]];
+                    markersize=12,
+                    color=channel_colors[i],
+                    marker=:circle
+                )
+                Bas3GLMakie.GLMakie.errorbars!(
+                    region_mean_ax,
+                    [i],
+                    [means[i]],
+                    [stds[i]],
+                    [stds[i]];
+                    whiskerwidth=10,
+                    color=channel_colors[i],
+                    linewidth=2
+                )
+            end
+            
+            # Plot 2: Boxplot
+            Bas3GLMakie.GLMakie.boxplot!(
+                region_box_ax,
+                fill(1, length(red_values)),
+                red_values;
+                color=(:red, 0.6),
+                show_outliers=true,
+                width=0.6
+            )
+            Bas3GLMakie.GLMakie.boxplot!(
+                region_box_ax,
+                fill(2, length(green_values)),
+                green_values;
+                color=(:green, 0.6),
+                show_outliers=true,
+                width=0.6
+            )
+            Bas3GLMakie.GLMakie.boxplot!(
+                region_box_ax,
+                fill(3, length(blue_values)),
+                blue_values;
+                color=(:blue, 0.6),
+                show_outliers=true,
+                width=0.6
+            )
+            
+            # Plot 3: RGB Histogram
+            Bas3GLMakie.GLMakie.hist!(
+                region_hist_ax,
+                red_values;
+                bins=50,
+                color=(:red, 0.5),
+                normalization=:pdf,
+                label="Red"
+            )
+            Bas3GLMakie.GLMakie.hist!(
+                region_hist_ax,
+                green_values;
+                bins=50,
+                color=(:green, 0.5),
+                normalization=:pdf,
+                label="Green"
+            )
+            Bas3GLMakie.GLMakie.hist!(
+                region_hist_ax,
+                blue_values;
+                bins=50,
+                color=(:blue, 0.5),
+                normalization=:pdf,
+                label="Blue"
+            )
+            
+            # Refresh axis limits to update display
+            Bas3GLMakie.GLMakie.autolimits!(region_mean_ax)
+            Bas3GLMakie.GLMakie.autolimits!(region_box_ax)
+            Bas3GLMakie.GLMakie.autolimits!(region_hist_ax)
+        else
+            # DEFENSIVE HANDLING: Show clear message when no markers detected
+            empty!(region_mean_ax)
+            empty!(region_box_ax)
+            empty!(region_hist_ax)
+            
+            # Add text notification in the center of each plot
+            Bas3GLMakie.GLMakie.text!(
+                region_mean_ax, 
+                2.0, 0.5,
+                text = "⚠️ Keine Markierungen\nerkannt",
+                align = (:center, :center),
+                fontsize = 16,
+                color = :orange
+            )
+            Bas3GLMakie.GLMakie.text!(
+                region_box_ax, 
+                2.0, 0.5,
+                text = "⚠️ Keine Markierungen\nerkannt",
+                align = (:center, :center),
+                fontsize = 16,
+                color = :orange
+            )
+            Bas3GLMakie.GLMakie.text!(
+                region_hist_ax, 
+                0.5, 0.5,
+                text = "⚠️ Keine Markierungen erkannt",
+                align = (:center, :center),
+                fontsize = 16,
+                color = :orange
+            )
+            
+            # Set axis limits to show the warning text
+            Bas3GLMakie.GLMakie.xlims!(region_mean_ax, 0, 4)
+            Bas3GLMakie.GLMakie.ylims!(region_mean_ax, 0, 1)
+            Bas3GLMakie.GLMakie.xlims!(region_box_ax, 0, 4)
+            Bas3GLMakie.GLMakie.ylims!(region_box_ax, 0, 1)
+            Bas3GLMakie.GLMakie.xlims!(region_hist_ax, 0, 1)
+            Bas3GLMakie.GLMakie.ylims!(region_hist_ax, 0, 1)
+        end
+        
+        return true
+    end
+    
+    # Update images when textbox value changes
+    Bas3GLMakie.GLMakie.on(textbox.stored_string) do str
+        # Skip if being updated from button click
+        if updating_from_button[]
+            return
+        end
+        
+        # Parse the input string to an integer
+        idx = tryparse(Int, str)
+        
+        if idx !== nothing
+            # Read parameter values from textboxes
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            
+            # Use defaults if parsing fails
+            threshold = threshold === nothing ? 0.7 : threshold
+            min_area = min_area === nothing ? 8000 : min_area
+            aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+            aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+            kernel_size = kernel_size === nothing ? 3 : kernel_size
+            
+            update_image_display_internal(idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+        else
+            textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
+        end
+    end
+    
+    # Previous button callback
+    Bas3GLMakie.GLMakie.on(prev_button.clicks) do n
+        current_idx = tryparse(Int, textbox.stored_string[])
+        if current_idx !== nothing && current_idx > 1
+            new_idx = current_idx - 1
+            
+            # Read parameter values from textboxes
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            
+            # Use defaults if parsing fails
+            threshold = threshold === nothing ? 0.7 : threshold
+            min_area = min_area === nothing ? 8000 : min_area
+            aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+            aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+            kernel_size = kernel_size === nothing ? 3 : kernel_size
+            
+            # Update images
+            if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+                # Update textbox without triggering callback
+                updating_from_button[] = true
+                textbox.stored_string[] = string(new_idx)
+                updating_from_button[] = false
+            end
+        end
+    end
+    
+    # Next button callback
+    Bas3GLMakie.GLMakie.on(next_button.clicks) do n
+        current_idx = tryparse(Int, textbox.stored_string[])
+        if current_idx !== nothing && current_idx < length(sets)
+            new_idx = current_idx + 1
+            
+            # Read parameter values from textboxes
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            
+            # Use defaults if parsing fails
+            threshold = threshold === nothing ? 0.7 : threshold
+            min_area = min_area === nothing ? 8000 : min_area
+            aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+            aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+            kernel_size = kernel_size === nothing ? 3 : kernel_size
+            
+            # Update images
+            if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+                # Update textbox without triggering callback
+                updating_from_button[] = true
+                textbox.stored_string[] = string(new_idx)
+                updating_from_button[] = false
+            end
+        end
+    end
+    
+    # Helper function to update white detection with current parameters
+    function update_white_detection(source="manual")
+        # Parse and validate all parameters
+        threshold = tryparse(Float64, threshold_textbox.stored_string[])
+        min_area = tryparse(Int, min_area_textbox.stored_string[])
+        aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+        aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+        kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+        
+        # Validation checks
+        validation_errors = String[]
+        
+        if threshold === nothing
+            push!(validation_errors, "Threshold must be a number")
+        elseif threshold < 0.0 || threshold > 1.0
+            push!(validation_errors, "Threshold must be 0.0-1.0")
+        end
+        
+        if min_area === nothing
+            push!(validation_errors, "Min Area must be a number")
+        elseif min_area <= 0
+            push!(validation_errors, "Min Area must be > 0")
+        end
+        
+        if aspect_ratio === nothing
+            push!(validation_errors, "Aspect Ratio must be a number")
+        elseif aspect_ratio < 1.0
+            push!(validation_errors, "Aspect Ratio must be >= 1.0")
+        end
+        
+        if aspect_weight === nothing
+            push!(validation_errors, "Aspect Weight must be a number")
+        elseif aspect_weight < 0.0 || aspect_weight > 1.0
+            push!(validation_errors, "Aspect Weight must be 0.0-1.0")
+        end
+        
+        if kernel_size === nothing
+            push!(validation_errors, "Kernel Size must be a number")
+        elseif kernel_size < 0 || kernel_size > 10
+            push!(validation_errors, "Kernel Size must be 0-10")
+        end
+        
+        # If validation fails, show error
+        if !isempty(validation_errors)
+            param_status_label.text = join(validation_errors, " | ")
+            param_status_label.color = :red
+            return false
+        end
+        
+        # Get current image index
+        current_idx = tryparse(Int, textbox.stored_string[])
+        if current_idx === nothing
+            param_status_label.text = "Ungültiger Bildindex"
+            param_status_label.color = :red
+            return false
+        end
+        
+        # Update the display with new parameters
+        if update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+            param_status_label.text = "Aktualisiert ($source)"
+            param_status_label.color = :green
+            return true
+        else
+            param_status_label.text = "Failed to update"
+            param_status_label.color = :red
+            return false
+        end
+    end
+    
+    # Auto-update when textboxes change
+    Bas3GLMakie.GLMakie.on(threshold_textbox.stored_string) do val
+        update_white_detection("threshold")
+    end
+    
+    Bas3GLMakie.GLMakie.on(min_area_textbox.stored_string) do val
+        update_white_detection("min area")
+    end
+    
+    Bas3GLMakie.GLMakie.on(aspect_ratio_textbox.stored_string) do val
+        update_white_detection("aspect ratio")
+    end
+    
+    Bas3GLMakie.GLMakie.on(aspect_weight_textbox.stored_string) do val
+        update_white_detection("aspect weight")
+    end
+    
+    Bas3GLMakie.GLMakie.on(kernel_size_textbox.stored_string) do val
+        update_white_detection("kernel size")
+    end
+    
+    # Selection toggle callback
+    Bas3GLMakie.GLMakie.on(selection_toggle.active) do active
+        selection_active[] = active
+        if active
+            selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
+            selection_status_label.color = :blue
+        else
+            selection_status_label.text = "Auswahl deaktiviert"
+            selection_status_label.color = :gray
+        end
+    end
+    
+    # Clear selection button callback
+    Bas3GLMakie.GLMakie.on(clear_selection_button.clicks) do n
+        selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+        selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+        selection_complete[] = false
+        selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+        preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+        selection_status_label.text = "Auswahl gelöscht"
+        selection_status_label.color = :gray
+        
+        # Re-run extraction on full image
+        current_idx = tryparse(Int, textbox.stored_string[])
+        if current_idx !== nothing && current_idx >= 1 && current_idx <= length(sets)
+            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            min_area = tryparse(Int, min_area_textbox.stored_string[])
+            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+            kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            
+            if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
+                update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+            end
+        end
+    end
+    
+    # Display marker visualization axis
+    Bas3GLMakie.GLMakie.image!(axs_markers, current_marker_viz)
+    
+    # Draw marker centroids and bounding boxes on marker visualization
+    local marker_centroid_plot = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
+    local marker_bbox_plots = []
+    
+    Bas3GLMakie.GLMakie.on(current_markers) do markers
+        # Update centroids - only show the best marker (largest, first in sorted list)
+        if !isempty(markers)
+            local h = size(data(sets[1][1]), 1)
+            local best_marker = markers[1]  # Only take the first (largest) marker
+            local centroids = [Bas3GLMakie.GLMakie.Point2f(best_marker.centroid[2], h - best_marker.centroid[1] + 1)]
+            marker_centroid_plot[] = centroids
+        else
+            marker_centroid_plot[] = Bas3GLMakie.GLMakie.Point2f[]
+        end
+    end
+    
+    # Draw marker centroids
+    Bas3GLMakie.GLMakie.scatter!(axs_markers, marker_centroid_plot; 
+        color=:red, markersize=15, marker=:xcross)
+    
+    # Display dewarped image axis
+    Bas3GLMakie.GLMakie.image!(axs_dewarped, current_dewarped_image)
+    
+    # Display the input image
+    Bas3GLMakie.GLMakie.image!(axs3, current_input_image)
+    
+    # Overlay the segmentation output with 25% transparency (alpha=0.75)
+    # Store reference to control visibility
+    local segmentation_overlay_plot = Bas3GLMakie.GLMakie.image!(axs3, current_output_image; alpha=0.75)
+    
+    # Overlay the white region detection with red fill and yellow contours
+    # Store reference to control visibility
+    local white_overlay_plot = Bas3GLMakie.GLMakie.image!(axs3, current_white_overlay)
+    
+    # Segmentation toggle callback - control visibility of segmentation and white overlays
+    Bas3GLMakie.GLMakie.on(segmentation_toggle.active) do active
+        segmentation_overlay_plot.visible = active
+        white_overlay_plot.visible = active
+        # Update bounding box visibility - will be set up below
+    end
+    
+    # Mouse click event handler for region selection
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mousebutton, priority = 2) do event
+        if event.button == Bas3GLMakie.GLMakie.Mouse.left && event.action == Bas3GLMakie.GLMakie.Mouse.press
+            if selection_active[]
+                # Get mouse position in axis coordinates
+                mp = Bas3GLMakie.GLMakie.mouseposition(axs3.scene)
+                
+                # Check if click is within axis bounds
+                # mouseposition returns nothing if outside the axis
+                if isnothing(mp)
+                    return Bas3GLMakie.GLMakie.Consume(false)
+                end
+                
+                if !selection_complete[]
+                    if selection_corner1[] == Bas3GLMakie.GLMakie.Point2f(0, 0)
+                        # First click - set bottom-left
+                        selection_corner1[] = mp
+                        selection_status_label.text = "Klicken Sie auf die obere rechte Ecke"
+                        selection_status_label.color = :blue
+                    else
+                        # Second click - set top-right
+                        selection_corner2[] = mp
+                        selection_complete[] = true
+                        
+                        # Update rectangle visualization
+                        selection_rect[] = make_rectangle(selection_corner1[], selection_corner2[])
+                        preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]  # Clear preview
+                        
+                        selection_status_label.text = "Auswahl abgeschlossen"
+                        selection_status_label.color = :green
+                        
+                        # Re-run marker detection on selected region
+                        current_idx = tryparse(Int, textbox.stored_string[])
+                        if current_idx !== nothing && current_idx >= 1 && current_idx <= length(sets)
+                            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+                            min_area = tryparse(Int, min_area_textbox.stored_string[])
+                            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+                            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+                            kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+                            
+                            if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
+                                # Convert axis coordinates to pixel coordinates
+                                img = sets[current_idx][1]
+                                img_height = size(data(img), 1)
+                                img_width = size(data(img), 2)
+                                
+                                c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
+                                c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
+                                
+                                # Ensure correct ordering (min to max)
+                                r_min, r_max = minmax(c1_px[1], c2_px[1])
+                                c_min, c_max = minmax(c1_px[2], c2_px[2])
+                                
+                                region = (r_min, r_max, c_min, c_max)
+                                
+                                # Detect markers with region constraint (same as update_image_display_internal)
+                                local params = Dict(:threshold => threshold, :min_area => min_area, :aspect_ratio => aspect_ratio, :kernel_size => kernel_size, :region => region)
+                                local dewarped_img, markers, success, message = try_dewarp_image(img, params)
+                                
+                                # STATE PRESERVATION: Only update if markers were found
+                                # This prevents corruption when region selection finds nothing
+                                if !isempty(markers)
+                                    current_white_overlay[] = create_white_overlay(img, markers)
+                                    current_marker_viz[] = create_marker_visualization(img, markers)
+                                    current_markers[] = markers
+                                    current_dewarped_image[] = dewarped_img
+                                    dewarp_success[] = success
+                                    dewarp_message[] = message
+                                else
+                                    # Region selection failed - keep previous state but update message
+                                    dewarp_success[] = false
+                                    dewarp_message[] = message  # Will show warning from try_dewarp_image
+                                    
+                                    # Update status label to show the issue clearly
+                                    selection_status_label.text = "⚠️ Keine Markierungen in Auswahl"
+                                    selection_status_label.color = :red
+                                end
+                            end
+                        end
+                    end
+                    return Bas3GLMakie.GLMakie.Consume(true)  # Block axis interactions
+                end
+            end
+        end
+        return Bas3GLMakie.GLMakie.Consume(false)
+    end
+    
+    # Mouse move event handler for preview
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mouseposition, priority = 2) do mp_window
+        if selection_active[] && !selection_complete[]
+            if selection_corner1[] != Bas3GLMakie.GLMakie.Point2f(0, 0)
+                # Get mouse position in axis coordinates
+                mp = Bas3GLMakie.GLMakie.mouseposition(axs3.scene)
+                
+                if !isnothing(mp)
+                    # Update preview rectangle
+                    preview_rect[] = make_rectangle(selection_corner1[], mp)
+                end
+            end
+        end
+        return Bas3GLMakie.GLMakie.Consume(false)
+    end
+    
+    # Draw selection rectangle (cyan with semi-transparent fill)
+    Bas3GLMakie.GLMakie.poly!(axs3, selection_rect, 
+        color = (:cyan, 0.2),
+        strokecolor = :cyan,
+        strokewidth = 3,
+        visible = Bas3GLMakie.GLMakie.@lift(!isempty($selection_rect)))
+    
+    # Draw preview rectangle while selecting (lighter cyan, dashed would be nice but using lighter color)
+    Bas3GLMakie.GLMakie.poly!(axs3, preview_rect,
+        color = (:cyan, 0.1),
+        strokecolor = (:cyan, 0.6),
+        strokewidth = 2,
+        visible = Bas3GLMakie.GLMakie.@lift(!isempty($preview_rect)))
+    
+    # Draw bounding boxes for each class with 50% alpha
+    # Colors match CLASS_COLORS_RGB: scar=GREEN, redness=RED, hematoma=goldenrod, necrosis=BLUE
+    local bbox_colors_map = Dict(
+        :scar => (:green, 0.5),        # RGB(0, 1, 0)
+        :redness => (:red, 0.5),       # RGB(1, 0, 0)
+        :hematoma => (:goldenrod, 0.5), # goldenrod
+        :necrosis => (:blue, 0.5)      # RGB(0, 0, 1)
+    )
+    
+    # Store references to bbox plot objects so we can delete them
+    local bbox_plot_objects = []
+    
+    # Function to draw bounding boxes (will be called when observable updates)
+    Bas3GLMakie.GLMakie.on(current_class_bboxes) do bboxes_dict
+        # Delete all previous bbox drawings
+        for plot_obj in bbox_plot_objects
+            Bas3GLMakie.GLMakie.delete!(axs3, plot_obj)
+        end
+        empty!(bbox_plot_objects)
+        
+        # Get image height for coordinate transformation
+        local output_data = data(sets[1][2])
+        local img_height = size(output_data, 1)
+        
+        # Draw new bounding boxes (only if segmentation is visible)
+        for (class, bboxes) in bboxes_dict
+            local color = get(bbox_colors_map, class, (:white, 0.5))
+            
+            for rotated_corners in bboxes
+                # rotated_corners is [r1, c1, r2, c2, r3, c3, r4, c4]
+                if length(rotated_corners) < 8
+                    continue
+                end
+                
+                # Extract 4 corners
+                local corners = [
+                    (rotated_corners[1], rotated_corners[2]),
+                    (rotated_corners[3], rotated_corners[4]),
+                    (rotated_corners[5], rotated_corners[6]),
+                    (rotated_corners[7], rotated_corners[8])
+                ]
+                
+                # Transform coordinates for rotr90 display
+                # rotr90 transforms: (row, col) -> (col, height - row + 1)
+                local x_coords = Float64[]
+                local y_coords = Float64[]
+                
+                for (row, col) in corners
+                    push!(x_coords, col)
+                    push!(y_coords, img_height - row + 1)
+                end
+                
+                # Close the rectangle
+                push!(x_coords, corners[1][2])
+                push!(y_coords, img_height - corners[1][1] + 1)
+                
+                local line_plot = Bas3GLMakie.GLMakie.lines!(axs3, x_coords, y_coords; color=color, linewidth=2, visible=segmentation_toggle.active[])
+                push!(bbox_plot_objects, line_plot)
+            end
+        end
+    end
+    
+    # Trigger initial drawing
+    Bas3GLMakie.GLMakie.notify(current_class_bboxes)
+    
+    println("\n[INFO] Navigation controls ready:")
+    println("  - Type a number (1-$(length(sets))) in the textbox and press Enter")
+    println("  - Click '← Previous' to go to previous image")
+    println("  - Click 'Next →' to go to next image")
+    println("  - Enable region selection to limit white detection area\n")
+    
+    return fgr
+end

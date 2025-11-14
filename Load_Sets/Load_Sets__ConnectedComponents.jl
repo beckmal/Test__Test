@@ -366,3 +366,122 @@ function extract_contours(mask)
     
     return contour_points
 end
+
+# ============================================================================
+# Multi-Marker Detection Support
+# ============================================================================
+
+"""
+    find_connected_components(image; threshold=0.7, kernel_size=3, 
+                               region=nothing, min_area=100)
+    -> (labeled_array, num_components, component_info)
+
+Find all connected components in white regions.
+
+This is a lower-level function that returns all components for further analysis.
+Used by marker detection functions in Load_Sets__MarkerCorrespondence.jl.
+
+# Arguments
+- `image`: Input image
+- `threshold::Float64`: RGB threshold for white detection (default: 0.7)
+- `kernel_size::Int`: Morphological operation kernel size (default: 3)
+- `region::Union{Nothing, Tuple}`: Optional ROI restriction (r_min, r_max, c_min, c_max)
+- `min_area::Int`: Minimum component size to include (default: 100)
+
+# Returns
+Tuple of:
+- `labeled_array::Matrix{Int}`: Labeled components (0 = background)
+- `num_components::Int`: Number of components found
+- `component_info::Vector{NamedTuple}`: Info for each component
+  - :label: Component ID
+  - :size: Number of pixels
+  - :centroid: (row, col) center position
+  - :bbox: Axis-aligned bounding box (r_min, r_max, c_min, c_max)
+
+# Example
+```julia
+labeled, n_comp, info = find_connected_components(image; 
+    threshold=0.7, min_area=8000)
+
+println("Found \$n_comp components")
+for comp in info
+    println("  Component \$(comp.label): size=\$(comp.size), center=\$(comp.centroid)")
+end
+```
+"""
+function find_connected_components(image; threshold=0.7, kernel_size=3, 
+                                    region=nothing, min_area=100)
+    rgb_data = Bas3ImageSegmentation.data(image)
+    
+    # Apply region mask if specified
+    if !isnothing(region)
+        r_min, r_max, c_min, c_max = region
+        r_min = max(1, min(r_min, size(rgb_data, 1)))
+        r_max = max(1, min(r_max, size(rgb_data, 1)))
+        c_min = max(1, min(c_min, size(rgb_data, 2)))
+        c_max = max(1, min(c_max, size(rgb_data, 2)))
+        region_mask = falses(size(rgb_data, 1), size(rgb_data, 2))
+        region_mask[r_min:r_max, c_min:c_max] .= true
+    else
+        region_mask = trues(size(rgb_data, 1), size(rgb_data, 2))
+    end
+    
+    # Create white mask
+    white_mask_all = (rgb_data[:,:,1] .>= threshold) .& 
+                     (rgb_data[:,:,2] .>= threshold) .& 
+                     (rgb_data[:,:,3] .>= threshold) .&
+                     region_mask
+    
+    # Apply morphological operations
+    if kernel_size > 0
+        white_mask_all = morphological_close(white_mask_all, kernel_size)
+        white_mask_all = morphological_open(white_mask_all, kernel_size)
+    end
+    
+    # Label components
+    labeled = Bas3ImageSegmentation.label_components(white_mask_all)
+    num_components = maximum(labeled)
+    
+    # Extract component information
+    component_info = NamedTuple{(:label, :size, :centroid, :bbox), Tuple{Int, Int, Tuple{Float64, Float64}, Tuple{Int, Int, Int, Int}}}[]
+    
+    for label in 1:num_components
+        component_mask = labeled .== label
+        component_size = sum(component_mask)
+        
+        # Skip if too small
+        if component_size < min_area
+            continue
+        end
+        
+        # Get pixel coordinates
+        pixel_coords = findall(component_mask)
+        if isempty(pixel_coords)
+            continue
+        end
+        
+        row_indices = [p[1] for p in pixel_coords]
+        col_indices = [p[2] for p in pixel_coords]
+        
+        # Compute centroid
+        centroid_row = sum(row_indices) / length(row_indices)
+        centroid_col = sum(col_indices) / length(col_indices)
+        
+        # Compute axis-aligned bounding box
+        r_min = minimum(row_indices)
+        r_max = maximum(row_indices)
+        c_min = minimum(col_indices)
+        c_max = maximum(col_indices)
+        
+        info = (
+            label = label,
+            size = component_size,
+            centroid = (centroid_row, centroid_col),
+            bbox = (r_min, r_max, c_min, c_max)
+        )
+        
+        push!(component_info, info)
+    end
+    
+    return labeled, length(component_info), component_info
+end

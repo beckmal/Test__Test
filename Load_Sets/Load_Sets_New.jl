@@ -2,10 +2,10 @@
 # Load_Sets_New.jl - Modular version with visualizations
 # ============================================================================
 # This file uses the refactored modular components from Load_Sets__Core.jl
-# and includes the main visualization code (Figures 1-3).
+# and includes all visualization code (Figures 1-4).
 #
-# Note: The interactive UI (Figure 4) is not included here. For interactive
-# exploration, use the original Load_Sets.jl file.
+# Figure 4 provides an interactive UI for exploring the dataset with real-time
+# parameter adjustments and white region detection.
 # ============================================================================
 
 println("=== Loading modular components ===")
@@ -65,8 +65,7 @@ const channel_means_per_image = channel_stats.channel_means_per_image
 const global_channel_stats = channel_stats.global_channel_stats
 
 println("\n=== Generating visualizations ===")
-println("Note: Interactive UI (Figure 4) not included in this version.")
-println("For interactive exploration, use Load_Sets.jl\n")
+println("Generating static figures (1-3) and interactive UI (Figure 4)...\n")
 
 # Create convenience dictionaries for German names and colors
 const class_names_de = CLASS_NAMES_DE
@@ -1145,12 +1144,23 @@ Bas3GLMakie.GLMakie.save(channel_filename, channel_fig)
 println("Saved channel statistics to $(channel_filename)")
 
 # ============================================================================
+# Figure 4: Interactive Visualization
+# ============================================================================
+println("Generating Figure 4: Interactive Visualization...")
+
+const interactive_fig = create_interactive_figure(sets, input_type, raw_output_type)
+display(Bas3GLMakie.GLMakie.Screen(), interactive_fig)
+Bas3GLMakie.GLMakie.save("dataset_with_white_regions.png", interactive_fig)
+println("Saved interactive visualization to dataset_with_white_regions.png")
+
+# ============================================================================
 # Summary
 # ============================================================================
 println("\n=== Visualization Complete ===")
-println("Generated 3 figures:")
+println("Generated 4 figures:")
 println("  1. Class Statistics (6 axes)")
 println("  2. Bounding Box Metrics (9 axes)")
 println("  3. Channel Statistics (6 axes)")
-println("\nFor interactive image exploration (Figure 4), use Load_Sets.jl")
+println("  4. Interactive UI with white region detection")
+println("\nInteractive window is open. Close it manually when done.")
 println("=== Done ===")

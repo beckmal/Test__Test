@@ -42,7 +42,13 @@ function resolve_path(relative_path::String)
     if Sys.iswindows()
         # Running on native Windows
         # Convert /mnt/c/ to C:/ if needed
-        if startswith(relative_path, "/mnt/")
+        # Check if path starts with "/mnt/" (manual check - startswith() hangs in WSL Julia)
+        if length(relative_path) >= 5 && 
+           relative_path[1] == '/' && 
+           relative_path[2] == 'm' && 
+           relative_path[3] == 'n' && 
+           relative_path[4] == 't' && 
+           relative_path[5] == '/'
             drive_letter = uppercase(relative_path[6])
             rest_of_path = replace(relative_path[8:end], "/" => "\\")
             return "$(drive_letter):\\$(rest_of_path)"
@@ -52,13 +58,19 @@ function resolve_path(relative_path::String)
     else
         # Running on Linux/WSL
         # Convert C:/ to /mnt/c/ if needed
-        if occursin(r"^[A-Za-z]:[/\\]", relative_path)
-            drive_letter = lowercase(relative_path[1])
-            rest_of_path = replace(relative_path[4:end], "\\" => "/")
-            return "/mnt/$(drive_letter)/$(rest_of_path)"
-        else
-            return relative_path
+        # Check for Windows path format: X:/ or X:\
+        if length(relative_path) >= 3
+            c = relative_path[1]
+            is_windows_path = (c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') && 
+                             relative_path[2] == ':' && 
+                             (relative_path[3] == '/' || relative_path[3] == '\\')
+            if is_windows_path
+                drive_letter = lowercase(relative_path[1])
+                rest_of_path = replace(relative_path[4:end], "\\" => "/")
+                return "/mnt/$(drive_letter)/$(rest_of_path)"
+            end
         end
+        return relative_path
     end
 end
 
