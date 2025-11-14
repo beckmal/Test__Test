@@ -55,7 +55,7 @@ function morphological_dilate(mask::BitMatrix, kernel_size::Int)
         return mask
     end
     
-    h, w = size(mask)
+    h, w = Base.size(mask)
     result = copy(mask)
     
     # For each pixel, if any neighbor within kernel_size is white, make this pixel white
@@ -119,7 +119,7 @@ function morphological_erode(mask::BitMatrix, kernel_size::Int)
         return mask
     end
     
-    h, w = size(mask)
+    h, w = Base.size(mask)
     result = copy(mask)
     
     # For each white pixel, if any neighbor within kernel_size is black, make this pixel black

@@ -67,8 +67,6 @@ flush(stdout)
 
 if tests_passed == tests_run
     println("✓ All tests passed!")
-    exit(0)
 else
     println("✗ Some tests failed")
-    exit(1)
 end

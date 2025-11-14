@@ -10,48 +10,18 @@ println("="^70)
 flush(stdout)
 
 # ============================================================================
-# Mock Bas3ImageSegmentation Functions
+# Load Real Bas3ImageSegmentation Package
 # ============================================================================
 
-# Create minimal mock for testing
-module Bas3ImageSegmentation
-    data(img) = img.data
-    
-    # Simple 4-connectivity component labeling using flood fill
-    function label_components(mask::BitMatrix)
-        h, w = size(mask)
-        labeled = zeros(Int, h, w)
-        current_label = 0
-        
-        # Flood fill for each unlabeled component
-        for i in 1:h
-            for j in 1:w
-                if mask[i, j] && labeled[i, j] == 0
-                    current_label += 1
-                    # BFS flood fill
-                    queue = [(i, j)]
-                    while !isempty(queue)
-                        ci, cj = popfirst!(queue)
-                        if ci < 1 || ci > h || cj < 1 || cj > w
-                            continue
-                        end
-                        if !mask[ci, cj] || labeled[ci, cj] != 0
-                            continue
-                        end
-                        labeled[ci, cj] = current_label
-                        # Add 4-connected neighbors
-                        push!(queue, (ci-1, cj))
-                        push!(queue, (ci+1, cj))
-                        push!(queue, (ci, cj-1))
-                        push!(queue, (ci, cj+1))
-                    end
-                end
-            end
-        end
-        
-        return labeled
-    end
-end
+println("Loading real Bas3ImageSegmentation package (may take ~25s)...")
+flush(stdout)
+
+# Note: Environment activation is handled by ENVIRONMENT_ACTIVATE.jl
+using Bas3
+using Bas3ImageSegmentation
+
+println("✓ Packages loaded")
+flush(stdout)
 
 # ============================================================================
 # Load Modules
@@ -74,6 +44,9 @@ struct TestRGBImage
     data::Array{Float64, 3}  # (height, width, 3)
 end
 
+# Add data() method for compatibility with Bas3ImageSegmentation
+Bas3ImageSegmentation.data(img::TestRGBImage) = img.data
+
 """
 Create a blank RGB image (black background).
 """
@@ -86,7 +59,7 @@ end
 Create a white rectangle in an RGB image.
 """
 function add_white_rectangle!(img::TestRGBImage, r_min, r_max, c_min, c_max; intensity=1.0)
-    h, w = size(img.data, 1), size(img.data, 2)
+    h, w = Base.size(img.data, 1), Base.size(img.data, 2)
     r_min = max(1, r_min)
     r_max = min(h, r_max)
     c_min = max(1, c_min)

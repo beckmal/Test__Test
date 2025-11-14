@@ -2,13 +2,15 @@
 # Ultra-minimal test - Julia environment has severe bugs with string operations
 
 println("Testing Load_Sets__Config.jl")
+println("Loading real Bas3ImageSegmentation package (may take ~25s)...")
 flush(stdout)
 
-# Mock dependencies
-macro __(expr); return esc(expr); end
-module Bas3ImageSegmentation
-    struct c__Image_Data{T, channels}; end
-end
+# Note: Environment activation is handled by ENVIRONMENT_ACTIVATE.jl
+using Bas3
+using Bas3ImageSegmentation
+
+println("✓ Packages loaded")
+flush(stdout)
 
 # Load module
 include("Load_Sets__Config.jl")

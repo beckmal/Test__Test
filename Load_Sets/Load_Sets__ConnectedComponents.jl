@@ -81,15 +81,15 @@ function extract_white_mask(img; threshold=0.7, min_component_area=100,
     if !isnothing(region)
         r_min, r_max, c_min, c_max = region
         # Clamp to valid bounds
-        r_min = max(1, min(r_min, size(rgb_data, 1)))
-        r_max = max(1, min(r_max, size(rgb_data, 1)))
-        c_min = max(1, min(c_min, size(rgb_data, 2)))
-        c_max = max(1, min(c_max, size(rgb_data, 2)))
+        r_min = max(1, min(r_min, Base.size(rgb_data, 1)))
+        r_max = max(1, min(r_max, Base.size(rgb_data, 1)))
+        c_min = max(1, min(c_min, Base.size(rgb_data, 2)))
+        c_max = max(1, min(c_max, Base.size(rgb_data, 2)))
         # Create mask for region
-        region_mask = falses(size(rgb_data, 1), size(rgb_data, 2))
+        region_mask = falses(Base.size(rgb_data, 1), Base.size(rgb_data, 2))
         region_mask[r_min:r_max, c_min:c_max] .= true
     else
-        region_mask = trues(size(rgb_data, 1), size(rgb_data, 2))
+        region_mask = trues(Base.size(rgb_data, 1), Base.size(rgb_data, 2))
     end
     
     # Initial white mask - all pixels with RGB >= threshold AND within region
@@ -106,7 +106,7 @@ function extract_white_mask(img; threshold=0.7, min_component_area=100,
     
     # Label all connected components
     labeled = Bas3ImageSegmentation.label_components(white_mask_all)
-    num_components = maximum(labeled)
+    num_components = Base.maximum(labeled)
     
     if num_components == 0
         # No white regions found
@@ -227,7 +227,7 @@ function extract_white_mask(img; threshold=0.7, min_component_area=100,
     # Create mask with only the densest component
     white_mask = labeled .== best_label
     
-    total_pixels = size(rgb_data, 1) * size(rgb_data, 2)
+    total_pixels = Base.size(rgb_data, 1) * Base.size(rgb_data, 2)
     white_percentage = (best_size / total_pixels) * 100
     
     return white_mask, best_size, white_percentage, num_components, best_density, best_rotated_corners, best_rotation_angle, best_aspect_ratio
@@ -267,7 +267,7 @@ function compute_white_region_channel_stats(image, white_mask)
     stats = Dict{Symbol, Dict{Symbol, Float64}}()
     
     # Get channel names
-    channel_names = if size(rgb_data, 1) == 3
+    channel_names = if Base.size(rgb_data, 1) == 3
         [:red, :green, :blue]
     else
         error("Image must have 3 color channels (RGB)")
@@ -340,7 +340,7 @@ println("Contour has ", length(contour_points), " pixels")
 """
 function extract_contours(mask)
     # Find boundary pixels (pixels adjacent to background)
-    h, w = size(mask)
+    h, w = Base.size(mask)
     contour_points = Tuple{Int, Int}[]
     
     for i in 1:h
@@ -416,14 +416,14 @@ function find_connected_components(image; threshold=0.7, kernel_size=3,
     # Apply region mask if specified
     if !isnothing(region)
         r_min, r_max, c_min, c_max = region
-        r_min = max(1, min(r_min, size(rgb_data, 1)))
-        r_max = max(1, min(r_max, size(rgb_data, 1)))
-        c_min = max(1, min(c_min, size(rgb_data, 2)))
-        c_max = max(1, min(c_max, size(rgb_data, 2)))
-        region_mask = falses(size(rgb_data, 1), size(rgb_data, 2))
+        r_min = max(1, min(r_min, Base.size(rgb_data, 1)))
+        r_max = max(1, min(r_max, Base.size(rgb_data, 1)))
+        c_min = max(1, min(c_min, Base.size(rgb_data, 2)))
+        c_max = max(1, min(c_max, Base.size(rgb_data, 2)))
+        region_mask = falses(Base.size(rgb_data, 1), Base.size(rgb_data, 2))
         region_mask[r_min:r_max, c_min:c_max] .= true
     else
-        region_mask = trues(size(rgb_data, 1), size(rgb_data, 2))
+        region_mask = trues(Base.size(rgb_data, 1), Base.size(rgb_data, 2))
     end
     
     # Create white mask
@@ -440,7 +440,7 @@ function find_connected_components(image; threshold=0.7, kernel_size=3,
     
     # Label components
     labeled = Bas3ImageSegmentation.label_components(white_mask_all)
-    num_components = maximum(labeled)
+    num_components = Base.maximum(labeled)
     
     # Extract component information
     component_info = NamedTuple{(:label, :size, :centroid, :bbox), Tuple{Int, Int, Tuple{Float64, Float64}, Tuple{Int, Int, Int, Int}}}[]
@@ -468,10 +468,10 @@ function find_connected_components(image; threshold=0.7, kernel_size=3,
         centroid_col = sum(col_indices) / length(col_indices)
         
         # Compute axis-aligned bounding box
-        r_min = minimum(row_indices)
-        r_max = maximum(row_indices)
-        c_min = minimum(col_indices)
-        c_max = maximum(col_indices)
+        r_min = Base.minimum(row_indices)
+        r_max = Base.maximum(row_indices)
+        c_min = Base.minimum(col_indices)
+        c_max = Base.maximum(col_indices)
         
         info = (
             label = label,

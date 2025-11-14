@@ -116,14 +116,14 @@ function detect_calibration_markers(image;
     # Apply region mask if specified
     if !isnothing(region)
         r_min, r_max, c_min, c_max = region
-        r_min = max(1, min(r_min, size(rgb_data, 1)))
-        r_max = max(1, min(r_max, size(rgb_data, 1)))
-        c_min = max(1, min(c_min, size(rgb_data, 2)))
-        c_max = max(1, min(c_max, size(rgb_data, 2)))
-        region_mask = falses(size(rgb_data, 1), size(rgb_data, 2))
+        r_min = max(1, min(r_min, Base.size(rgb_data, 1)))
+        r_max = max(1, min(r_max, Base.size(rgb_data, 1)))
+        c_min = max(1, min(c_min, Base.size(rgb_data, 2)))
+        c_max = max(1, min(c_max, Base.size(rgb_data, 2)))
+        region_mask = falses(Base.size(rgb_data, 1), Base.size(rgb_data, 2))
         region_mask[r_min:r_max, c_min:c_max] .= true
     else
-        region_mask = trues(size(rgb_data, 1), size(rgb_data, 2))
+        region_mask = trues(Base.size(rgb_data, 1), Base.size(rgb_data, 2))
     end
     
     # Extract all white regions
@@ -140,7 +140,7 @@ function detect_calibration_markers(image;
     
     # Label connected components
     labeled = Bas3ImageSegmentation.label_components(white_mask_all)
-    num_components = maximum(labeled)
+    num_components = Base.maximum(labeled)
     
     if num_components == 0
         return MarkerInfo[]
@@ -310,8 +310,8 @@ function define_canonical_positions(markers::Vector{MarkerInfo},
         # Find bounding box of all markers
         all_rows = [m.centroid[1] for m in markers]
         all_cols = [m.centroid[2] for m in markers]
-        max_row = maximum(all_rows) + margin
-        max_col = maximum(all_cols) + margin
+        max_row = Base.maximum(all_rows) + margin
+        max_col = Base.maximum(all_cols) + margin
         image_height = ceil(Int, max_row + margin)
         image_width = ceil(Int, max_col + margin)
     else
@@ -381,13 +381,13 @@ function define_canonical_positions(markers::Vector{MarkerInfo},
         unique_cols = unique(round.(all_cols, digits=0))
         
         # Simple regularization: create uniform grid
-        row_spacing = (maximum(all_rows) - minimum(all_rows)) / (length(unique_rows) - 1)
-        col_spacing = (maximum(all_cols) - minimum(all_cols)) / (length(unique_cols) - 1)
+        row_spacing = (Base.maximum(all_rows) - Base.minimum(all_rows)) / (length(unique_rows) - 1)
+        col_spacing = (Base.maximum(all_cols) - Base.minimum(all_cols)) / (length(unique_cols) - 1)
         
         # Place markers on regular grid
         for (i, marker) in enumerate(markers)
-            row_idx = round(Int, (marker.centroid[1] - minimum(all_rows)) / row_spacing)
-            col_idx = round(Int, (marker.centroid[2] - minimum(all_cols)) / col_spacing)
+            row_idx = round(Int, (marker.centroid[1] - Base.minimum(all_rows)) / row_spacing)
+            col_idx = round(Int, (marker.centroid[2] - Base.minimum(all_cols)) / col_spacing)
             
             canonical_positions[i, :] = [
                 margin + row_idx * row_spacing,
@@ -462,7 +462,7 @@ function establish_correspondence(markers::Vector{MarkerInfo},
                                    method::Symbol=:spatial_order)
     
     n_markers = length(markers)
-    n_canonical = size(canonical_positions, 1)
+    n_canonical = Base.size(canonical_positions, 1)
     
     if n_markers != n_canonical
         @warn "Number of markers ($n_markers) != canonical positions ($n_canonical). Using minimum."
@@ -611,7 +611,7 @@ function dewarp_image_with_markers(image;
     
     # Step 2: Define canonical positions
     image_data = Bas3ImageSegmentation.data(image)
-    img_size = isnothing(output_size) ? (size(image_data, 1), size(image_data, 2)) : output_size
+    img_size = isnothing(output_size) ? (Base.size(image_data, 1), Base.size(image_data, 2)) : output_size
     
     canonical_positions = define_canonical_positions(
         markers, canonical_mode; 
@@ -625,7 +625,7 @@ function dewarp_image_with_markers(image;
         method=correspondence_method
     )
     
-    println("Established correspondence for $(size(source_points, 1)) control points")
+    println("Established correspondence for $(Base.size(source_points, 1)) control points")
     
     # Step 4: Compute TPS parameters and error metrics
     weights_row, weights_col, affine_row, affine_col = 

@@ -10,43 +10,18 @@ println("="^70)
 flush(stdout)
 
 # ============================================================================
-# Mock Bas3ImageSegmentation Functions
+# Load Real Bas3ImageSegmentation Package
 # ============================================================================
 
-module Bas3ImageSegmentation
-    data(img) = img.data
-    
-    function label_components(mask::BitMatrix)
-        h, w = size(mask)
-        labeled = zeros(Int, h, w)
-        current_label = 0
-        
-        for i in 1:h
-            for j in 1:w
-                if mask[i, j] && labeled[i, j] == 0
-                    current_label += 1
-                    queue = [(i, j)]
-                    while !isempty(queue)
-                        ci, cj = popfirst!(queue)
-                        if ci < 1 || ci > h || cj < 1 || cj > w
-                            continue
-                        end
-                        if !mask[ci, cj] || labeled[ci, cj] != 0
-                            continue
-                        end
-                        labeled[ci, cj] = current_label
-                        push!(queue, (ci-1, cj))
-                        push!(queue, (ci+1, cj))
-                        push!(queue, (ci, cj-1))
-                        push!(queue, (ci, cj+1))
-                    end
-                end
-            end
-        end
-        
-        return labeled
-    end
-end
+println("Loading real Bas3ImageSegmentation package (may take ~25s)...")
+flush(stdout)
+
+# Note: Environment activation is handled by ENVIRONMENT_ACTIVATE.jl
+using Bas3
+using Bas3ImageSegmentation
+
+println("✓ Packages loaded")
+flush(stdout)
 
 # ============================================================================
 # Load Modules
@@ -67,13 +42,16 @@ struct TestRGBImage
     data::Array{Float64, 3}
 end
 
+# Add data() method for compatibility with Bas3ImageSegmentation
+Bas3ImageSegmentation.data(img::TestRGBImage) = img.data
+
 function create_blank_image(height, width)
     data = zeros(Float64, height, width, 3)
     return TestRGBImage(data)
 end
 
 function add_white_rectangle!(img::TestRGBImage, r_min, r_max, c_min, c_max; intensity=1.0)
-    h, w = size(img.data, 1), size(img.data, 2)
+    h, w = Base.size(img.data, 1), Base.size(img.data, 2)
     r_min = max(1, r_min)
     r_max = min(h, r_max)
     c_min = max(1, c_min)
@@ -188,7 +166,7 @@ if length(markers2) == 4
     ]
     
     # Check shape
-    if size(canonical4) == (4, 2)
+    if Base.size(canonical4) == (4, 2)
         # Check corners are correct
         all_match = true
         for i in 1:4
@@ -209,7 +187,7 @@ if length(markers2) == 4
             println("  ✗ FAILED: Corner positions don't match")
         end
     else
-        println("  ✗ FAILED: Wrong shape $(size(canonical4))")
+        println("  ✗ FAILED: Wrong shape $(Base.size(canonical4))")
     end
 else
     tests_run += 1
@@ -225,7 +203,7 @@ if length(markers2) == 4
         image_size=(400, 400), margin=50.0)
     
     tests_run += 1
-    if size(canonical_grid) == (4, 2)
+    if Base.size(canonical_grid) == (4, 2)
         # Check that all positions use margin=50 and grid spacing
         grid_spacing = 400 - 2*50  # 300
         
@@ -276,7 +254,7 @@ source, target = establish_correspondence(test_markers, test_canonical;
     method=:spatial_order)
 
 tests_run += 1
-if size(source) == (4, 2) && size(target) == (4, 2)
+if Base.size(source) == (4, 2) && Base.size(target) == (4, 2)
     tests_passed += 1
     println("  ✓ spatial_order correspondence works")
     println("    Source points:")
@@ -295,7 +273,7 @@ source_nn, target_nn = establish_correspondence(test_markers, test_canonical;
     method=:nearest_neighbor)
 
 tests_run += 1
-if size(source_nn) == (4, 2) && size(target_nn) == (4, 2)
+if Base.size(source_nn) == (4, 2) && Base.size(target_nn) == (4, 2)
     # Verify that each source is matched to a reasonable target
     all_reasonable = true
     for i in 1:4
