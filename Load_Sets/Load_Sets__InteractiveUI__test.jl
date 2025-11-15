@@ -7,6 +7,10 @@ write(stdout, "TEST: Load_Sets__InteractiveUI.jl Helper Functions\n"); flush(std
 write(stdout, "="^80 * "\n"); flush(stdout)
 write(stdout, "\n"); flush(stdout)
 
+write(stdout, "Activating environment...\n"); flush(stdout)
+include("ENVIRONMENT_ACTIVATE.jl")
+write(stdout, "✓ Environment activated\n\n"); flush(stdout)
+
 write(stdout, "Loading packages (may take ~25s)...\n"); flush(stdout)
 
 # Note: Environment activation is handled by ENVIRONMENT_ACTIVATE.jl

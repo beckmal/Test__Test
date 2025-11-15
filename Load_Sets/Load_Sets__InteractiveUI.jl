@@ -2,7 +2,7 @@
 # Interactive visualization module - Figure 4
 
 """
-    create_interactive_figure(sets, input_type, raw_output_type)
+    create_interactive_figure(sets, input_type, raw_output_type; test_mode=false)
 
 Creates an interactive visualization figure with:
 - Image viewer with segmentation overlay
@@ -16,9 +16,33 @@ Creates an interactive visualization figure with:
 - `sets`: Vector of (input_image, output_image) tuples
 - `input_type`: Input image type
 - `raw_output_type`: Raw output image type
+- `test_mode::Bool=false`: If true, return (figure, observables, widgets) for testing
 
 # Returns
-- `Figure`: GLMakie Figure object with interactive UI
+- **Production mode** (`test_mode=false`): `Figure` - GLMakie Figure object
+- **Test mode** (`test_mode=true`): Named tuple with:
+  - `figure`: GLMakie Figure object
+  - `observables`: Dict{Symbol, Observable} - Internal state observables
+  - `widgets`: Dict{Symbol, Widget} - UI widget references
+
+# Test Mode Observables
+Region Selection:
+- `:selection_active`, `:selection_corner1`, `:selection_corner2`
+- `:selection_complete`, `:selection_rect`, `:preview_rect`
+
+Marker Detection:
+- `:current_markers`, `:dewarp_success`, `:dewarp_message`
+
+Image State:
+- `:current_dewarped_image`, `:current_input_image`, `:current_output_image`
+- `:current_white_overlay`, `:current_marker_viz`
+
+# Test Mode Widgets
+Navigation: `:nav_textbox`, `:prev_button`, `:next_button`, `:textbox_label`
+Selection: `:selection_toggle`, `:clear_selection_button`, `:selection_status_label`
+Parameters: `:threshold_textbox`, `:min_area_textbox`, `:aspect_ratio_textbox`, 
+            `:aspect_weight_textbox`, `:kernel_size_textbox`
+Display: `:segmentation_toggle`
 
 # Dependencies
 Requires functions from:
@@ -27,17 +51,35 @@ Requires functions from:
 - Load_Sets__Utilities: compute_skewness
 - Load_Sets__Colors: CLASS_COLORS_RGB
 
-# Example
+# Examples
 ```julia
+# Production usage (unchanged)
 include("Load_Sets__Core.jl")
 include("Load_Sets__InteractiveUI.jl")
-
 sets = load_original_sets(306, false)
 fig = create_interactive_figure(sets, input_type, raw_output_type)
 display(GLMakie.Screen(), fig)
+
+# Test mode usage (new)
+result = create_interactive_figure(sets, input_type, raw_output_type; test_mode=true)
+fig = result.figure
+obs = result.observables
+widgets = result.widgets
+
+# Monitor state
+println("Markers detected: ", length(obs[:current_markers][]))
+
+# Simulate selection
+obs[:selection_corner1][] = Bas3GLMakie.GLMakie.Point2f(10, 10)
+obs[:selection_corner2][] = Bas3GLMakie.GLMakie.Point2f(100, 100)
+obs[:selection_complete][] = true
+
+# Verify results
+@assert obs[:dewarp_success][]
 ```
 """
-function create_interactive_figure(sets, input_type, raw_output_type)
+function create_interactive_figure(sets, input_type, raw_output_type; 
+                                   test_mode::Bool=false)
     # Get classes from raw_output_type using shape()
     classes = shape(raw_output_type)
     
@@ -330,7 +372,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
     # Contour extraction using boundary detection
     function extract_contours(mask)
         # Find boundary pixels (pixels adjacent to background)
-        h, w = size(mask)
+        h, w = Base.size(mask)
         contour_points = Tuple{Int, Int}[]
         
         for i in 1:h
@@ -403,7 +445,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
     function create_marker_visualization(img, markers)
         # Get image dimensions
         local img_data = data(img)
-        local h, w = size(img_data, 1), size(img_data, 2)
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
         
         # Create a grayscale visualization showing detected markers
         local viz = zeros(Bas3ImageSegmentation.RGB{Float32}, h, w)
@@ -444,7 +486,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
                 
                 # Get image data and size
                 local img_data = Bas3ImageSegmentation.data(img)
-                local img_size = (size(img_data, 1), size(img_data, 2))
+                local img_size = (Base.size(img_data, 1), Base.size(img_data, 2))
                 
                 # Step 2: Define canonical positions
                 local canonical_positions = define_canonical_positions(
@@ -466,7 +508,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
             end
         catch e
             # Provide specific error information
-            local error_msg = "❌ Error: $(typeof(e).__name__) - $(sprint(showerror, e))"
+            local error_msg = "❌ Error: $(typeof(e)) - $(sprint(showerror, e))"
             return rotr90(image(img)), MarkerInfo[], false, error_msg
         end
     end
@@ -480,7 +522,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
     function create_white_overlay(img, markers)
         # Get image dimensions
         local img_data = data(img)
-        local h, w = size(img_data, 1), size(img_data, 2)
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
         
         # Create RGBA overlay: red with 70% opacity for marker regions, transparent elsewhere
         local overlay = fill(Bas3ImageSegmentation.RGBA{Float32}(0.0f0, 0.0f0, 0.0f0, 0.0f0), h, w)
@@ -639,7 +681,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
         stats = Dict{Symbol, Dict{Symbol, Float64}}()
         
         # Get channel names
-        channel_names = if size(rgb_data, 1) == 3
+        channel_names = if Base.size(rgb_data, 1) == 3
             [:red, :green, :blue]
         else
             error("Image must have 3 color channels (RGB)")
@@ -732,8 +774,8 @@ function create_interactive_figure(sets, input_type, raw_output_type)
         local region = nothing
         if selection_complete[]
             img = sets[idx][1]
-            img_height = size(data(img), 1)
-            img_width = size(data(img), 2)
+            img_height = Base.size(data(img), 1)
+            img_width = Base.size(data(img), 2)
             
             c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
             c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
@@ -760,6 +802,9 @@ function create_interactive_figure(sets, input_type, raw_output_type)
             current_dewarped_image[] = dewarped_img
             current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
         else
+            # Always update dewarped image to prevent stale data and dimension mismatches
+            current_dewarped_image[] = dewarped_img
+            
             # Keep previous marker visualization but show warning
             # Update message to show failure but don't corrupt the display
             if isnothing(region)
@@ -1066,6 +1111,17 @@ function create_interactive_figure(sets, input_type, raw_output_type)
         idx = tryparse(Int, str)
         
         if idx !== nothing
+            # Clear region selection when changing images (selection coords are image-specific)
+            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_complete[] = false
+            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            if selection_active[]
+                selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
+                selection_status_label.color = :blue
+            end
+            
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
             min_area = tryparse(Int, min_area_textbox.stored_string[])
@@ -1091,6 +1147,17 @@ function create_interactive_figure(sets, input_type, raw_output_type)
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx > 1
             new_idx = current_idx - 1
+            
+            # Clear region selection when changing images (selection coords are image-specific)
+            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_complete[] = false
+            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            if selection_active[]
+                selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
+                selection_status_label.color = :blue
+            end
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
@@ -1121,6 +1188,17 @@ function create_interactive_figure(sets, input_type, raw_output_type)
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx < length(sets)
             new_idx = current_idx + 1
+            
+            # Clear region selection when changing images (selection coords are image-specific)
+            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_complete[] = false
+            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            if selection_active[]
+                selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
+                selection_status_label.color = :blue
+            end
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
@@ -1240,6 +1318,12 @@ function create_interactive_figure(sets, input_type, raw_output_type)
     Bas3GLMakie.GLMakie.on(selection_toggle.active) do active
         selection_active[] = active
         if active
+            # Clear any stale selection state when activating
+            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_complete[] = false
+            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
             selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
             selection_status_label.color = :blue
         else
@@ -1283,7 +1367,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
     Bas3GLMakie.GLMakie.on(current_markers) do markers
         # Update centroids - only show the best marker (largest, first in sorted list)
         if !isempty(markers)
-            local h = size(data(sets[1][1]), 1)
+            local h = Base.size(data(sets[1][1]), 1)
             local best_marker = markers[1]  # Only take the first (largest) marker
             local centroids = [Bas3GLMakie.GLMakie.Point2f(best_marker.centroid[2], h - best_marker.centroid[1] + 1)]
             marker_centroid_plot[] = centroids
@@ -1360,8 +1444,8 @@ function create_interactive_figure(sets, input_type, raw_output_type)
                             if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
                                 # Convert axis coordinates to pixel coordinates
                                 img = sets[current_idx][1]
-                                img_height = size(data(img), 1)
-                                img_width = size(data(img), 2)
+                                img_height = Base.size(data(img), 1)
+                                img_width = Base.size(data(img), 2)
                                 
                                 c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
                                 c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
@@ -1386,6 +1470,9 @@ function create_interactive_figure(sets, input_type, raw_output_type)
                                     dewarp_success[] = success
                                     dewarp_message[] = message
                                 else
+                                    # Always update dewarped image to prevent stale data and dimension mismatches
+                                    current_dewarped_image[] = dewarped_img
+                                    
                                     # Region selection failed - keep previous state but update message
                                     dewarp_success[] = false
                                     dewarp_message[] = message  # Will show warning from try_dewarp_image
@@ -1397,8 +1484,9 @@ function create_interactive_figure(sets, input_type, raw_output_type)
                             end
                         end
                     end
-                    return Bas3GLMakie.GLMakie.Consume(true)  # Block axis interactions
                 end
+                # Always consume events when selection is active to prevent axis interference
+                return Bas3GLMakie.GLMakie.Consume(true)
             end
         end
         return Bas3GLMakie.GLMakie.Consume(false)
@@ -1456,7 +1544,7 @@ function create_interactive_figure(sets, input_type, raw_output_type)
         
         # Get image height for coordinate transformation
         local output_data = data(sets[1][2])
-        local img_height = size(output_data, 1)
+        local img_height = Base.size(output_data, 1)
         
         # Draw new bounding boxes (only if segmentation is visible)
         for (class, bboxes) in bboxes_dict
@@ -1505,5 +1593,65 @@ function create_interactive_figure(sets, input_type, raw_output_type)
     println("  - Click 'Next →' to go to next image")
     println("  - Enable region selection to limit white detection area\n")
     
-    return fgr
+    # Test mode: Return figure + observables + widgets for programmatic control
+    if test_mode
+        println("[TEST MODE] Returning figure with observables and widgets access")
+        
+        # Create observables dictionary (Priority 1 + Priority 2)
+        observables_dict = Dict{Symbol, Any}(
+            # Region Selection (Priority 1)
+            :selection_active => selection_active,
+            :selection_corner1 => selection_corner1,
+            :selection_corner2 => selection_corner2,
+            :selection_complete => selection_complete,
+            :selection_rect => selection_rect,
+            :preview_rect => preview_rect,
+            
+            # Marker Detection (Priority 1)
+            :current_markers => current_markers,
+            :dewarp_success => dewarp_success,
+            :dewarp_message => dewarp_message,
+            
+            # Image State (Priority 1 + 2)
+            :current_dewarped_image => current_dewarped_image,
+            :current_input_image => current_input_image,
+            :current_output_image => current_output_image,
+            :current_white_overlay => current_white_overlay,
+            :current_marker_viz => current_marker_viz
+        )
+        
+        # Create widgets dictionary (Priority 1 + Priority 2 + Priority 3)
+        widgets_dict = Dict{Symbol, Any}(
+            # Navigation (Priority 1)
+            :nav_textbox => textbox,
+            :prev_button => prev_button,
+            :next_button => next_button,
+            :textbox_label => textbox_label,
+            
+            # Selection (Priority 1)
+            :selection_toggle => selection_toggle,
+            :clear_selection_button => clear_selection_button,
+            :selection_status_label => selection_status_label,
+            
+            # Parameters (Priority 2)
+            :threshold_textbox => threshold_textbox,
+            :min_area_textbox => min_area_textbox,
+            :aspect_ratio_textbox => aspect_ratio_textbox,
+            :aspect_weight_textbox => aspect_weight_textbox,
+            :kernel_size_textbox => kernel_size_textbox,
+            
+            # Display (Priority 3)
+            :segmentation_toggle => segmentation_toggle
+        )
+        
+        # Return named tuple with all components
+        return (
+            figure = fgr,
+            observables = observables_dict,
+            widgets = widgets_dict
+        )
+    else
+        # Production mode: Return figure only (unchanged behavior)
+        return fgr
+    end
 end
