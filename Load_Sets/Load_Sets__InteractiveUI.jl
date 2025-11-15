@@ -1402,7 +1402,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     end
     
     # Mouse click event handler for region selection
-    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mousebutton, priority = 2) do event
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(axs3).mousebutton, priority = 2) do event
         if event.button == Bas3GLMakie.GLMakie.Mouse.left && event.action == Bas3GLMakie.GLMakie.Mouse.press
             if selection_active[]
                 # Get mouse position in axis coordinates
@@ -1493,7 +1493,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     end
     
     # Mouse move event handler for preview
-    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mouseposition, priority = 2) do mp_window
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(axs3).mouseposition, priority = 2) do mp_window
         if selection_active[] && !selection_complete[]
             if selection_corner1[] != Bas3GLMakie.GLMakie.Point2f(0, 0)
                 # Get mouse position in axis coordinates
