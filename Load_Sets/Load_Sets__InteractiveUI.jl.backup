@@ -1,11 +1,8 @@
 # Load_Sets__InteractiveUI.jl
 # Interactive visualization module - Figure 4
 
-# Load logging module for debugging UI interactions
-include("Load_Sets__Logging.jl")
-
 """
-    create_interactive_figure(sets, input_type, raw_output_type; test_mode=false)
+    create_interactive_figure(sets, input_type, raw_output_type)
 
 Creates an interactive visualization figure with:
 - Image viewer with segmentation overlay
@@ -19,33 +16,9 @@ Creates an interactive visualization figure with:
 - `sets`: Vector of (input_image, output_image) tuples
 - `input_type`: Input image type
 - `raw_output_type`: Raw output image type
-- `test_mode::Bool=false`: If true, return (figure, observables, widgets) for testing
 
 # Returns
-- **Production mode** (`test_mode=false`): `Figure` - GLMakie Figure object
-- **Test mode** (`test_mode=true`): Named tuple with:
-  - `figure`: GLMakie Figure object
-  - `observables`: Dict{Symbol, Observable} - Internal state observables
-  - `widgets`: Dict{Symbol, Widget} - UI widget references
-
-# Test Mode Observables
-Region Selection:
-- `:selection_active`, `:selection_corner1`, `:selection_corner2`
-- `:selection_complete`, `:selection_rect`, `:preview_rect`
-
-Marker Detection:
-- `:current_markers`, `:dewarp_success`, `:dewarp_message`
-
-Image State:
-- `:current_dewarped_image`, `:current_input_image`, `:current_output_image`
-- `:current_white_overlay`, `:current_marker_viz`
-
-# Test Mode Widgets
-Navigation: `:nav_textbox`, `:prev_button`, `:next_button`, `:textbox_label`
-Selection: `:selection_toggle`, `:clear_selection_button`, `:selection_status_label`
-Parameters: `:threshold_textbox`, `:min_area_textbox`, `:aspect_ratio_textbox`, 
-            `:aspect_weight_textbox`, `:kernel_size_textbox`
-Display: `:segmentation_toggle`
+- `Figure`: GLMakie Figure object with interactive UI
 
 # Dependencies
 Requires functions from:
@@ -54,42 +27,17 @@ Requires functions from:
 - Load_Sets__Utilities: compute_skewness
 - Load_Sets__Colors: CLASS_COLORS_RGB
 
-# Examples
+# Example
 ```julia
-# Production usage (unchanged)
 include("Load_Sets__Core.jl")
 include("Load_Sets__InteractiveUI.jl")
+
 sets = load_original_sets(306, false)
 fig = create_interactive_figure(sets, input_type, raw_output_type)
 display(GLMakie.Screen(), fig)
-
-# Test mode usage (new)
-result = create_interactive_figure(sets, input_type, raw_output_type; test_mode=true)
-fig = result.figure
-obs = result.observables
-widgets = result.widgets
-
-# Monitor state
-println("Markers detected: ", length(obs[:current_markers][]))
-
-# Simulate selection
-obs[:selection_corner1][] = Bas3GLMakie.GLMakie.Point2f(10, 10)
-obs[:selection_corner2][] = Bas3GLMakie.GLMakie.Point2f(100, 100)
-obs[:selection_complete][] = true
-
-# Verify results
-@assert obs[:dewarp_success][]
 ```
 """
-function create_interactive_figure(sets, input_type, raw_output_type; 
-                                   test_mode::Bool=false)
-    # Initialize logger for debugging UI interactions
-    init_logger()
-    log_event("INIT", "Creating interactive figure", data=Dict(
-        :num_images => length(sets),
-        :test_mode => test_mode
-    ))
-    
+function create_interactive_figure(sets, input_type, raw_output_type)
     # Get classes from raw_output_type using shape()
     classes = shape(raw_output_type)
     
@@ -496,7 +444,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                 
                 # Get image data and size
                 local img_data = Bas3ImageSegmentation.data(img)
-                local img_size = (Base.size(img_data, 1), Base.size(img_data, 2))
+                local img_size = (size(img_data, 1), Base.size(img_data, 2))
                 
                 # Step 2: Define canonical positions
                 local canonical_positions = define_canonical_positions(
@@ -612,7 +560,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             
             # Label connected components
             local labeled = Bas3ImageSegmentation.label_components(class_mask)
-            local num_components = maximum(labeled)
+            local num_components = Base.maximum(labeled)
             
             # Process each connected component
             for component_id in 1:num_components
@@ -750,9 +698,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     local dewarp_success = Bas3GLMakie.GLMakie.Observable(init_success)
     local dewarp_message = Bas3GLMakie.GLMakie.Observable(init_message)
     
-    # Track current image index (fixes crashes when navigating between images)
-    local current_image_index = Bas3GLMakie.GLMakie.Observable(1)
-    
     # Region selection observables
     local selection_active = Bas3GLMakie.GLMakie.Observable(false)
     local selection_corner1 = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f(0, 0))
@@ -766,25 +711,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Helper function to update the image display (core logic without textbox update)
     function update_image_display_internal(idx, threshold=0.7, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3)
-        log_function_call("update_image_display_internal", Dict(
-            :idx => idx,
-            :threshold => threshold,
-            :min_component_area => min_component_area,
-            :preferred_aspect_ratio => preferred_aspect_ratio,
-            :aspect_ratio_weight => aspect_ratio_weight,
-            :kernel_size => kernel_size
-        ))
-        
         # Validate the input
         if idx < 1 || idx > length(sets)
-            log_event("ERROR", "Invalid image index", data=Dict(:idx => idx, :max => length(sets)))
             textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
             return false
         end
-        
-        # Update current image index observable (CRITICAL FIX)
-        log_observable_change("current_image_index", current_image_index[], idx)
-        current_image_index[] = idx
         
         # Update label to show current image
         textbox_label.text = "Bild: $idx / $(length(sets))"
@@ -829,9 +760,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_dewarped_image[] = dewarped_img
             current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
         else
-            # Always update dewarped image to prevent stale data and dimension mismatches
-            current_dewarped_image[] = dewarped_img
-            
             # Keep previous marker visualization but show warning
             # Update message to show failure but don't corrupt the display
             if isnothing(region)
@@ -1124,20 +1052,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.ylims!(region_hist_ax, 0, 1)
         end
         
-        log_event("FUNCTION", "update_image_display_internal completed successfully", data=Dict(
-            :idx => idx,
-            :markers_detected => length(current_markers[])
-        ))
         return true
     end
     
     # Update images when textbox value changes
     Bas3GLMakie.GLMakie.on(textbox.stored_string) do str
-        log_widget_interaction("nav_textbox", "text_changed", str)
-        
         # Skip if being updated from button click
         if updating_from_button[]
-            log_event("NAVIGATION", "Skipping textbox callback (button update in progress)")
             return
         end
         
@@ -1145,19 +1066,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         idx = tryparse(Int, str)
         
         if idx !== nothing
-            log_navigation(current_image_index[], idx, "textbox")
-            
-            # Clear region selection when changing images (selection coords are image-specific)
-            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_complete[] = false
-            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            if selection_active[]
-                selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
-                selection_status_label.color = :blue
-            end
-            
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
             min_area = tryparse(Int, min_area_textbox.stored_string[])
@@ -1172,41 +1080,17 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
             
-            log_event("NAVIGATION", "Calling update_image_display_internal from textbox", data=Dict(
-                :idx => idx,
-                :threshold => threshold,
-                :min_area => min_area,
-                :aspect_ratio => aspect_ratio,
-                :aspect_weight => aspect_weight,
-                :kernel_size => kernel_size
-            ))
-            
             update_image_display_internal(idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
         else
-            log_event("ERROR", "Invalid textbox input", data=Dict(:input => str))
             textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
         end
     end
     
     # Previous button callback
     Bas3GLMakie.GLMakie.on(prev_button.clicks) do n
-        log_widget_interaction("prev_button", "clicked", n)
-        
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx > 1
             new_idx = current_idx - 1
-            log_navigation(current_idx, new_idx, "prev_button")
-            
-            # Clear region selection when changing images (selection coords are image-specific)
-            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_complete[] = false
-            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            if selection_active[]
-                selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
-                selection_status_label.color = :blue
-            end
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
@@ -1222,52 +1106,21 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
             
-            log_event("NAVIGATION", "Calling update_image_display_internal from prev_button", data=Dict(
-                :idx => new_idx,
-                :threshold => threshold,
-                :min_area => min_area,
-                :aspect_ratio => aspect_ratio,
-                :aspect_weight => aspect_weight,
-                :kernel_size => kernel_size
-            ))
-            
             # Update images
             if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
                 # Update textbox without triggering callback
                 updating_from_button[] = true
                 textbox.stored_string[] = string(new_idx)
                 updating_from_button[] = false
-                log_event("NAVIGATION", "Successfully updated to image $(new_idx)")
-            else
-                log_event("ERROR", "Failed to update to image $(new_idx)")
             end
-        else
-            log_event("NAVIGATION", "Cannot go to previous image", data=Dict(
-                :current_idx => current_idx,
-                :reason => current_idx === nothing ? "invalid index" : "already at first image"
-            ))
         end
     end
     
     # Next button callback
     Bas3GLMakie.GLMakie.on(next_button.clicks) do n
-        log_widget_interaction("next_button", "clicked", n)
-        
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx < length(sets)
             new_idx = current_idx + 1
-            log_navigation(current_idx, new_idx, "next_button")
-            
-            # Clear region selection when changing images (selection coords are image-specific)
-            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_complete[] = false
-            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            if selection_active[]
-                selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
-                selection_status_label.color = :blue
-            end
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
@@ -1283,30 +1136,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
             
-            log_event("NAVIGATION", "Calling update_image_display_internal from next_button", data=Dict(
-                :idx => new_idx,
-                :threshold => threshold,
-                :min_area => min_area,
-                :aspect_ratio => aspect_ratio,
-                :aspect_weight => aspect_weight,
-                :kernel_size => kernel_size
-            ))
-            
             # Update images
             if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
                 # Update textbox without triggering callback
                 updating_from_button[] = true
                 textbox.stored_string[] = string(new_idx)
                 updating_from_button[] = false
-                log_event("NAVIGATION", "Successfully updated to image $(new_idx)")
-            else
-                log_event("ERROR", "Failed to update to image $(new_idx)")
             end
-        else
-            log_event("NAVIGATION", "Cannot go to next image", data=Dict(
-                :current_idx => current_idx,
-                :reason => current_idx === nothing ? "invalid index" : "already at last image"
-            ))
         end
     end
     
@@ -1381,54 +1217,39 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Auto-update when textboxes change
     Bas3GLMakie.GLMakie.on(threshold_textbox.stored_string) do val
-        log_parameter_change("threshold", "previous", val)
         update_white_detection("threshold")
     end
     
     Bas3GLMakie.GLMakie.on(min_area_textbox.stored_string) do val
-        log_parameter_change("min_area", "previous", val)
         update_white_detection("min area")
     end
     
     Bas3GLMakie.GLMakie.on(aspect_ratio_textbox.stored_string) do val
-        log_parameter_change("aspect_ratio", "previous", val)
         update_white_detection("aspect ratio")
     end
     
     Bas3GLMakie.GLMakie.on(aspect_weight_textbox.stored_string) do val
-        log_parameter_change("aspect_weight", "previous", val)
         update_white_detection("aspect weight")
     end
     
     Bas3GLMakie.GLMakie.on(kernel_size_textbox.stored_string) do val
-        log_parameter_change("kernel_size", "previous", val)
         update_white_detection("kernel size")
     end
     
     # Selection toggle callback
     Bas3GLMakie.GLMakie.on(selection_toggle.active) do active
-        log_widget_interaction("selection_toggle", "toggled", active)
         selection_active[] = active
         if active
-            # Clear any stale selection state when activating
-            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-            selection_complete[] = false
-            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
             selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
             selection_status_label.color = :blue
-            log_event("SELECTION", "Selection mode activated")
         else
             selection_status_label.text = "Auswahl deaktiviert"
             selection_status_label.color = :gray
-            log_event("SELECTION", "Selection mode deactivated")
         end
     end
     
     # Clear selection button callback
     Bas3GLMakie.GLMakie.on(clear_selection_button.clicks) do n
-        log_widget_interaction("clear_selection_button", "clicked", n)
         selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
         selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
         selection_complete[] = false
@@ -1436,7 +1257,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
         selection_status_label.text = "Auswahl gelöscht"
         selection_status_label.color = :gray
-        log_event("SELECTION", "Selection cleared")
         
         # Re-run extraction on full image
         current_idx = tryparse(Int, textbox.stored_string[])
@@ -1448,7 +1268,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
             
             if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
-                log_event("SELECTION", "Re-running detection on full image after clearing selection")
                 update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
             end
         end
@@ -1462,26 +1281,12 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     local marker_bbox_plots = []
     
     Bas3GLMakie.GLMakie.on(current_markers) do markers
-        log_event("OBSERVABLE", "current_markers changed", data=Dict(
-            :num_markers => length(markers),
-            :current_image_index => current_image_index[]
-        ))
-        
         # Update centroids - only show the best marker (largest, first in sorted list)
         if !isempty(markers)
-            try
-                local h = Base.size(data(sets[current_image_index[]][1]), 1)
-                local best_marker = markers[1]  # Only take the first (largest) marker
-                local centroids = [Bas3GLMakie.GLMakie.Point2f(best_marker.centroid[2], h - best_marker.centroid[1] + 1)]
-                marker_centroid_plot[] = centroids
-                log_event("OBSERVABLE", "Updated marker centroids", data=Dict(
-                    :centroid => best_marker.centroid,
-                    :image_height => h
-                ))
-            catch e
-                log_error("Failed to update marker centroids", e)
-                marker_centroid_plot[] = Bas3GLMakie.GLMakie.Point2f[]
-            end
+            local h = Base.size(data(sets[1][1]), 1)
+            local best_marker = markers[1]  # Only take the first (largest) marker
+            local centroids = [Bas3GLMakie.GLMakie.Point2f(best_marker.centroid[2], h - best_marker.centroid[1] + 1)]
+            marker_centroid_plot[] = centroids
         else
             marker_centroid_plot[] = Bas3GLMakie.GLMakie.Point2f[]
         end
@@ -1513,7 +1318,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     end
     
     # Mouse click event handler for region selection
-    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(axs3).mousebutton, priority = 2) do event
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mousebutton, priority = 2) do event
         if event.button == Bas3GLMakie.GLMakie.Mouse.left && event.action == Bas3GLMakie.GLMakie.Mouse.press
             if selection_active[]
                 # Get mouse position in axis coordinates
@@ -1581,9 +1386,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                                     dewarp_success[] = success
                                     dewarp_message[] = message
                                 else
-                                    # Always update dewarped image to prevent stale data and dimension mismatches
-                                    current_dewarped_image[] = dewarped_img
-                                    
                                     # Region selection failed - keep previous state but update message
                                     dewarp_success[] = false
                                     dewarp_message[] = message  # Will show warning from try_dewarp_image
@@ -1595,16 +1397,15 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                             end
                         end
                     end
+                    return Bas3GLMakie.GLMakie.Consume(true)  # Block axis interactions
                 end
-                # Always consume events when selection is active to prevent axis interference
-                return Bas3GLMakie.GLMakie.Consume(true)
             end
         end
         return Bas3GLMakie.GLMakie.Consume(false)
     end
     
     # Mouse move event handler for preview
-    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(axs3).mouseposition, priority = 2) do mp_window
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mouseposition, priority = 2) do mp_window
         if selection_active[] && !selection_complete[]
             if selection_corner1[] != Bas3GLMakie.GLMakie.Point2f(0, 0)
                 # Get mouse position in axis coordinates
@@ -1647,11 +1448,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Function to draw bounding boxes (will be called when observable updates)
     Bas3GLMakie.GLMakie.on(current_class_bboxes) do bboxes_dict
-        log_event("OBSERVABLE", "current_class_bboxes changed", data=Dict(
-            :num_classes => length(bboxes_dict),
-            :current_image_index => current_image_index[]
-        ))
-        
         # Delete all previous bbox drawings
         for plot_obj in bbox_plot_objects
             Bas3GLMakie.GLMakie.delete!(axs3, plot_obj)
@@ -1659,19 +1455,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         empty!(bbox_plot_objects)
         
         # Get image height for coordinate transformation
-        local output_data, img_height
-        try
-            output_data = data(sets[current_image_index[]][2])
-            img_height = Base.size(output_data, 1)
-            
-            log_event("OBSERVABLE", "Drawing bounding boxes", data=Dict(
-                :image_height => img_height,
-                :image_index => current_image_index[]
-            ))
-        catch e
-            log_error("Failed to get image data for bounding boxes", e)
-            return
-        end
+        local output_data = data(sets[1][2])
+        local img_height = Base.size(output_data, 1)
         
         # Draw new bounding boxes (only if segmentation is visible)
         for (class, bboxes) in bboxes_dict
@@ -1720,66 +1505,5 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     println("  - Click 'Next →' to go to next image")
     println("  - Enable region selection to limit white detection area\n")
     
-    # Test mode: Return figure + observables + widgets for programmatic control
-    if test_mode
-        println("[TEST MODE] Returning figure with observables and widgets access")
-        
-        # Create observables dictionary (Priority 1 + Priority 2)
-        observables_dict = Dict{Symbol, Any}(
-            # Region Selection (Priority 1)
-            :selection_active => selection_active,
-            :selection_corner1 => selection_corner1,
-            :selection_corner2 => selection_corner2,
-            :selection_complete => selection_complete,
-            :selection_rect => selection_rect,
-            :preview_rect => preview_rect,
-            
-            # Marker Detection (Priority 1)
-            :current_markers => current_markers,
-            :dewarp_success => dewarp_success,
-            :dewarp_message => dewarp_message,
-            
-            # Image State (Priority 1 + 2)
-            :current_dewarped_image => current_dewarped_image,
-            :current_input_image => current_input_image,
-            :current_output_image => current_output_image,
-            :current_white_overlay => current_white_overlay,
-            :current_marker_viz => current_marker_viz,
-            :current_image_index => current_image_index
-        )
-        
-        # Create widgets dictionary (Priority 1 + Priority 2 + Priority 3)
-        widgets_dict = Dict{Symbol, Any}(
-            # Navigation (Priority 1)
-            :nav_textbox => textbox,
-            :prev_button => prev_button,
-            :next_button => next_button,
-            :textbox_label => textbox_label,
-            
-            # Selection (Priority 1)
-            :selection_toggle => selection_toggle,
-            :clear_selection_button => clear_selection_button,
-            :selection_status_label => selection_status_label,
-            
-            # Parameters (Priority 2)
-            :threshold_textbox => threshold_textbox,
-            :min_area_textbox => min_area_textbox,
-            :aspect_ratio_textbox => aspect_ratio_textbox,
-            :aspect_weight_textbox => aspect_weight_textbox,
-            :kernel_size_textbox => kernel_size_textbox,
-            
-            # Display (Priority 3)
-            :segmentation_toggle => segmentation_toggle
-        )
-        
-        # Return named tuple with all components
-        return (
-            figure = fgr,
-            observables = observables_dict,
-            widgets = widgets_dict
-        )
-    else
-        # Production mode: Return figure only (unchanged behavior)
-        return fgr
-    end
+    return fgr
 end

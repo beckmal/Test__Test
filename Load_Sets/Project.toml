@@ -15,6 +15,7 @@ Bas3SciML_Core = "00a94dca-dc08-4531-b6fa-f473557e207f"
 Bas3Surrogates_Core = "70bcee1d-9057-4541-adf8-a8048c9d7e10"
 Bas3_Core = "47442969-1adf-4deb-abf7-d4e7b88cce4f"
 Bas3_EnvironmentTools = "ef8c486a-83de-4ef9-b2e3-bb6b307e1ff0"
+Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 
 [sources]
