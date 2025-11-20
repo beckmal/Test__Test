@@ -223,10 +223,9 @@ function detect_calibration_markers(image;
         # Aspect ratio
         aspect_ratio = max(rotated_width, rotated_height) / min(rotated_width, rotated_height)
         
-        # Filter by aspect ratio
-        if aspect_ratio < min_aspect_ratio || aspect_ratio > max_aspect_ratio
-            continue
-        end
+        # Note: Aspect ratio validation removed to allow detection of valid markers
+        # with unusual shapes (very round or elongated). TPS only uses centroids,
+        # so geometric properties don't affect dewarping quality.
         
         # Create MarkerInfo
         marker = MarkerInfo(

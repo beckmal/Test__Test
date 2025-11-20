@@ -16,6 +16,17 @@ using Mmap
 # Note: Requires Load_Sets__Config.jl to be loaded for base_path, input_type, raw_output_type
 
 # ============================================================================
+# Dataset Cache
+# ============================================================================
+
+# Global cache for loaded datasets to avoid reloading on subsequent calls
+const _LOADED_SETS_CACHE = try
+    _LOADED_SETS_CACHE
+catch
+    Dict{Int, Vector}()
+end
+
+# ============================================================================
 # Original Dataset Loading
 # ============================================================================
 
@@ -42,6 +53,13 @@ println("Loaded ", length(sets), " image sets")
 - Generates from: `base_path/../MuHa - Bilder/`  (source images)
 """
 function load_original_sets(_length::Int=306, regenerate_images::Bool=false)
+    # Check cache first
+    if haskey(_LOADED_SETS_CACHE, _length) && !regenerate_images
+        cached_sets = _LOADED_SETS_CACHE[_length]
+        println("Using cached sets: $(length(cached_sets)) sets already loaded")
+        return cached_sets
+    end
+    
     temp_sets = []
     _index_array = shuffle(1:_length)
     
@@ -77,7 +95,13 @@ function load_original_sets(_length::Int=306, regenerate_images::Bool=false)
     end
     
     println("Original sets loaded: $(length(temp_sets)) sets")
-    return [temp_sets...]
+    
+    # Store in cache
+    result = [temp_sets...]
+    _LOADED_SETS_CACHE[_length] = result
+    println("Cached $(length(result)) sets for future use")
+    
+    return result
 end
 
 # ============================================================================

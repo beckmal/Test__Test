@@ -1,6 +1,9 @@
 # Load_Sets__InteractiveUI.jl
 # Interactive visualization module - Figure 4
 
+# Load logging module for debugging UI interactions
+include("Load_Sets__Logging.jl")
+
 """
     create_interactive_figure(sets, input_type, raw_output_type; test_mode=false)
 
@@ -80,7 +83,12 @@ obs[:selection_complete][] = true
 """
 function create_interactive_figure(sets, input_type, raw_output_type; 
                                    test_mode::Bool=false)
-    println("[INFO] Creating interactive figure with $(length(sets)) images (test_mode=$test_mode)")
+    # Initialize logger for debugging UI interactions
+    init_logger()
+    log_event("INIT", "Creating interactive figure", data=Dict(
+        :num_images => length(sets),
+        :test_mode => test_mode
+    ))
     
     # Get classes from raw_output_type using shape()
     classes = shape(raw_output_type)
@@ -282,10 +290,15 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         halign=:center
     )
     
-    local start_selection_button = Bas3GLMakie.GLMakie.Button(
-        param_grid[10, 1:2],
-        label="Neue Auswahl starten",
-        fontsize=14
+    local selection_toggle = Bas3GLMakie.GLMakie.Toggle(
+        param_grid[10, 1],
+        active=false
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[10, 2],
+        "Auswahl aktivieren",
+        fontsize=14,
+        halign=:left
     )
     
     local clear_selection_button = Bas3GLMakie.GLMakie.Button(
@@ -294,76 +307,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         fontsize=14
     )
     
-    # Rotation control - textbox and label side by side
-    local rotation_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[12, 1],
-        placeholder="0.0",
-        stored_string="0.0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[12, 2],
-        "Rotation [°]",
-        fontsize=14,
-        halign=:left
-    )
-    
-    # Position and size controls
-    local x_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[13, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[13, 2],
-        "X Position",
-        fontsize=14,
-        halign=:left
-    )
-    
-    local y_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[14, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[14, 2],
-        "Y Position",
-        fontsize=14,
-        halign=:left
-    )
-    
-    local width_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[15, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[15, 2],
-        "Breite",
-        fontsize=14,
-        halign=:left
-    )
-    
-    local height_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[16, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[16, 2],
-        "Höhe",
-        fontsize=14,
-        halign=:left
-    )
-    
     local selection_status_label = Bas3GLMakie.GLMakie.Label(
-        param_grid[17, 1:2],
-        "Keine Auswahl",
+        param_grid[12, 1:2],
+        "Auswahl deaktiviert",
         fontsize=11,
         halign=:center,
         color=:gray
@@ -371,7 +317,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Add separator
     Bas3GLMakie.GLMakie.Label(
-        param_grid[18, 1:2],
+        param_grid[13, 1:2],
         "─────────────────────",
         fontsize=12,
         halign=:center
@@ -379,7 +325,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Overlay Control
     Bas3GLMakie.GLMakie.Label(
-        param_grid[19, 1:2],
+        param_grid[14, 1:2],
         "Überlagerungen",
         fontsize=16,
         font=:bold,
@@ -387,11 +333,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     )
     
     local segmentation_toggle = Bas3GLMakie.GLMakie.Toggle(
-        param_grid[20, 1],
+        param_grid[15, 1],
         active=true
     )
     Bas3GLMakie.GLMakie.Label(
-        param_grid[20, 2],
+        param_grid[15, 2],
         "Segmentierung anzeigen",
         fontsize=14,
         halign=:left
@@ -501,74 +447,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         ]
     end
     
-    # Create rotated rectangle polygon from two corners and rotation angle
-    function make_rotated_rectangle(c1, c2, angle_degrees::Float64)
-        # Get base rectangle corners (before rotation)
-        x_min, x_max = minmax(c1[1], c2[1])
-        y_min, y_max = minmax(c1[2], c2[2])
-        
-        # Calculate center point
-        center_x = (x_min + x_max) / 2
-        center_y = (y_min + y_max) / 2
-        
-        # Define corners relative to center
-        corners = [
-            (x_min - center_x, y_min - center_y),
-            (x_max - center_x, y_min - center_y),
-            (x_max - center_x, y_max - center_y),
-            (x_min - center_x, y_max - center_y)
-        ]
-        
-        # Convert angle to radians
-        angle_rad = deg2rad(angle_degrees)
-        cos_a = cos(angle_rad)
-        sin_a = sin(angle_rad)
-        
-        # Rotate corners around center
-        rotated_corners = map(corners) do (x, y)
-            rotated_x = x * cos_a - y * sin_a + center_x
-            rotated_y = x * sin_a + y * cos_a + center_y
-            Bas3GLMakie.GLMakie.Point2f(rotated_x, rotated_y)
-        end
-        
-        # Close the loop
-        push!(rotated_corners, rotated_corners[1])
-        
-        return rotated_corners
-    end
-    
-    # Get axis-aligned bounding box from rotated rectangle corners for region extraction
-    function get_rotated_rect_bounds(c1, c2, angle_degrees::Float64)
-        # Get rotated corners (without closing point)
-        rotated_rect = make_rotated_rectangle(c1, c2, angle_degrees)
-        pop!(rotated_rect)  # Remove closing point
-        
-        # Find min/max of rotated corners
-        x_coords = [p[1] for p in rotated_rect]
-        y_coords = [p[2] for p in rotated_rect]
-        
-        return (minimum(x_coords), maximum(x_coords), minimum(y_coords), maximum(y_coords))
-    end
-    
-    # Helper function to calculate selection region - single source of truth
-    function calculate_selection_region(img, corner1, corner2, angle_degrees::Float64)
-        local img_data = data(img)
-        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
-        
-        # Get bounding box of rotated rectangle
-        local min_x, max_x, min_y, max_y = get_rotated_rect_bounds(corner1, corner2, angle_degrees)
-        
-        # Convert to pixel indices (clamp to image bounds)
-        local col_start = max(1, floor(Int, min_x))
-        local col_end = min(w, ceil(Int, max_x))
-        local row_start = max(1, floor(Int, min_y))
-        local row_end = min(h, ceil(Int, max_y))
-        
-        @info "[REGION-CALC] angle=$(angle_degrees)° → rows=$(row_start):$(row_end), cols=$(col_start):$(col_end)"
-        
-        return (row_start:row_end, col_start:col_end)
-    end
-    
     # Note: White region extraction removed - now using only detect_calibration_markers() for consistency
     # The white overlay will be created from the detected markers
     
@@ -593,78 +471,24 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         return rotr90(viz)
     end
     
-    # Check if a point is inside a rotated rectangle defined by c1, c2, angle
-    function point_in_rotated_rect(point, c1, c2, angle_degrees::Float64)
-        # Get rectangle bounds
-        x_min, x_max = minmax(c1[1], c2[1])
-        y_min, y_max = minmax(c1[2], c2[2])
-
-        # Center
-        center_x = (x_min + x_max) / 2
-        center_y = (y_min + y_max) / 2
-
-        # Translate point to center at origin
-        px = point[2] - center_x  # point is (row, col), so x is col
-        py = point[1] - center_y  # y is row
-
-        # Rotate back by -angle
-        angle_rad = -deg2rad(angle_degrees)
-        cos_a = cos(angle_rad)
-        sin_a = sin(angle_rad)
-
-        rx = px * cos_a - py * sin_a
-        ry = px * sin_a + py * cos_a
-
-        # Check if in axis-aligned rectangle
-        return (x_min - center_x) <= rx <= (x_max - center_x) &&
-               (y_min - center_y) <= ry <= (y_max - center_y)
-    end
-
-    # Helper function to detect markers using extract_white_mask (single best component with weighted scoring)
+    # Helper function to detect markers only (no dewarping)
     function detect_markers_only(img, params)
         try
-            # Use extract_white_mask to find the single best component with weighted scoring
-            # This uses: (1-weight) * density + weight * aspect_ratio_score
-            local mask, size, percentage, num_components, density, corners, angle, aspect_ratio = 
-                extract_white_mask(img;
-                    threshold=params[:threshold],
-                    min_component_area=params[:min_area],
-                    preferred_aspect_ratio=params[:aspect_ratio],
-                    aspect_ratio_weight=params[:aspect_ratio_weight],
-                    kernel_size=params[:kernel_size],
-                    region=params[:region])
-
-            # Convert extract_white_mask output to MarkerInfo format
-            local markers = MarkerInfo[]
-            if size > 0 && !isempty(corners)
-                # Calculate centroid from mask
-                local pixel_coords = findall(mask)
-                if !isempty(pixel_coords)
-                    local centroid_row = mean(Float64[p[1] for p in pixel_coords])
-                    local centroid_col = mean(Float64[p[2] for p in pixel_coords])
-                    
-                    # Create MarkerInfo struct
-                    local marker = MarkerInfo(
-                        (centroid_row, centroid_col),
-                        corners,
-                        mask,
-                        size,
-                        angle,
-                        aspect_ratio,
-                        density
-                    )
-                    push!(markers, marker)
-                end
-            end
-
+            # Detect markers using current parameters
+            local markers = detect_calibration_markers(img;
+                threshold=params[:threshold],
+                min_area=params[:min_area],
+                min_aspect_ratio=params[:aspect_ratio] * 0.8,
+                max_aspect_ratio=params[:aspect_ratio] * 1.2,
+                kernel_size=params[:kernel_size],
+                region=params[:region])
+            
             # Provide detailed feedback about detection results
             if isempty(markers)
                 local region_text = isnothing(params[:region]) ? "full image" : "selected region"
-                local msg = "⚠️ No marker found in $region_text (found $num_components components total, try adjusting parameters)"
-                return markers, false, msg
+                return markers, false, "⚠️ No markers found in $region_text (try adjusting threshold/min area)"
             else
-                local score_info = "density=$(round(density, digits=3)), aspect=$(round(aspect_ratio, digits=2))"
-                local message = "✓ Detected best marker: $score_info (from $num_components total components)"
+                local message = "✓ Detected $(length(markers)) marker(s)"
                 return markers, true, message
             end
         catch e
@@ -674,8 +498,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
     end
     
-    # Initial marker detection with weighted scoring parameters
-    local init_params = Dict(:threshold => 0.7, :min_area => 8000, :aspect_ratio => 5.0, :aspect_ratio_weight => 0.6, :kernel_size => 3, :region => nothing)
+    # Initial marker detection
+    local init_params = Dict(:threshold => 0.7, :min_area => 8000, :aspect_ratio => 5.0, :kernel_size => 3, :region => nothing)
     local init_markers, init_success, init_message = detect_markers_only(sets[1][1], init_params)
     local init_marker_viz = create_marker_visualization(sets[1][1], init_markers)
     
@@ -908,103 +732,32 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     local selection_corner1 = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f(0, 0))
     local selection_corner2 = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f(0, 0))
     local selection_complete = Bas3GLMakie.GLMakie.Observable(false)
-    local selection_rotation = Bas3GLMakie.GLMakie.Observable(0.0)  # Rotation angle in degrees
     local selection_rect = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
     local preview_rect = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
     
     # Flag to prevent recursive callback triggering
     local updating_from_button = Ref(false)
-    local updating_textboxes = Ref(false)
-    
-    # Helper function to update textbox (both stored and displayed strings)
-    function set_textbox_value(textbox, value::String)
-        textbox.stored_string[] = value
-        textbox.displayed_string[] = value
-    end
-    
-    # Helper function to rerun marker detection on current selection
-    function rerun_selection_detection()
-        println("[RERUN-DETECTION] Called")
-        if !selection_complete[]
-            println("[RERUN-DETECTION] Skipping - no selection complete")
-            return  # No selection to process
-        end
-        
-        current_idx = tryparse(Int, textbox.stored_string[])
-        if current_idx === nothing || current_idx < 1 || current_idx > length(sets)
-            return
-        end
-        
-        # Get parameters
-        threshold = tryparse(Float64, threshold_textbox.stored_string[])
-        min_area = tryparse(Int, min_area_textbox.stored_string[])
-        aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
-        aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
-        kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
-        angle = tryparse(Float64, rotation_textbox.stored_string[])
-        println("[AUTO-UPDATE] Using parameters: threshold=$threshold, min_area=$min_area, aspect_ratio=$aspect_ratio, kernel=$kernel_size")
-        
-        if threshold === nothing || min_area === nothing || aspect_ratio === nothing || 
-           aspect_weight === nothing || kernel_size === nothing || angle === nothing
-            return
-        end
-        
-        # Get image
-        img = sets[current_idx][1]
-        img_height = Base.size(data(img), 1)
-        img_width = Base.size(data(img), 2)
-        
-        # Convert selection corners to pixel coordinates
-        c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
-        c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
-        
-        # Use shared helper function for consistent region calculation (Path 2: selection changes)
-        local row_range, col_range = calculate_selection_region(img, c1_px, c2_px, angle)
-        region = (first(row_range), last(row_range), first(col_range), last(col_range))
-        println("[AUTO-UPDATE] Running marker detection on region: rows=$(row_range), cols=$(col_range), rotation=$(angle)°")
-        
-        # Detect markers
-        local params = Dict(:threshold => threshold, :min_area => min_area, :aspect_ratio => aspect_ratio, :kernel_size => kernel_size, :region => region, :c1 => c1_px, :c2 => c2_px, :angle => angle)
-        local markers, success, message = detect_markers_only(img, params)
-        
-        # Update state and trigger display update
-        if !isempty(markers)
-            println("[AUTO-UPDATE] Found $(length(markers)) marker(s), success=$(success)")
-            current_white_overlay[] = create_white_overlay(img, markers)
-            current_marker_viz[] = create_marker_visualization(img, markers)
-            current_markers[] = markers
-            println("[AUTO-UPDATE] Setting marker_success=$(success), marker_message=$(message)")
-            marker_success[] = success
-            marker_message[] = message
-            # Trigger bounding box redraw by updating class_bboxes observable
-            current_class_bboxes[] = extract_class_bboxes(sets[current_idx][2])
-            # Explicitly notify all observables to force display refresh
-            Bas3GLMakie.GLMakie.notify(current_white_overlay)
-            Bas3GLMakie.GLMakie.notify(current_marker_viz)
-            Bas3GLMakie.GLMakie.notify(current_markers)
-            Bas3GLMakie.GLMakie.notify(current_class_bboxes)
-            println("[AUTO-UPDATE] Display refreshed: markers, overlays, and bounding boxes updated")
-        else
-            println("[AUTO-UPDATE] No markers found, success=$(success)")
-            println("[AUTO-UPDATE] Setting marker_success=false, marker_message=$(message)")
-            marker_success[] = false
-            marker_message[] = message
-        end
-    end
     
     # Helper function to update the image display (core logic without textbox update)
     function update_image_display_internal(idx, threshold=0.7, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3)
-        println("[UPDATE] Updating to image $idx with params: threshold=$threshold, min_area=$min_component_area, aspect_ratio=$preferred_aspect_ratio, kernel_size=$kernel_size")
+        log_function_call("update_image_display_internal", Dict(
+            :idx => idx,
+            :threshold => threshold,
+            :min_component_area => min_component_area,
+            :preferred_aspect_ratio => preferred_aspect_ratio,
+            :aspect_ratio_weight => aspect_ratio_weight,
+            :kernel_size => kernel_size
+        ))
         
         # Validate the input
         if idx < 1 || idx > length(sets)
-            println("[ERROR] Invalid image index: $idx (max: $(length(sets)))")
+            log_event("ERROR", "Invalid image index", data=Dict(:idx => idx, :max => length(sets)))
             textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
             return false
         end
         
         # Update current image index observable (CRITICAL FIX)
-        println("[OBSERVABLE] current_image_index: $(current_image_index[]) -> $idx")
+        log_observable_change("current_image_index", current_image_index[], idx)
         current_image_index[] = idx
         
         # Update label to show current image
@@ -1028,30 +781,19 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
             c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
             
-            # Get rotation angle from textbox (Path 1: parameter changes)
-            local rotation_angle = tryparse(Float64, rotation_textbox.stored_string[])
-            if rotation_angle === nothing
-                rotation_angle = 0.0
-            end
+            # Ensure correct ordering (min to max)
+            r_min, r_max = minmax(c1_px[1], c2_px[1])
+            c_min, c_max = minmax(c1_px[2], c2_px[2])
             
-            # Use shared helper function for consistent region calculation
-            local row_range, col_range = calculate_selection_region(img, c1_px, c2_px, rotation_angle)
-            region = (first(row_range), last(row_range), first(col_range), last(col_range))
+            region = (r_min, r_max, c_min, c_max)
         end
         
         # Extract class bounding boxes
         current_class_bboxes[] = extract_class_bboxes(sets[idx][2])
         
         # Update marker visualization (detection only, no dewarping)
-        local params = Dict(:threshold => threshold, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :aspect_ratio_weight => aspect_ratio_weight, :kernel_size => kernel_size, :region => region)
-        if !isnothing(region)
-            params[:c1] = c1_px
-            params[:c2] = c2_px
-            params[:angle] = rotation_angle
-        end
+        local params = Dict(:threshold => threshold, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :kernel_size => kernel_size, :region => region)
         local markers, success, message = detect_markers_only(sets[idx][1], params)
-        
-        println("[PARAM-UPDATE] Detection result: markers=$(length(markers)), success=$(success)")
         
         # STATE PRESERVATION: Only update visualization if markers were detected
         # This prevents UI corruption when detection fails
@@ -1059,10 +801,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_marker_viz[] = create_marker_visualization(sets[idx][1], markers)
             current_markers[] = markers
             current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
-            # Explicitly notify visualization observables to force UI refresh
-            Bas3GLMakie.GLMakie.notify(current_marker_viz)
-            Bas3GLMakie.GLMakie.notify(current_markers)
-            Bas3GLMakie.GLMakie.notify(current_white_overlay)
         else
             # Keep previous marker visualization but show warning
             # Update message to show failure but don't corrupt the display
@@ -1071,15 +809,10 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                 current_marker_viz[] = create_marker_visualization(sets[idx][1], MarkerInfo[])
                 current_markers[] = MarkerInfo[]
                 current_white_overlay[] = create_white_overlay(sets[idx][1], MarkerInfo[])
-                # Notify after clearing
-                Bas3GLMakie.GLMakie.notify(current_marker_viz)
-                Bas3GLMakie.GLMakie.notify(current_markers)
-                Bas3GLMakie.GLMakie.notify(current_white_overlay)
             end
             # If region detection failed, keep previous markers visible
         end
         
-        println("[PARAM-UPDATE] Setting marker_success=$(success), marker_message=$(message)")
         marker_success[] = success
         marker_message[] = message
         
@@ -1320,17 +1053,61 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.autolimits!(region_mean_ax)
             Bas3GLMakie.GLMakie.autolimits!(region_box_ax)
             Bas3GLMakie.GLMakie.autolimits!(region_hist_ax)
+        else
+            # DEFENSIVE HANDLING: Show clear message when no markers detected
+            empty!(region_mean_ax)
+            empty!(region_box_ax)
+            empty!(region_hist_ax)
+            
+            # Add text notification in the center of each plot
+            Bas3GLMakie.GLMakie.text!(
+                region_mean_ax, 
+                2.0, 0.5,
+                text = "⚠️ Keine Markierungen\nerkannt",
+                align = (:center, :center),
+                fontsize = 16,
+                color = :orange
+            )
+            Bas3GLMakie.GLMakie.text!(
+                region_box_ax, 
+                2.0, 0.5,
+                text = "⚠️ Keine Markierungen\nerkannt",
+                align = (:center, :center),
+                fontsize = 16,
+                color = :orange
+            )
+            Bas3GLMakie.GLMakie.text!(
+                region_hist_ax, 
+                0.5, 0.5,
+                text = "⚠️ Keine Markierungen erkannt",
+                align = (:center, :center),
+                fontsize = 16,
+                color = :orange
+            )
+            
+            # Set axis limits to show the warning text
+            Bas3GLMakie.GLMakie.xlims!(region_mean_ax, 0, 4)
+            Bas3GLMakie.GLMakie.ylims!(region_mean_ax, 0, 1)
+            Bas3GLMakie.GLMakie.xlims!(region_box_ax, 0, 4)
+            Bas3GLMakie.GLMakie.ylims!(region_box_ax, 0, 1)
+            Bas3GLMakie.GLMakie.xlims!(region_hist_ax, 0, 1)
+            Bas3GLMakie.GLMakie.ylims!(region_hist_ax, 0, 1)
         end
         
-        println("[UPDATE] Successfully updated to image $idx (markers detected: $(length(current_markers[])))")
+        log_event("FUNCTION", "update_image_display_internal completed successfully", data=Dict(
+            :idx => idx,
+            :markers_detected => length(current_markers[])
+        ))
         return true
     end
     
     # Update images when textbox value changes
     Bas3GLMakie.GLMakie.on(textbox.stored_string) do str
+        log_widget_interaction("nav_textbox", "text_changed", str)
+        
         # Skip if being updated from button click
         if updating_from_button[]
-            println("[NAVIGATION] Skipping textbox callback (button update in progress)")
+            log_event("NAVIGATION", "Skipping textbox callback (button update in progress)")
             return
         end
         
@@ -1338,7 +1115,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         idx = tryparse(Int, str)
         
         if idx !== nothing
-            println("[NAVIGATION] Textbox changed: $(current_image_index[]) -> $idx")
+            log_navigation(current_image_index[], idx, "textbox")
             
             # Clear region selection when changing images (selection coords are image-specific)
             selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
@@ -1365,21 +1142,30 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
             
+            log_event("NAVIGATION", "Calling update_image_display_internal from textbox", data=Dict(
+                :idx => idx,
+                :threshold => threshold,
+                :min_area => min_area,
+                :aspect_ratio => aspect_ratio,
+                :aspect_weight => aspect_weight,
+                :kernel_size => kernel_size
+            ))
+            
             update_image_display_internal(idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
         else
-            println("[ERROR] Invalid textbox input: $str")
+            log_event("ERROR", "Invalid textbox input", data=Dict(:input => str))
             textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
         end
     end
     
     # Previous button callback
     Bas3GLMakie.GLMakie.on(prev_button.clicks) do n
-        println("[NAVIGATION] Previous button clicked")
+        log_widget_interaction("prev_button", "clicked", n)
         
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx > 1
             new_idx = current_idx - 1
-            println("[NAVIGATION] Going to previous image: $current_idx -> $new_idx")
+            log_navigation(current_idx, new_idx, "prev_button")
             
             # Clear region selection when changing images (selection coords are image-specific)
             selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
@@ -1406,29 +1192,41 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
             
+            log_event("NAVIGATION", "Calling update_image_display_internal from prev_button", data=Dict(
+                :idx => new_idx,
+                :threshold => threshold,
+                :min_area => min_area,
+                :aspect_ratio => aspect_ratio,
+                :aspect_weight => aspect_weight,
+                :kernel_size => kernel_size
+            ))
+            
             # Update images
             if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
                 # Update textbox without triggering callback
                 updating_from_button[] = true
                 textbox.stored_string[] = string(new_idx)
                 updating_from_button[] = false
-                println("[NAVIGATION] Successfully updated to image $new_idx")
+                log_event("NAVIGATION", "Successfully updated to image $(new_idx)")
             else
-                println("[ERROR] Failed to update to image $new_idx")
+                log_event("ERROR", "Failed to update to image $(new_idx)")
             end
         else
-            println("[NAVIGATION] Cannot go to previous image (current_idx=$current_idx)")
+            log_event("NAVIGATION", "Cannot go to previous image", data=Dict(
+                :current_idx => current_idx,
+                :reason => current_idx === nothing ? "invalid index" : "already at first image"
+            ))
         end
     end
     
     # Next button callback
     Bas3GLMakie.GLMakie.on(next_button.clicks) do n
-        println("[NAVIGATION] Next button clicked")
+        log_widget_interaction("next_button", "clicked", n)
         
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx < length(sets)
             new_idx = current_idx + 1
-            println("[NAVIGATION] Going to next image: $current_idx -> $new_idx")
+            log_navigation(current_idx, new_idx, "next_button")
             
             # Clear region selection when changing images (selection coords are image-specific)
             selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
@@ -1455,6 +1253,14 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
             
+            log_event("NAVIGATION", "Calling update_image_display_internal from next_button", data=Dict(
+                :idx => new_idx,
+                :threshold => threshold,
+                :min_area => min_area,
+                :aspect_ratio => aspect_ratio,
+                :aspect_weight => aspect_weight,
+                :kernel_size => kernel_size
+            ))
             
             # Update images
             if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
@@ -1462,12 +1268,15 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                 updating_from_button[] = true
                 textbox.stored_string[] = string(new_idx)
                 updating_from_button[] = false
-                println("[NAVIGATION] Successfully updated to image $new_idx")
+                log_event("NAVIGATION", "Successfully updated to image $(new_idx)")
             else
-                println("[ERROR] Failed to update to image $new_idx")
+                log_event("ERROR", "Failed to update to image $(new_idx)")
             end
         else
-            println("[NAVIGATION] Cannot go to previous image (current_idx=$current_idx)")
+            log_event("NAVIGATION", "Cannot go to next image", data=Dict(
+                :current_idx => current_idx,
+                :reason => current_idx === nothing ? "invalid index" : "already at last image"
+            ))
         end
     end
     
@@ -1542,323 +1351,62 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Auto-update when textboxes change
     Bas3GLMakie.GLMakie.on(threshold_textbox.stored_string) do val
-        println("[PARAMETER] Threshold changed to: $val")
+        log_parameter_change("threshold", "previous", val)
         update_white_detection("threshold")
     end
     
     Bas3GLMakie.GLMakie.on(min_area_textbox.stored_string) do val
-        println("[PARAMETER] Min area changed to: $val")
+        log_parameter_change("min_area", "previous", val)
         update_white_detection("min area")
     end
     
     Bas3GLMakie.GLMakie.on(aspect_ratio_textbox.stored_string) do val
-        println("[PARAMETER] Aspect ratio changed to: $val")
+        log_parameter_change("aspect_ratio", "previous", val)
         update_white_detection("aspect ratio")
     end
     
     Bas3GLMakie.GLMakie.on(aspect_weight_textbox.stored_string) do val
-        println("[PARAMETER] Aspect weight changed to: $val")
+        log_parameter_change("aspect_weight", "previous", val)
         update_white_detection("aspect weight")
     end
     
     Bas3GLMakie.GLMakie.on(kernel_size_textbox.stored_string) do val
-        println("[PARAMETER] Kernel size changed to: $val")
+        log_parameter_change("kernel_size", "previous", val)
         update_white_detection("kernel size")
     end
     
-    # Start selection button callback
-    Bas3GLMakie.GLMakie.on(start_selection_button.clicks) do n
-        println("[SELECTION] Start selection button clicked")
-        
-        # Clear any previous selection
-        selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-        selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
-        selection_complete[] = false
-        selection_rotation[] = 0.0
-        rotation_textbox.stored_string[] = "0.0"
-        set_textbox_value(x_textbox, "0")
-        set_textbox_value(y_textbox, "0")
-        set_textbox_value(width_textbox, "0")
-        set_textbox_value(height_textbox, "0")
-        selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-        preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
-        
-        # Activate selection mode
-        selection_active[] = true
-        selection_status_label.text = "Klicken Sie auf die erste Ecke"
-        selection_status_label.color = :blue
-        println("[SELECTION] Selection mode activated - waiting for first corner")
-    end
-    
-    # Rotation textbox callback - update rectangle when rotation changes
-    Bas3GLMakie.GLMakie.on(rotation_textbox.stored_string) do val
-        if selection_complete[]
-            angle = tryparse(Float64, val)
-            if angle !== nothing
-                println("[SELECTION] Rotation changed to: $(angle) degrees")
-                selection_rotation[] = angle
-                
-                # Update rectangle visualization with rotation
-                selection_rect[] = make_rotated_rectangle(selection_corner1[], selection_corner2[], angle)
-                
-                # Automatically rerun marker detection
-                rerun_selection_detection()
-            else
-                println("[SELECTION] Invalid rotation angle: $val")
-            end
-        end
-    end
-    
-    # Position and size textbox callbacks - update selection when edited
-    Bas3GLMakie.GLMakie.on(x_textbox.stored_string) do val
-        if updating_textboxes[]
-            return  # Skip callback during programmatic update
-        end
-        if selection_complete[]
-            center_x = tryparse(Float64, val)
-            width_val = tryparse(Float64, width_textbox.stored_string[])
-            if center_x !== nothing && width_val !== nothing
-                # Keep y and height the same
-                y_min = minimum([selection_corner1[][2], selection_corner2[][2]])
-                y_max = maximum([selection_corner1[][2], selection_corner2[][2]])
-                
-                # Update corners from center_x and width
-                half_width = width_val / 2
-                selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(center_x - half_width, y_min)
-                selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(center_x + half_width, y_max)
-                
-                # Update visualization
-                angle = tryparse(Float64, rotation_textbox.stored_string[])
-                angle = angle === nothing ? 0.0 : angle
-                selection_rect[] = make_rotated_rectangle(selection_corner1[], selection_corner2[], angle)
-                
-                # Update ALL textboxes to stay in sync
-                center_y = (y_min + y_max) / 2
-                height = y_max - y_min
-                updating_textboxes[] = true
-                set_textbox_value(y_textbox, string(round(Int, center_y)))
-                set_textbox_value(height_textbox, string(round(Int, height)))
-                updating_textboxes[] = false
-                
-                println("[SELECTION] Center X updated to: $center_x")
-                
-                # Automatically rerun marker detection
-                rerun_selection_detection()
-            end
-        end
-    end
-    
-    Bas3GLMakie.GLMakie.on(y_textbox.stored_string) do val
-        if updating_textboxes[]
-            return  # Skip callback during programmatic update
-        end
-        if selection_complete[]
-            center_y = tryparse(Float64, val)
-            height_val = tryparse(Float64, height_textbox.stored_string[])
-            if center_y !== nothing && height_val !== nothing
-                # Keep x and width the same
-                x_min = minimum([selection_corner1[][1], selection_corner2[][1]])
-                x_max = maximum([selection_corner1[][1], selection_corner2[][1]])
-                
-                # Update corners from center_y and height
-                half_height = height_val / 2
-                selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(x_min, center_y - half_height)
-                selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(x_max, center_y + half_height)
-                
-                # Update visualization
-                angle = tryparse(Float64, rotation_textbox.stored_string[])
-                angle = angle === nothing ? 0.0 : angle
-                selection_rect[] = make_rotated_rectangle(selection_corner1[], selection_corner2[], angle)
-                
-                # Update ALL textboxes to stay in sync
-                center_x = (x_min + x_max) / 2
-                width = x_max - x_min
-                updating_textboxes[] = true
-                set_textbox_value(x_textbox, string(round(Int, center_x)))
-                set_textbox_value(width_textbox, string(round(Int, width)))
-                updating_textboxes[] = false
-                
-                println("[SELECTION] Center Y updated to: $center_y")
-                
-                # Automatically rerun marker detection
-                rerun_selection_detection()
-            end
-        end
-    end
-    
-    Bas3GLMakie.GLMakie.on(width_textbox.stored_string) do val
-        if updating_textboxes[]
-            return  # Skip callback during programmatic update
-        end
-        if selection_complete[]
-            width_val = tryparse(Float64, val)
-            center_x = tryparse(Float64, x_textbox.stored_string[])
-            if width_val !== nothing && width_val > 0 && center_x !== nothing
-                # Keep center_x and y positions the same
-                y_min = minimum([selection_corner1[][2], selection_corner2[][2]])
-                y_max = maximum([selection_corner1[][2], selection_corner2[][2]])
-                
-                # Update corners from center_x and new width
-                half_width = width_val / 2
-                selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(center_x - half_width, y_min)
-                selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(center_x + half_width, y_max)
-                
-                # Update visualization
-                angle = tryparse(Float64, rotation_textbox.stored_string[])
-                angle = angle === nothing ? 0.0 : angle
-                selection_rect[] = make_rotated_rectangle(selection_corner1[], selection_corner2[], angle)
-                
-                # Update ALL textboxes to stay in sync  
-                center_y = (y_min + y_max) / 2
-                height = y_max - y_min
-                updating_textboxes[] = true
-                set_textbox_value(y_textbox, string(round(Int, center_y)))
-                set_textbox_value(height_textbox, string(round(Int, height)))
-                updating_textboxes[] = false
-                
-                println("[SELECTION] Width updated to: $width_val")
-                
-                # Automatically rerun marker detection
-                rerun_selection_detection()
-            end
-        end
-    end
-    
-    Bas3GLMakie.GLMakie.on(height_textbox.stored_string) do val
-        if updating_textboxes[]
-            return  # Skip callback during programmatic update
-        end
-        if selection_complete[]
-            height_val = tryparse(Float64, val)
-            center_y = tryparse(Float64, y_textbox.stored_string[])
-            if height_val !== nothing && height_val > 0 && center_y !== nothing
-                # Keep center_y and x positions the same
-                x_min = minimum([selection_corner1[][1], selection_corner2[][1]])
-                x_max = maximum([selection_corner1[][1], selection_corner2[][1]])
-                
-                # Update corners from center_y and new height
-                half_height = height_val / 2
-                selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(x_min, center_y - half_height)
-                selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(x_max, center_y + half_height)
-                
-                # Update visualization
-                angle = tryparse(Float64, rotation_textbox.stored_string[])
-                angle = angle === nothing ? 0.0 : angle
-                selection_rect[] = make_rotated_rectangle(selection_corner1[], selection_corner2[], angle)
-                
-                # Update ALL textboxes to stay in sync
-                center_x = (x_min + x_max) / 2
-                width = x_max - x_min
-                updating_textboxes[] = true
-                set_textbox_value(x_textbox, string(round(Int, center_x)))
-                set_textbox_value(width_textbox, string(round(Int, width)))
-                updating_textboxes[] = false
-                
-                println("[SELECTION] Height updated to: $height_val")
-                
-                # Automatically rerun marker detection
-                rerun_selection_detection()
-            end
-        end
-    end
-    
-    # Observable to handle selection completion - syncs textboxes AND runs marker detection
-    # This ensures the same behavior whether triggered by mouse click or programmatically
-    Bas3GLMakie.GLMakie.on(selection_complete) do is_complete
-        if is_complete && selection_corner1[] != Bas3GLMakie.GLMakie.Point2f(0, 0) && selection_corner2[] != Bas3GLMakie.GLMakie.Point2f(0, 0)
-            # Sync textboxes with selection corners
-            x_min, x_max = minmax(selection_corner1[][1], selection_corner2[][1])
-            y_min, y_max = minmax(selection_corner1[][2], selection_corner2[][2])
-            center_x = (x_min + x_max) / 2
-            center_y = (y_min + y_max) / 2
-            width = x_max - x_min
-            height = y_max - y_min
-            updating_textboxes[] = true
-            set_textbox_value(x_textbox, string(round(Int, center_x)))
-            set_textbox_value(y_textbox, string(round(Int, center_y)))
-            set_textbox_value(width_textbox, string(round(Int, width)))
-            set_textbox_value(height_textbox, string(round(Int, height)))
-            updating_textboxes[] = false
-            println("[SELECTION] Textboxes synced: center_x=$(center_x), center_y=$(center_y), w=$(width), h=$(height)")
-            
-            # Get current rotation angle
-            angle = tryparse(Float64, rotation_textbox.stored_string[])
-            if angle === nothing
-                angle = 0.0
-            end
-            
-            # Re-run marker detection on selected region
-            current_idx = tryparse(Int, textbox.stored_string[])
-            if current_idx !== nothing && current_idx >= 1 && current_idx <= length(sets)
-                threshold = tryparse(Float64, threshold_textbox.stored_string[])
-                min_area = tryparse(Int, min_area_textbox.stored_string[])
-                aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
-                aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
-                kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
-                
-                if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
-                    # Convert axis coordinates to pixel coordinates
-                    img = sets[current_idx][1]
-                    img_height = Base.size(data(img), 1)
-                    img_width = Base.size(data(img), 2)
-                    
-                    # Convert selection corners to pixel coordinates
-                    c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
-                    c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
-                    
-                    # Use shared helper function for consistent region calculation (Path 3: initial selection)
-                    local row_range, col_range = calculate_selection_region(img, c1_px, c2_px, angle)
-                    region = (first(row_range), last(row_range), first(col_range), last(col_range))
-                    println("[SELECTION] Running marker detection on rotated region: rows=$(row_range), cols=$(col_range)")
-                    
-                    # Detect markers with region constraint (same as update_image_display_internal)
-        local params = Dict(:threshold => threshold, :min_area => min_area, :aspect_ratio => aspect_ratio, :aspect_ratio_weight => aspect_weight, :kernel_size => kernel_size, :region => region, :c1 => c1_px, :c2 => c2_px, :angle => angle)
-                    local markers, success, message = detect_markers_only(img, params)
-                    
-                    # STATE PRESERVATION: Only update if markers were found
-                    # This prevents corruption when region selection finds nothing
-                    if !isempty(markers)
-                        println("[SELECTION-CALLBACK] Found $(length(markers)) marker(s), success=$(success)")
-                        current_white_overlay[] = create_white_overlay(img, markers)
-                        current_marker_viz[] = create_marker_visualization(img, markers)
-                        current_markers[] = markers
-                        println("[SELECTION-CALLBACK] Setting marker_success=$(success), marker_message=$(message)")
-                        marker_success[] = success
-                        marker_message[] = message
-                    else
-                        println("[SELECTION-CALLBACK] No markers found, success=$(success)")
-                        # Region selection failed - keep previous state but update message
-                        println("[SELECTION-CALLBACK] Setting marker_success=false (overriding previous state!)")
-                        marker_success[] = false
-                        marker_message[] = message  # Will show warning from detect_markers_only
-                    end
-                end
-            end
+    # Selection toggle callback
+    Bas3GLMakie.GLMakie.on(selection_toggle.active) do active
+        log_widget_interaction("selection_toggle", "toggled", active)
+        selection_active[] = active
+        if active
+            # Clear any stale selection state when activating
+            selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
+            selection_complete[] = false
+            selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
+            selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
+            selection_status_label.color = :blue
+            log_event("SELECTION", "Selection mode activated")
+        else
+            selection_status_label.text = "Auswahl deaktiviert"
+            selection_status_label.color = :gray
+            log_event("SELECTION", "Selection mode deactivated")
         end
     end
     
     # Clear selection button callback
     Bas3GLMakie.GLMakie.on(clear_selection_button.clicks) do n
-        println("[SELECTION] Clear selection button clicked")
-        
-        # Deactivate selection mode
-        selection_active[] = false
-        
-        # Clear all selection state
+        log_widget_interaction("clear_selection_button", "clicked", n)
         selection_corner1[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
         selection_corner2[] = Bas3GLMakie.GLMakie.Point2f(0, 0)
         selection_complete[] = false
-        selection_rotation[] = 0.0
-        rotation_textbox.stored_string[] = "0.0"
-        set_textbox_value(x_textbox, "0")
-        set_textbox_value(y_textbox, "0")
-        set_textbox_value(width_textbox, "0")
-        set_textbox_value(height_textbox, "0")
         selection_rect[] = Bas3GLMakie.GLMakie.Point2f[]
         preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]
         selection_status_label.text = "Auswahl gelöscht"
         selection_status_label.color = :gray
-        println("[SELECTION] Selection cleared")
+        log_event("SELECTION", "Selection cleared")
         
         # Re-run extraction on full image
         current_idx = tryparse(Int, textbox.stored_string[])
@@ -1870,7 +1418,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
             
             if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
-                println("[SELECTION] Re-running detection on full image after clearing selection")
+                log_event("SELECTION", "Re-running detection on full image after clearing selection")
                 update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
             end
         end
@@ -1884,7 +1432,10 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     local marker_bbox_plots = []
     
     Bas3GLMakie.GLMakie.on(current_markers) do markers
-        println("[OBSERVABLE] current_markers changed: $(length(markers)) markers detected")
+        log_event("OBSERVABLE", "current_markers changed", data=Dict(
+            :num_markers => length(markers),
+            :current_image_index => current_image_index[]
+        ))
         
         # Update centroids - only show the best marker (largest, first in sorted list)
         if !isempty(markers)
@@ -1893,9 +1444,12 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                 local best_marker = markers[1]  # Only take the first (largest) marker
                 local centroids = [Bas3GLMakie.GLMakie.Point2f(best_marker.centroid[2], h - best_marker.centroid[1] + 1)]
                 marker_centroid_plot[] = centroids
-                println("[OBSERVABLE] Updated marker centroids: $(best_marker.centroid)")
+                log_event("OBSERVABLE", "Updated marker centroids", data=Dict(
+                    :centroid => best_marker.centroid,
+                    :image_height => h
+                ))
             catch e
-                println("[ERROR] Failed to update marker centroids: $e")
+                log_error("Failed to update marker centroids", e)
                 marker_centroid_plot[] = Bas3GLMakie.GLMakie.Point2f[]
             end
         else
@@ -1920,7 +1474,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Segmentation toggle callback - control visibility of segmentation and white overlays
     Bas3GLMakie.GLMakie.on(segmentation_toggle.active) do active
-        println("[DISPLAY] Segmentation toggle changed: $active")
         segmentation_overlay_plot.visible = active
         white_overlay_plot.visible = active
         # Update bounding box visibility - will be set up below
@@ -1943,50 +1496,69 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                 
                 if !selection_complete[]
                     if selection_corner1[] == Bas3GLMakie.GLMakie.Point2f(0, 0)
-                        # First click - set first corner
-                        println("[SELECTION] First corner selected: $mp")
+                        # First click - set bottom-left
                         selection_corner1[] = mp
-                        selection_status_label.text = "Klicken Sie auf die gegenüberliegende Ecke"
+                        selection_status_label.text = "Klicken Sie auf die obere rechte Ecke"
                         selection_status_label.color = :blue
                     else
-                        # Second click - set second corner
-                        println("[SELECTION] Second corner selected: $mp")
+                        # Second click - set top-right
                         selection_corner2[] = mp
                         selection_complete[] = true
                         
-                        # Get current rotation angle
-                        angle = tryparse(Float64, rotation_textbox.stored_string[])
-                        if angle === nothing
-                            angle = 0.0
-                        end
-                        selection_rotation[] = angle
-                        
-                        # Update rectangle visualization with rotation
-                        selection_rect[] = make_rotated_rectangle(selection_corner1[], selection_corner2[], angle)
+                        # Update rectangle visualization
+                        selection_rect[] = make_rectangle(selection_corner1[], selection_corner2[])
                         preview_rect[] = Bas3GLMakie.GLMakie.Point2f[]  # Clear preview
                         
-                        # Update position and size textboxes with CENTER coordinates
-                        x_min, x_max = minmax(selection_corner1[][1], selection_corner2[][1])
-                        y_min, y_max = minmax(selection_corner1[][2], selection_corner2[][2])
-                        center_x = (x_min + x_max) / 2
-                        center_y = (y_min + y_max) / 2
-                        width = x_max - x_min
-                        height = y_max - y_min
-                        updating_textboxes[] = true
-                        set_textbox_value(x_textbox, string(round(Int, center_x)))
-                        set_textbox_value(y_textbox, string(round(Int, center_y)))
-                        set_textbox_value(width_textbox, string(round(Int, width)))
-                        set_textbox_value(height_textbox, string(round(Int, height)))
-                        updating_textboxes[] = false
-                        
-                        # Deactivate selection mode after completing selection
-                        selection_active[] = false
-                        selection_status_label.text = "Auswahl abgeschlossen (Rotation: $(angle) Grad)"
+                        selection_status_label.text = "Auswahl abgeschlossen"
                         selection_status_label.color = :green
-                        println("[SELECTION] Selection completed: corner1=$(selection_corner1[]), corner2=$(selection_corner2[]), rotation=$(angle) degrees")
                         
-                        # NOTE: Marker detection now handled by selection_complete observable (line ~1693)
-                        # This ensures consistent behavior for both mouse clicks and programmatic triggers
+                        # Re-run marker detection on selected region
+                        current_idx = tryparse(Int, textbox.stored_string[])
+                        if current_idx !== nothing && current_idx >= 1 && current_idx <= length(sets)
+                            threshold = tryparse(Float64, threshold_textbox.stored_string[])
+                            min_area = tryparse(Int, min_area_textbox.stored_string[])
+                            aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+                            aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+                            kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+                            
+                            if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
+                                # Convert axis coordinates to pixel coordinates
+                                img = sets[current_idx][1]
+                                img_height = Base.size(data(img), 1)
+                                img_width = Base.size(data(img), 2)
+                                
+                                c1_px = axis_to_pixel(selection_corner1[], img_height, img_width)
+                                c2_px = axis_to_pixel(selection_corner2[], img_height, img_width)
+                                
+                                # Ensure correct ordering (min to max)
+                                r_min, r_max = minmax(c1_px[1], c2_px[1])
+                                c_min, c_max = minmax(c1_px[2], c2_px[2])
+                                
+                                region = (r_min, r_max, c_min, c_max)
+                                
+                                # Detect markers with region constraint (same as update_image_display_internal)
+                                local params = Dict(:threshold => threshold, :min_area => min_area, :aspect_ratio => aspect_ratio, :kernel_size => kernel_size, :region => region)
+                                local markers, success, message = detect_markers_only(img, params)
+                                
+                                # STATE PRESERVATION: Only update if markers were found
+                                # This prevents corruption when region selection finds nothing
+                                if !isempty(markers)
+                                    current_white_overlay[] = create_white_overlay(img, markers)
+                                    current_marker_viz[] = create_marker_visualization(img, markers)
+                                    current_markers[] = markers
+                                    marker_success[] = success
+                                    marker_message[] = message
+                                else
+                                    # Region selection failed - keep previous state but update message
+                                    marker_success[] = false
+                                    marker_message[] = message  # Will show warning from detect_markers_only
+                                    
+                                    # Update status label to show the issue clearly
+                                    selection_status_label.text = "⚠️ Keine Markierungen in Auswahl"
+                                    selection_status_label.color = :red
+                                end
+                            end
+                        end
                     end
                 end
                 # Always consume events when selection is active to prevent axis interference
@@ -2004,32 +1576,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                 mp = Bas3GLMakie.GLMakie.mouseposition(axs3.scene)
                 
                 if !isnothing(mp)
-                    # Get current rotation angle from textbox
-                    angle = tryparse(Float64, rotation_textbox.stored_string[])
-                    if angle === nothing
-                        angle = 0.0
-                    end
-                    
-                    println("[PREVIEW] Updating preview with angle: $(angle) degrees, corner1: $(selection_corner1[]), corner2: $mp")
-                    
-                    # Update preview rectangle with rotation
-                    preview_rect[] = make_rotated_rectangle(selection_corner1[], mp, angle)
-                    
-                    # Update position and size textboxes with current preview values (CENTER coordinates)
-                    x_min, x_max = minmax(selection_corner1[][1], mp[1])
-                    y_min, y_max = minmax(selection_corner1[][2], mp[2])
-                    center_x = (x_min + x_max) / 2
-                    center_y = (y_min + y_max) / 2
-                    width = x_max - x_min
-                    height = y_max - y_min
-                    updating_textboxes[] = true
-                    set_textbox_value(x_textbox, string(round(Int, center_x)))
-                    set_textbox_value(y_textbox, string(round(Int, center_y)))
-                    set_textbox_value(width_textbox, string(round(Int, width)))
-                    set_textbox_value(height_textbox, string(round(Int, height)))
-                    updating_textboxes[] = false
-                    
-                    println("[PREVIEW] Preview rect corners: $(preview_rect[])")
+                    # Update preview rectangle
+                    preview_rect[] = make_rectangle(selection_corner1[], mp)
                 end
             end
         end
@@ -2064,7 +1612,10 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Function to draw bounding boxes (will be called when observable updates)
     Bas3GLMakie.GLMakie.on(current_class_bboxes) do bboxes_dict
-        println("[OBSERVABLE] current_class_bboxes changed: $(length(bboxes_dict)) classes")
+        log_event("OBSERVABLE", "current_class_bboxes changed", data=Dict(
+            :num_classes => length(bboxes_dict),
+            :current_image_index => current_image_index[]
+        ))
         
         # Delete all previous bbox drawings
         for plot_obj in bbox_plot_objects
@@ -2077,9 +1628,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         try
             output_data = data(sets[current_image_index[]][2])
             img_height = Base.size(output_data, 1)
-            println("[OBSERVABLE] Drawing bounding boxes for image $(current_image_index[]) (height=$img_height)")
+            
+            log_event("OBSERVABLE", "Drawing bounding boxes", data=Dict(
+                :image_height => img_height,
+                :image_index => current_image_index[]
+            ))
         catch e
-            println("[ERROR] Failed to get image data for bounding boxes: $e")
+            log_error("Failed to get image data for bounding boxes", e)
             return
         end
         
@@ -2143,7 +1698,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :selection_complete => selection_complete,
             :selection_rect => selection_rect,
             :preview_rect => preview_rect,
-            :selection_rotation => selection_rotation,
             
             # Marker Detection (Priority 1)
             :current_markers => current_markers,
@@ -2167,16 +1721,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :textbox_label => textbox_label,
             
             # Selection (Priority 1)
-            :start_selection_button => start_selection_button,
-            :rotation_textbox => rotation_textbox,
+            :selection_toggle => selection_toggle,
             :clear_selection_button => clear_selection_button,
             :selection_status_label => selection_status_label,
-            
-            # Position/Size Textboxes (Priority 1)
-            :x_textbox => x_textbox,
-            :y_textbox => y_textbox,
-            :width_textbox => width_textbox,
-            :height_textbox => height_textbox,
             
             # Parameters (Priority 2)
             :threshold_textbox => threshold_textbox,

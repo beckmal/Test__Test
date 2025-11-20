@@ -1,0 +1,19 @@
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.tif
+
+# Log files
+*.log
+
+# Julia artifacts
+Manifest.toml
+Manifest-linux.toml
+Manifest-windows.toml
+
+# Backup files
+*.backup

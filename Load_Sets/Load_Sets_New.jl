@@ -8,6 +8,9 @@
 # parameter adjustments and white region detection.
 # ============================================================================
 
+# Explicitly import Base print functions to avoid ambiguity with Bas3 exports
+import Base: print, println
+
 println("=== Loading modular components ===")
 
 # Load all modular components via the core module loader
@@ -25,8 +28,8 @@ include("Load_Sets__Core.jl")
 
 println("=== Loading dataset ===")
 
-# Load all dataset files (306 images from disk)
-const sets = load_original_sets(306, false)
+# Load dataset files from disk
+const sets = load_original_sets(50, false)
 println("Loaded $(length(sets)) image sets")
 
 # Split into inputs and raw outputs
@@ -357,8 +360,7 @@ for (i, class) in enumerate(classes)
     )
 end
 
-# Display and save
-display(Bas3GLMakie.GLMakie.Screen(), stats_fig)
+# Save only (don't display - reduces window clutter and event interference)
 stats_filename = "Full_Dataset_Class_Area_Statistics_$(length(sets))_images.png"
 Bas3GLMakie.GLMakie.save(stats_filename, stats_fig)
 println("Saved class statistics to $(stats_filename)")
@@ -874,8 +876,7 @@ for (i, class) in enumerate(bbox_classes)
     end
 end
 
-# Display and save
-display(Bas3GLMakie.GLMakie.Screen(), bbox_fig)
+# Save only (don't display - reduces window clutter and event interference)
 bbox_filename = "Full_Dataset_Bounding_Box_Statistics_$(length(sets))_images.png"
 Bas3GLMakie.GLMakie.save(bbox_filename, bbox_fig)
 println("Saved bounding box metrics to $(bbox_filename)")
@@ -1137,8 +1138,7 @@ Bas3GLMakie.GLMakie.text!(
     align=(:left, :top)
 )
 
-# Display and save
-display(Bas3GLMakie.GLMakie.Screen(), channel_fig)
+# Save only (don't display - reduces window clutter and event interference)
 channel_filename = "Full_Dataset_RGB_Channel_Statistics_$(length(sets))_images.png"
 Bas3GLMakie.GLMakie.save(channel_filename, channel_fig)
 println("Saved channel statistics to $(channel_filename)")
@@ -1148,8 +1148,18 @@ println("Saved channel statistics to $(channel_filename)")
 # ============================================================================
 println("Generating Figure 4: Interactive Visualization...")
 
-const interactive_fig = create_interactive_figure(sets, input_type, raw_output_type)
+const interactive_result = create_interactive_figure(sets, input_type, raw_output_type; test_mode=true)
+const interactive_fig = interactive_result.figure
 display(Bas3GLMakie.GLMakie.Screen(), interactive_fig)
+
+# WORKAROUND: Register figure-level mouse event AFTER display to activate event system
+# This fixes button clicks not working in WSLg/GLMakie
+println("Registering mousebutton workaround on interactive_fig...")
+Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(interactive_fig).mousebutton) do event
+    println("WORKAROUND: Mouse event detected: $(event.button) $(event.action)")
+end
+println("Workaround registered!")
+
 Bas3GLMakie.GLMakie.save("dataset_with_white_regions.png", interactive_fig)
 println("Saved interactive visualization to dataset_with_white_regions.png")
 
