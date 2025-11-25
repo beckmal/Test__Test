@@ -179,14 +179,17 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Panel title
     Bas3GLMakie.GLMakie.Label(
-        param_grid[1, 1:2],
+        param_grid[1, 1:4],
         "Regionsparameter",
         fontsize=18,
         font=:bold,
         halign=:center
     )
     
-    # Threshold parameter - label and textbox side by side
+    # Two-column layout: Left column (cols 1-2), Right column (cols 3-4)
+    # Each parameter has: textbox | label | textbox | label
+    
+    # Row 2: Lower threshold | Upper threshold
     local threshold_textbox = Bas3GLMakie.GLMakie.Textbox(
         param_grid[2, 1],
         placeholder="0.7",
@@ -195,12 +198,24 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     )
     Bas3GLMakie.GLMakie.Label(
         param_grid[2, 2],
-        "Schwellwert (0.0-1.0)",
-        fontsize=14,
+        "Unterer Schwellwert",
+        fontsize=12,
+        halign=:left
+    )
+    local threshold_upper_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[2, 3],
+        placeholder="1.0",
+        stored_string="1.0",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[2, 4],
+        "Oberer Schwellwert",
+        fontsize=12,
         halign=:left
     )
     
-    # Min component area parameter - label and textbox side by side
+    # Row 3: Min area | Aspect ratio
     local min_area_textbox = Bas3GLMakie.GLMakie.Textbox(
         param_grid[3, 1],
         placeholder="8000",
@@ -210,55 +225,89 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     Bas3GLMakie.GLMakie.Label(
         param_grid[3, 2],
         "Min. Fläche [px]",
-        fontsize=14,
+        fontsize=12,
         halign=:left
     )
-    
-    # Preferred aspect ratio parameter - label and textbox side by side
     local aspect_ratio_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[4, 1],
+        param_grid[3, 3],
         placeholder="5.0",
         stored_string="5.0",
         width=80
     )
     Bas3GLMakie.GLMakie.Label(
-        param_grid[4, 2],
-        "Bevorzugtes Seitenverhältnis",
-        fontsize=14,
+        param_grid[3, 4],
+        "Seitenverhältnis",
+        fontsize=12,
         halign=:left
     )
     
-    # Aspect ratio weight parameter - label and textbox side by side
+    # Row 4: Aspect weight | Kernel size
     local aspect_weight_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[5, 1],
+        param_grid[4, 1],
         placeholder="0.6",
         stored_string="0.6",
         width=80
     )
     Bas3GLMakie.GLMakie.Label(
-        param_grid[5, 2],
-        "Seitenverhältnis-Gewichtung (0.0-1.0)",
-        fontsize=14,
+        param_grid[4, 2],
+        "SV-Gewichtung",
+        fontsize=12,
         halign=:left
     )
-    
-    # Kernel size for morphological operations
     local kernel_size_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[6, 1],
+        param_grid[4, 3],
         placeholder="3",
         stored_string="3",
         width=80
     )
     Bas3GLMakie.GLMakie.Label(
+        param_grid[4, 4],
+        "Kernelgröße",
+        fontsize=12,
+        halign=:left
+    )
+    
+    # Row 5: Adaptive toggle | Adaptive window
+    local adaptive_toggle = Bas3GLMakie.GLMakie.Toggle(
+        param_grid[5, 1],
+        active=false
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[5, 2],
+        "Adaptiv aktivieren",
+        fontsize=12,
+        halign=:left
+    )
+    local adaptive_window_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[5, 3],
+        placeholder="25",
+        stored_string="25",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[5, 4],
+        "Adaptive Fenster",
+        fontsize=12,
+        halign=:left
+    )
+    
+    # Row 6: Adaptive offset (spans left side only)
+    local adaptive_offset_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[6, 1],
+        placeholder="0.1",
+        stored_string="0.1",
+        width=80
+    )
+    Bas3GLMakie.GLMakie.Label(
         param_grid[6, 2],
-        "Kernelgröße (0-7)",
-        fontsize=14,
+        "Adaptive Offset",
+        fontsize=12,
         halign=:left
     )
     
     # Error/status message label - spans both columns
     local param_status_label = Bas3GLMakie.GLMakie.Label(
-        param_grid[7, 1:2],
+        param_grid[11, 1:2],
         "",
         fontsize=12,
         halign=:center,
@@ -267,7 +316,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Add separator
     Bas3GLMakie.GLMakie.Label(
-        param_grid[8, 1:2],
+        param_grid[12, 1:2],
         "─────────────────────",
         fontsize=12,
         halign=:center
@@ -275,7 +324,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Region Selection Controls
     Bas3GLMakie.GLMakie.Label(
-        param_grid[9, 1:2],
+        param_grid[13, 1:4],
         "Regionsauswahl",
         fontsize=16,
         font=:bold,
@@ -283,86 +332,91 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     )
     
     local start_selection_button = Bas3GLMakie.GLMakie.Button(
-        param_grid[10, 1:2],
+        param_grid[14, 1:2],
         label="Neue Auswahl starten",
-        fontsize=14
+        fontsize=12
     )
     
     local clear_selection_button = Bas3GLMakie.GLMakie.Button(
-        param_grid[11, 1:2],
+        param_grid[14, 3:4],
         label="Auswahl löschen",
-        fontsize=14
+        fontsize=12
     )
     
-    # Rotation control - textbox and label side by side
+    local save_mask_button = Bas3GLMakie.GLMakie.Button(
+        param_grid[15, 1:4],
+        label="Maske speichern",
+        fontsize=12
+    )
+    
+    # Row 16: Rotation and X Position
     local rotation_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[12, 1],
+        param_grid[16, 1],
         placeholder="0.0",
         stored_string="0.0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[12, 2],
-        "Rotation [°]",
-        fontsize=14,
-        halign=:left
-    )
-    
-    # Position and size controls
-    local x_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[13, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[13, 2],
-        "X Position",
-        fontsize=14,
-        halign=:left
-    )
-    
-    local y_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[14, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[14, 2],
-        "Y Position",
-        fontsize=14,
-        halign=:left
-    )
-    
-    local width_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[15, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
-    )
-    Bas3GLMakie.GLMakie.Label(
-        param_grid[15, 2],
-        "Breite",
-        fontsize=14,
-        halign=:left
-    )
-    
-    local height_textbox = Bas3GLMakie.GLMakie.Textbox(
-        param_grid[16, 1],
-        placeholder="0",
-        stored_string="0",
-        width=80
+        width=60
     )
     Bas3GLMakie.GLMakie.Label(
         param_grid[16, 2],
+        "Rotation [°]",
+        fontsize=12,
+        halign=:left
+    )
+    local x_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[16, 3],
+        placeholder="0",
+        stored_string="0",
+        width=60
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[16, 4],
+        "X Position",
+        fontsize=12,
+        halign=:left
+    )
+    
+    # Row 17: Y Position and Breite
+    local y_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[17, 1],
+        placeholder="0",
+        stored_string="0",
+        width=60
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[17, 2],
+        "Y Position",
+        fontsize=12,
+        halign=:left
+    )
+    local width_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[17, 3],
+        placeholder="0",
+        stored_string="0",
+        width=60
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[17, 4],
+        "Breite",
+        fontsize=12,
+        halign=:left
+    )
+    
+    # Row 18: Höhe (spans all columns since it's the last parameter)
+    local height_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[18, 1],
+        placeholder="0",
+        stored_string="0",
+        width=60
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[18, 2],
         "Höhe",
-        fontsize=14,
+        fontsize=12,
         halign=:left
     )
     
     local selection_status_label = Bas3GLMakie.GLMakie.Label(
-        param_grid[17, 1:2],
+        param_grid[19, 1:4],
         "Keine Auswahl",
         fontsize=11,
         halign=:center,
@@ -371,7 +425,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Add separator
     Bas3GLMakie.GLMakie.Label(
-        param_grid[18, 1:2],
+        param_grid[20, 1:4],
         "─────────────────────",
         fontsize=12,
         halign=:center
@@ -379,7 +433,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Overlay Control
     Bas3GLMakie.GLMakie.Label(
-        param_grid[19, 1:2],
+        param_grid[21, 1:4],
         "Überlagerungen",
         fontsize=16,
         font=:bold,
@@ -387,13 +441,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     )
     
     local segmentation_toggle = Bas3GLMakie.GLMakie.Toggle(
-        param_grid[20, 1],
+        param_grid[22, 1],
         active=true
     )
     Bas3GLMakie.GLMakie.Label(
-        param_grid[20, 2],
+        param_grid[22, 2],
         "Segmentierung anzeigen",
-        fontsize=14,
+        fontsize=12,
         halign=:left
     )
     
@@ -555,10 +609,17 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         local img_data = data(img)
         local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
         
-        # Get bounding box of rotated rectangle
-        local min_x, max_x, min_y, max_y = get_rotated_rect_bounds(corner1, corner2, angle_degrees)
+        # IMPORTANT: corner1 and corner2 are in (row, col) format from axis_to_pixel()
+        # But get_rotated_rect_bounds() expects (x, y) format where x=col, y=row
+        # So we need to swap: (row, col) -> (col, row) aka (x, y)
+        local c1_xy = (corner1[2], corner1[1])  # (row, col) -> (x, y) = (col, row)
+        local c2_xy = (corner2[2], corner2[1])  # (row, col) -> (x, y) = (col, row)
+        
+        # Get bounding box of rotated rectangle in (x, y) space
+        local min_x, max_x, min_y, max_y = get_rotated_rect_bounds(c1_xy, c2_xy, angle_degrees)
         
         # Convert to pixel indices (clamp to image bounds)
+        # min_x/max_x are column coordinates, min_y/max_y are row coordinates
         local col_start = max(1, floor(Int, min_x))
         local col_end = min(w, ceil(Int, max_x))
         local row_start = max(1, floor(Int, min_y))
@@ -623,16 +684,65 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     # Helper function to detect markers using extract_white_mask (single best component with weighted scoring)
     function detect_markers_only(img, params)
         try
+            # Check if we have rotation parameters for creating a rotated region mask
+            local region_param = params[:region]
+            local rotated_mask = nothing
+            
+            if !isnothing(region_param) && haskey(params, :angle) && haskey(params, :c1) && haskey(params, :c2)
+                # We have rotation info - create a rotated region mask instead of axis-aligned box
+                local angle = params[:angle]
+                if angle != 0.0  # Only apply rotation mask if actually rotated
+                    local img_data = data(img)
+                    local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+                    local c1 = params[:c1]
+                    local c2 = params[:c2]
+                    
+                    # Get axis-aligned bounding box to limit the search area
+                    local r_min, r_max, c_min, c_max = region_param
+                    
+                    # IMPORTANT: c1 and c2 are in (row, col) format from axis_to_pixel()
+                    # point_in_rotated_rect expects corners in (x, y) = (col, row) format
+                    # When we swap coordinates, we also need to negate the angle to maintain rotation direction
+                    local c1_xy = (c1[2], c1[1])  # (row, col) -> (col, row) = (x, y)
+                    local c2_xy = (c2[2], c2[1])  # (row, col) -> (col, row) = (x, y)
+                    local angle_corrected = -angle  # Negate angle due to coordinate swap
+                    
+                    # Create mask for pixels inside the rotated rectangle (only check within bounding box)
+                    rotated_mask = falses(h, w)
+                    for r in r_min:r_max
+                        for c in c_min:c_max
+                            if point_in_rotated_rect((r, c), c1_xy, c2_xy, angle_corrected)
+                                rotated_mask[r, c] = true
+                            end
+                        end
+                    end
+                    
+                    local rotated_mask_count = sum(rotated_mask)
+                    println("[DETECT-MARKERS] Created rotated region mask with angle=$(angle)°, bounding box: rows=$(r_min):$(r_max), cols=$(c_min):$(c_max), mask_pixels=$(rotated_mask_count)")
+                end
+            end
+            
             # Use extract_white_mask to find the single best component with weighted scoring
             # This uses: (1-weight) * density + weight * aspect_ratio_score
+            # Support adaptive thresholding if parameters are provided
+            local adaptive_enabled = get(params, :adaptive, false)
+            local adaptive_window = get(params, :adaptive_window, 25)
+            local adaptive_offset = get(params, :adaptive_offset, 0.1)
+            local threshold_upper = get(params, :threshold_upper, 1.0)
+            
             local mask, size, percentage, num_components, density, corners, angle, aspect_ratio = 
                 extract_white_mask(img;
                     threshold=params[:threshold],
+                    threshold_upper=threshold_upper,
                     min_component_area=params[:min_area],
                     preferred_aspect_ratio=params[:aspect_ratio],
                     aspect_ratio_weight=params[:aspect_ratio_weight],
                     kernel_size=params[:kernel_size],
-                    region=params[:region])
+                    region=region_param,
+                    region_mask=rotated_mask,
+                    adaptive=adaptive_enabled,
+                    adaptive_window=adaptive_window,
+                    adaptive_offset=adaptive_offset)
 
             # Convert extract_white_mask output to MarkerInfo format
             local markers = MarkerInfo[]
@@ -675,7 +785,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     end
     
     # Initial marker detection with weighted scoring parameters
-    local init_params = Dict(:threshold => 0.7, :min_area => 8000, :aspect_ratio => 5.0, :aspect_ratio_weight => 0.6, :kernel_size => 3, :region => nothing)
+    # Adaptive thresholding disabled by default, can be enabled via params
+    local init_params = Dict(:threshold => 0.7, :threshold_upper => 1.0, :min_area => 8000, :aspect_ratio => 5.0, :aspect_ratio_weight => 0.6, :kernel_size => 3, :region => nothing, :adaptive => false, :adaptive_window => 25, :adaptive_offset => 0.1)
     local init_markers, init_success, init_message = detect_markers_only(sets[1][1], init_params)
     local init_marker_viz = create_marker_visualization(sets[1][1], init_markers)
     
@@ -937,15 +1048,20 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         
         # Get parameters
         threshold = tryparse(Float64, threshold_textbox.stored_string[])
+        threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
         min_area = tryparse(Int, min_area_textbox.stored_string[])
         aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
         aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
         kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+        adaptive = adaptive_toggle.active[]
+        adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+        adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
         angle = tryparse(Float64, rotation_textbox.stored_string[])
-        println("[AUTO-UPDATE] Using parameters: threshold=$threshold, min_area=$min_area, aspect_ratio=$aspect_ratio, kernel=$kernel_size")
+        println("[AUTO-UPDATE] Using parameters: threshold=$threshold-$threshold_upper, min_area=$min_area, aspect_ratio=$aspect_ratio, kernel=$kernel_size, adaptive=$adaptive")
         
-        if threshold === nothing || min_area === nothing || aspect_ratio === nothing || 
-           aspect_weight === nothing || kernel_size === nothing || angle === nothing
+        if threshold === nothing || threshold_upper === nothing || min_area === nothing || aspect_ratio === nothing || 
+           aspect_weight === nothing || kernel_size === nothing || angle === nothing || 
+           adaptive_window === nothing || adaptive_offset === nothing
             return
         end
         
@@ -964,7 +1080,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         println("[AUTO-UPDATE] Running marker detection on region: rows=$(row_range), cols=$(col_range), rotation=$(angle)°")
         
         # Detect markers
-        local params = Dict(:threshold => threshold, :min_area => min_area, :aspect_ratio => aspect_ratio, :kernel_size => kernel_size, :region => region, :c1 => c1_px, :c2 => c2_px, :angle => angle)
+        local params = Dict(:threshold => threshold, :threshold_upper => threshold_upper, :min_area => min_area, :aspect_ratio => aspect_ratio, :aspect_ratio_weight => aspect_weight, :kernel_size => kernel_size, :region => region, :c1 => c1_px, :c2 => c2_px, :angle => angle, :adaptive => adaptive, :adaptive_window => adaptive_window, :adaptive_offset => adaptive_offset)
         local markers, success, message = detect_markers_only(img, params)
         
         # Update state and trigger display update
@@ -986,15 +1102,34 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             println("[AUTO-UPDATE] Display refreshed: markers, overlays, and bounding boxes updated")
         else
             println("[AUTO-UPDATE] No markers found, success=$(success)")
-            println("[AUTO-UPDATE] Setting marker_success=false, marker_message=$(message)")
+            println("[AUTO-UPDATE] Clearing previous detection results")
+            
+            # Clear all detection visuals to avoid showing stale results
+            img = sets[current_idx][1]
+            current_white_overlay[] = create_white_overlay(img, MarkerInfo[])  # Empty overlay
+            current_marker_viz[] = create_marker_visualization(img, MarkerInfo[])  # Empty/black image
+            current_markers[] = MarkerInfo[]  # Empty list
+            
+            # Update status with enhanced message showing rotation angle if applicable
             marker_success[] = false
-            marker_message[] = message
+            if angle != 0.0
+                marker_message[] = "⚠️ Keine Marker in rotierter Region gefunden ($(angle)°) - versuchen Sie andere Parameter"
+            else
+                marker_message[] = message
+            end
+            
+            # Force refresh of all detection-related observables
+            Bas3GLMakie.GLMakie.notify(current_white_overlay)
+            Bas3GLMakie.GLMakie.notify(current_marker_viz)
+            Bas3GLMakie.GLMakie.notify(current_markers)
+            
+            println("[AUTO-UPDATE] Display cleared: no markers in selected region")
         end
     end
     
     # Helper function to update the image display (core logic without textbox update)
-    function update_image_display_internal(idx, threshold=0.7, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3)
-        println("[UPDATE] Updating to image $idx with params: threshold=$threshold, min_area=$min_component_area, aspect_ratio=$preferred_aspect_ratio, kernel_size=$kernel_size")
+    function update_image_display_internal(idx, threshold=0.7, threshold_upper=1.0, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3, adaptive=false, adaptive_window=25, adaptive_offset=0.1)
+        println("[UPDATE] Updating to image $idx with params: threshold=$threshold-$threshold_upper, min_area=$min_component_area, aspect_ratio=$preferred_aspect_ratio, kernel_size=$kernel_size, adaptive=$adaptive")
         
         # Validate the input
         if idx < 1 || idx > length(sets)
@@ -1043,7 +1178,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         current_class_bboxes[] = extract_class_bboxes(sets[idx][2])
         
         # Update marker visualization (detection only, no dewarping)
-        local params = Dict(:threshold => threshold, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :aspect_ratio_weight => aspect_ratio_weight, :kernel_size => kernel_size, :region => region)
+        local params = Dict(:threshold => threshold, :threshold_upper => threshold_upper, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :aspect_ratio_weight => aspect_ratio_weight, :kernel_size => kernel_size, :region => region, :adaptive => adaptive, :adaptive_window => adaptive_window, :adaptive_offset => adaptive_offset)
         if !isnothing(region)
             params[:c1] = c1_px
             params[:c2] = c2_px
@@ -1064,19 +1199,15 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.notify(current_markers)
             Bas3GLMakie.GLMakie.notify(current_white_overlay)
         else
-            # Keep previous marker visualization but show warning
-            # Update message to show failure but don't corrupt the display
-            if isnothing(region)
-                # Full image detection failed - clear markers
-                current_marker_viz[] = create_marker_visualization(sets[idx][1], MarkerInfo[])
-                current_markers[] = MarkerInfo[]
-                current_white_overlay[] = create_white_overlay(sets[idx][1], MarkerInfo[])
-                # Notify after clearing
-                Bas3GLMakie.GLMakie.notify(current_marker_viz)
-                Bas3GLMakie.GLMakie.notify(current_markers)
-                Bas3GLMakie.GLMakie.notify(current_white_overlay)
-            end
-            # If region detection failed, keep previous markers visible
+            # No markers found - clear detection visuals (both full image and region cases)
+            println("[PARAM-UPDATE] Clearing detection results: no markers found")
+            current_marker_viz[] = create_marker_visualization(sets[idx][1], MarkerInfo[])
+            current_markers[] = MarkerInfo[]
+            current_white_overlay[] = create_white_overlay(sets[idx][1], MarkerInfo[])
+            # Notify after clearing
+            Bas3GLMakie.GLMakie.notify(current_marker_viz)
+            Bas3GLMakie.GLMakie.notify(current_markers)
+            Bas3GLMakie.GLMakie.notify(current_white_overlay)
         end
         
         println("[PARAM-UPDATE] Setting marker_success=$(success), marker_message=$(message)")
@@ -1353,19 +1484,26 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
             min_area = tryparse(Int, min_area_textbox.stored_string[])
             aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
             aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
             kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            adaptive = adaptive_toggle.active[]
+            adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+            adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
             
             # Use defaults if parsing fails
             threshold = threshold === nothing ? 0.7 : threshold
+            threshold_upper = threshold_upper === nothing ? 1.0 : threshold_upper
             min_area = min_area === nothing ? 8000 : min_area
             aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
+            adaptive_window = adaptive_window === nothing ? 25 : adaptive_window
+            adaptive_offset = adaptive_offset === nothing ? 0.1 : adaptive_offset
             
-            update_image_display_internal(idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+            update_image_display_internal(idx, threshold, threshold_upper, min_area, aspect_ratio, aspect_weight, kernel_size, adaptive, adaptive_window, adaptive_offset)
         else
             println("[ERROR] Invalid textbox input: $str")
             textbox_label.text = "Ungültige Eingabe! Geben Sie eine Zahl zwischen 1 und $(length(sets)) ein"
@@ -1394,20 +1532,27 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
             min_area = tryparse(Int, min_area_textbox.stored_string[])
             aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
             aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
             kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            adaptive = adaptive_toggle.active[]
+            adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+            adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
             
             # Use defaults if parsing fails
             threshold = threshold === nothing ? 0.7 : threshold
+            threshold_upper = threshold_upper === nothing ? 1.0 : threshold_upper
             min_area = min_area === nothing ? 8000 : min_area
             aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
+            adaptive_window = adaptive_window === nothing ? 25 : adaptive_window
+            adaptive_offset = adaptive_offset === nothing ? 0.1 : adaptive_offset
             
             # Update images
-            if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+            if update_image_display_internal(new_idx, threshold, threshold_upper, min_area, aspect_ratio, aspect_weight, kernel_size, adaptive, adaptive_window, adaptive_offset)
                 # Update textbox without triggering callback
                 updating_from_button[] = true
                 textbox.stored_string[] = string(new_idx)
@@ -1443,21 +1588,28 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             
             # Read parameter values from textboxes
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
             min_area = tryparse(Int, min_area_textbox.stored_string[])
             aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
             aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
             kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            adaptive = adaptive_toggle.active[]
+            adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+            adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
             
             # Use defaults if parsing fails
             threshold = threshold === nothing ? 0.7 : threshold
+            threshold_upper = threshold_upper === nothing ? 1.0 : threshold_upper
             min_area = min_area === nothing ? 8000 : min_area
             aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
             aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
             kernel_size = kernel_size === nothing ? 3 : kernel_size
+            adaptive_window = adaptive_window === nothing ? 25 : adaptive_window
+            adaptive_offset = adaptive_offset === nothing ? 0.1 : adaptive_offset
             
             
             # Update images
-            if update_image_display_internal(new_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+            if update_image_display_internal(new_idx, threshold, threshold_upper, min_area, aspect_ratio, aspect_weight, kernel_size, adaptive, adaptive_window, adaptive_offset)
                 # Update textbox without triggering callback
                 updating_from_button[] = true
                 textbox.stored_string[] = string(new_idx)
@@ -1475,18 +1627,30 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     function update_white_detection(source="manual")
         # Parse and validate all parameters
         threshold = tryparse(Float64, threshold_textbox.stored_string[])
+        threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
         min_area = tryparse(Int, min_area_textbox.stored_string[])
         aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
         aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
         kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+        adaptive = adaptive_toggle.active[]
+        adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+        adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
         
         # Validation checks
         validation_errors = String[]
         
         if threshold === nothing
-            push!(validation_errors, "Threshold must be a number")
+            push!(validation_errors, "Lower threshold must be a number")
         elseif threshold < 0.0 || threshold > 1.0
-            push!(validation_errors, "Threshold must be 0.0-1.0")
+            push!(validation_errors, "Lower threshold must be 0.0-1.0")
+        end
+        
+        if threshold_upper === nothing
+            push!(validation_errors, "Upper threshold must be a number")
+        elseif threshold_upper < 0.0 || threshold_upper > 1.0
+            push!(validation_errors, "Upper threshold must be 0.0-1.0")
+        elseif threshold !== nothing && threshold_upper < threshold
+            push!(validation_errors, "Upper threshold must be >= lower threshold")
         end
         
         if min_area === nothing
@@ -1513,6 +1677,18 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             push!(validation_errors, "Kernel Size must be 0-10")
         end
         
+        if adaptive_window === nothing
+            push!(validation_errors, "Adaptive Window must be a number")
+        elseif adaptive_window < 5 || adaptive_window > 51
+            push!(validation_errors, "Adaptive Window must be 5-51")
+        end
+        
+        if adaptive_offset === nothing
+            push!(validation_errors, "Adaptive Offset must be a number")
+        elseif adaptive_offset < 0.0 || adaptive_offset > 1.0
+            push!(validation_errors, "Adaptive Offset must be 0.0-1.0")
+        end
+        
         # If validation fails, show error
         if !isempty(validation_errors)
             param_status_label.text = join(validation_errors, " | ")
@@ -1529,7 +1705,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
         
         # Update the display with new parameters
-        if update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+        if update_image_display_internal(current_idx, threshold, threshold_upper, min_area, aspect_ratio, aspect_weight, kernel_size, adaptive, adaptive_window, adaptive_offset)
             param_status_label.text = "Aktualisiert ($source)"
             param_status_label.color = :green
             return true
@@ -1542,8 +1718,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Auto-update when textboxes change
     Bas3GLMakie.GLMakie.on(threshold_textbox.stored_string) do val
-        println("[PARAMETER] Threshold changed to: $val")
-        update_white_detection("threshold")
+        println("[PARAMETER] Lower threshold changed to: $val")
+        update_white_detection("lower threshold")
+    end
+    
+    Bas3GLMakie.GLMakie.on(threshold_upper_textbox.stored_string) do val
+        println("[PARAMETER] Upper threshold changed to: $val")
+        update_white_detection("upper threshold")
     end
     
     Bas3GLMakie.GLMakie.on(min_area_textbox.stored_string) do val
@@ -1564,6 +1745,21 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     Bas3GLMakie.GLMakie.on(kernel_size_textbox.stored_string) do val
         println("[PARAMETER] Kernel size changed to: $val")
         update_white_detection("kernel size")
+    end
+    
+    Bas3GLMakie.GLMakie.on(adaptive_toggle.active) do val
+        println("[PARAMETER] Adaptive threshold changed to: $val")
+        update_white_detection("adaptive mode")
+    end
+    
+    Bas3GLMakie.GLMakie.on(adaptive_window_textbox.stored_string) do val
+        println("[PARAMETER] Adaptive window changed to: $val")
+        update_white_detection("adaptive window")
+    end
+    
+    Bas3GLMakie.GLMakie.on(adaptive_offset_textbox.stored_string) do val
+        println("[PARAMETER] Adaptive offset changed to: $val")
+        update_white_detection("adaptive offset")
     end
     
     # Start selection button callback
@@ -1791,12 +1987,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_idx = tryparse(Int, textbox.stored_string[])
             if current_idx !== nothing && current_idx >= 1 && current_idx <= length(sets)
                 threshold = tryparse(Float64, threshold_textbox.stored_string[])
+                threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
                 min_area = tryparse(Int, min_area_textbox.stored_string[])
                 aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
                 aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
                 kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
                 
-                if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
+                if threshold !== nothing && threshold_upper !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
                     # Convert axis coordinates to pixel coordinates
                     img = sets[current_idx][1]
                     img_height = Base.size(data(img), 1)
@@ -1812,7 +2009,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                     println("[SELECTION] Running marker detection on rotated region: rows=$(row_range), cols=$(col_range)")
                     
                     # Detect markers with region constraint (same as update_image_display_internal)
-        local params = Dict(:threshold => threshold, :min_area => min_area, :aspect_ratio => aspect_ratio, :aspect_ratio_weight => aspect_weight, :kernel_size => kernel_size, :region => region, :c1 => c1_px, :c2 => c2_px, :angle => angle)
+        local params = Dict(:threshold => threshold, :threshold_upper => threshold_upper, :min_area => min_area, :aspect_ratio => aspect_ratio, :aspect_ratio_weight => aspect_weight, :kernel_size => kernel_size, :region => region, :c1 => c1_px, :c2 => c2_px, :angle => angle)
                     local markers, success, message = detect_markers_only(img, params)
                     
                     # STATE PRESERVATION: Only update if markers were found
@@ -1827,10 +2024,21 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                         marker_message[] = message
                     else
                         println("[SELECTION-CALLBACK] No markers found, success=$(success)")
-                        # Region selection failed - keep previous state but update message
-                        println("[SELECTION-CALLBACK] Setting marker_success=false (overriding previous state!)")
+                        println("[SELECTION-CALLBACK] Clearing previous detection results")
+                        
+                        # Clear all detection visuals instead of preserving old state
+                        current_white_overlay[] = create_white_overlay(img, MarkerInfo[])
+                        current_marker_viz[] = create_marker_visualization(img, MarkerInfo[])
+                        current_markers[] = MarkerInfo[]
+                        
+                        # Update status with enhanced message
+                        println("[SELECTION-CALLBACK] Setting marker_success=false, marker_message=$(message)")
                         marker_success[] = false
-                        marker_message[] = message  # Will show warning from detect_markers_only
+                        if angle != 0.0
+                            marker_message[] = "⚠️ Keine Marker in rotierter Region gefunden ($(angle)°) - versuchen Sie andere Parameter"
+                        else
+                            marker_message[] = message
+                        end
                     end
                 end
             end
@@ -1864,15 +2072,115 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         current_idx = tryparse(Int, textbox.stored_string[])
         if current_idx !== nothing && current_idx >= 1 && current_idx <= length(sets)
             threshold = tryparse(Float64, threshold_textbox.stored_string[])
+            threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
             min_area = tryparse(Int, min_area_textbox.stored_string[])
             aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
             aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
             kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+            adaptive = adaptive_toggle.active[]
+            adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+            adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
             
-            if threshold !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing
+            if threshold !== nothing && threshold_upper !== nothing && min_area !== nothing && aspect_ratio !== nothing && aspect_weight !== nothing && kernel_size !== nothing && adaptive_window !== nothing && adaptive_offset !== nothing
                 println("[SELECTION] Re-running detection on full image after clearing selection")
-                update_image_display_internal(current_idx, threshold, min_area, aspect_ratio, aspect_weight, kernel_size)
+                update_image_display_internal(current_idx, threshold, threshold_upper, min_area, aspect_ratio, aspect_weight, kernel_size, adaptive, adaptive_window, adaptive_offset)
             end
+        end
+    end
+    
+    # Save mask button callback
+    Bas3GLMakie.GLMakie.on(save_mask_button.clicks) do n
+        println("[SAVE] Save mask button clicked")
+        
+        # Get current markers
+        markers = current_markers[]
+        
+        if isempty(markers)
+            println("[SAVE] No markers detected - nothing to save")
+            selection_status_label.text = "⚠ Keine Maske zum Speichern"
+            selection_status_label.color = :red
+            return
+        end
+        
+        # Get UI index from textbox
+        ui_idx = tryparse(Int, textbox.stored_string[])
+        if ui_idx === nothing || ui_idx < 1 || ui_idx > length(sets)
+            println("[SAVE] Invalid image index: $ui_idx")
+            selection_status_label.text = "❌ Ungültiger Index"
+            selection_status_label.color = :red
+            return
+        end
+        
+        # Get original dataset index from sets tuple
+        current_set = sets[ui_idx]
+        dataset_idx = if length(current_set) >= 3
+            current_set[3]  # Original dataset index (1-306)
+        else
+            ui_idx  # Fallback to UI index if tuple doesn't have index
+        end
+        
+        println("[SAVE] UI index: $ui_idx, Dataset index: $dataset_idx")
+        
+        # Format dataset index as 3-digit zero-padded string
+        id_str = lpad(dataset_idx, 3, '0')  # e.g., "001", "042", "306"
+        
+        # Construct MuHa folder path (resolve for WSL/Windows compatibility)
+        base_path = resolve_path("C:/Syncthing/MuHa - Bilder")
+        folder_name = "MuHa_$(id_str)"
+        folder_path = joinpath(base_path, folder_name)
+        
+        # Check if folder exists
+        if !isdir(folder_path)
+            error_msg = "❌ Ordner nicht gefunden: $folder_name"
+            println("[SAVE] Error: Folder does not exist: $folder_path")
+            selection_status_label.text = error_msg
+            selection_status_label.color = :red
+            return
+        end
+        
+        # Construct output filename following MuHa convention
+        output_filename = "MuHa_$(id_str)_ruler_mask.png"
+        output_path = joinpath(folder_path, output_filename)
+        
+        println("[SAVE] Target path: $output_path")
+        
+        # Get the best marker (first in list)
+        best_marker = markers[1]
+        mask = best_marker.mask
+        
+        try
+            # Convert mask to grayscale image (white=marker, black=background)
+            # Convert BitMatrix to RGB array for saving as PNG
+            h, w = size(mask)
+            mask_img = zeros(Bas3ImageSegmentation.RGB{Float32}, h, w)
+            mask_img[mask] .= Bas3ImageSegmentation.RGB{Float32}(1.0f0, 1.0f0, 1.0f0)  # White where mask is true
+            
+            # Save to MuHa folder
+            Bas3GLMakie.GLMakie.save(output_path, mask_img)
+            
+            println("[SAVE] ✓ Mask saved to: $output_path")
+            selection_status_label.text = "✓ Gespeichert: $folder_name"
+            selection_status_label.color = :green
+            
+            # Reset status after 3 seconds
+            @async begin
+                sleep(3)
+                if selection_active[]
+                    selection_status_label.text = "Klicken Sie auf die untere linke Ecke"
+                    selection_status_label.color = :blue
+                else
+                    selection_status_label.text = "Keine Auswahl"
+                    selection_status_label.color = :gray
+                end
+            end
+        catch e
+            error_msg = "❌ Fehler: $(typeof(e))"
+            println("[SAVE] Error saving mask: $e")
+            println("[SAVE] Stack trace:")
+            Base.showerror(stdout, e, catch_backtrace())
+            println()
+            selection_status_label.text = error_msg
+            selection_status_label.color = :red
         end
     end
     
@@ -2036,18 +2344,16 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         return Bas3GLMakie.GLMakie.Consume(false)
     end
     
-    # Draw selection rectangle (cyan with semi-transparent fill)
-    Bas3GLMakie.GLMakie.poly!(axs3, selection_rect, 
-        color = (:cyan, 0.2),
-        strokecolor = :cyan,
-        strokewidth = 3,
+    # Draw selection rectangle (cyan border only, no fill)
+    Bas3GLMakie.GLMakie.lines!(axs3, selection_rect, 
+        color = :cyan,
+        linewidth = 3,
         visible = Bas3GLMakie.GLMakie.@lift(!isempty($selection_rect)))
     
-    # Draw preview rectangle while selecting (lighter cyan, dashed would be nice but using lighter color)
-    Bas3GLMakie.GLMakie.poly!(axs3, preview_rect,
-        color = (:cyan, 0.1),
-        strokecolor = (:cyan, 0.6),
-        strokewidth = 2,
+    # Draw preview rectangle while selecting (cyan border only, thinner line)
+    Bas3GLMakie.GLMakie.lines!(axs3, preview_rect,
+        color = :cyan,
+        linewidth = 2,
         visible = Bas3GLMakie.GLMakie.@lift(!isempty($preview_rect)))
     
     # Draw bounding boxes for each class with 50% alpha
@@ -2134,6 +2440,16 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     if test_mode
         println("[TEST MODE] Returning figure with observables and widgets access")
         
+        # Create axes dictionary for direct access
+        axes_dict = Dict{Symbol, Any}(
+            :markers_axis => axs_markers,
+            :image_axis => axs3,
+            :full_mean_axis => full_mean_ax,
+            :full_box_axis => full_box_ax,
+            :region_mean_axis => region_mean_ax,
+            :region_box_axis => region_box_ax
+        )
+        
         # Create observables dictionary (Priority 1 + Priority 2)
         observables_dict = Dict{Symbol, Any}(
             # Region Selection (Priority 1)
@@ -2155,7 +2471,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :current_output_image => current_output_image,
             :current_white_overlay => current_white_overlay,
             :current_marker_viz => current_marker_viz,
-            :current_image_index => current_image_index
+            :current_image_index => current_image_index,
+            :current_class_bboxes => current_class_bboxes
         )
         
         # Create widgets dictionary (Priority 1 + Priority 2 + Priority 3)
@@ -2170,6 +2487,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :start_selection_button => start_selection_button,
             :rotation_textbox => rotation_textbox,
             :clear_selection_button => clear_selection_button,
+            :save_mask_button => save_mask_button,
             :selection_status_label => selection_status_label,
             
             # Position/Size Textboxes (Priority 1)
@@ -2180,10 +2498,14 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             
             # Parameters (Priority 2)
             :threshold_textbox => threshold_textbox,
+            :threshold_upper_textbox => threshold_upper_textbox,
             :min_area_textbox => min_area_textbox,
             :aspect_ratio_textbox => aspect_ratio_textbox,
             :aspect_weight_textbox => aspect_weight_textbox,
             :kernel_size_textbox => kernel_size_textbox,
+            :adaptive_toggle => adaptive_toggle,
+            :adaptive_window_textbox => adaptive_window_textbox,
+            :adaptive_offset_textbox => adaptive_offset_textbox,
             
             # Display (Priority 3)
             :segmentation_toggle => segmentation_toggle
@@ -2192,6 +2514,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         # Return named tuple with all components
         return (
             figure = fgr,
+            axes = axes_dict,
             observables = observables_dict,
             widgets = widgets_dict
         )

@@ -15,6 +15,7 @@ Use this to get all core functionality including interactive visualizations.
 - Statistics: Statistical computations
 - ConnectedComponents: White region detection and PCA analysis
 - DataLoading: Dataset loading and augmentation
+- WhiteBalance: Bradford chromatic adaptation for color correction
 - Initialization: Package loading and environment setup
 - InteractiveUI: Interactive visualization (Figure 4)
 
@@ -55,16 +56,19 @@ include("Load_Sets__Statistics.jl")
 println("  7/8 Loading ConnectedComponents...")
 include("Load_Sets__ConnectedComponents.jl")
 
-println("  8/11 Loading DataLoading...")
+println("  8/12 Loading DataLoading...")
 include("Load_Sets__DataLoading.jl")
 
-println("  9/11 Loading ThinPlateSpline...")
+println("  9/12 Loading WhiteBalance...")
+include("Load_Sets__WhiteBalance.jl")
+
+println("  10/12 Loading ThinPlateSpline...")
 include("Load_Sets__ThinPlateSpline.jl")
 
-println("  10/11 Loading MarkerCorrespondence...")
+println("  11/12 Loading MarkerCorrespondence...")
 include("Load_Sets__MarkerCorrespondence.jl")
 
-println("  11/11 Loading InteractiveUI...")
+println("  12/12 Loading InteractiveUI...")
 include("Load_Sets__InteractiveUI.jl")
 
 println("✅ Load_Sets core modules loaded successfully")
@@ -84,4 +88,6 @@ println("  - create_interactive_figure(sets, input_type, raw_output_type)")
 println("  - detect_calibration_markers(img; threshold, min_area, ...)")
 println("  - dewarp_image_with_markers(img; marker_detection_params, ...)")
 println("  - warp_image_tps(img, source_points, target_points)")
+println("  - whitebalance_bradford(color, src_white, ref_white)")
+println("  - apply_whitebalance_to_image(img, src_white, ref_white)")
 println("")

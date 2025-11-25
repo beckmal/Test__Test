@@ -61,7 +61,7 @@ function load_original_sets(_length::Int=306, regenerate_images::Bool=false)
     end
     
     temp_sets = []
-    _index_array = shuffle(1:_length)
+    _index_array = collect(1:_length)  # Sequential order for predictable UI mapping
     
     if regenerate_images == false
         println("Loading original sets from disk (first $((_length)) images)...")
@@ -85,7 +85,7 @@ function load_original_sets(_length::Int=306, regenerate_images::Bool=false)
                     output_collection=true
                 ))
             end
-            push!(temp_sets, (memory_map(input), memory_map(output)))
+            push!(temp_sets, (memory_map(input), memory_map(output), _index_array[index]))
         end
         
         println("Saving original sets to disk...")
