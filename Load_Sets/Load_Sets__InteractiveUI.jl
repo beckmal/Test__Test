@@ -82,8 +82,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                                    test_mode::Bool=false)
     println("[INFO] Creating interactive figure with $(length(sets)) images (test_mode=$test_mode)")
     
-    # Get classes from raw_output_type using shape()
-    classes = shape(raw_output_type)
+    # Get classes from the first output image's shape
+    classes = shape(sets[1][2])
     
     # Figure 4: Image Visualization with White Region Detection
     # Layout: Marker Extraction - Image - Full Image Stats - White Region Stats - Controls
@@ -98,13 +98,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         halign=:center
     )
     
-    # Column 1: Marker Extraction Visualization
-    local axs_markers = Bas3GLMakie.GLMakie.Axis(
+    # Column 1: Closeup View of Extracted Region (rotatable)
+    local axs_closeup = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 1];
-        title="Extrahierte Markierungen",
+        title="Region Nahansicht (rotierbar)",
         aspect=Bas3GLMakie.GLMakie.DataAspect()
     )
-    Bas3GLMakie.GLMakie.hidedecorations!(axs_markers)
+    Bas3GLMakie.GLMakie.hidedecorations!(axs_closeup)
     
     # Column 2: Input Image with Segmentation Overlay and White Region Detection
     local axs3 = Bas3GLMakie.GLMakie.Axis(
@@ -415,6 +415,20 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         halign=:left
     )
     
+    # Row 18b: Closeup Rotation (right side of same row)
+    local closeup_rotation_textbox = Bas3GLMakie.GLMakie.Textbox(
+        param_grid[18, 3],
+        placeholder="0.0",
+        stored_string="0.0",
+        width=60
+    )
+    Bas3GLMakie.GLMakie.Label(
+        param_grid[18, 4],
+        "Nahansicht Rotation [°]",
+        fontsize=12,
+        halign=:left
+    )
+    
     local selection_status_label = Bas3GLMakie.GLMakie.Label(
         param_grid[19, 1:4],
         "Keine Auswahl",
@@ -652,6 +666,176 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         
         # Overlay will be drawn separately with scatter and lines
         return rotr90(viz)
+    end
+    
+    # Helper function to extract and rotate closeup region from marker bounding box
+    function extract_closeup_region(img, markers, rotation_degrees::Float64)
+        """
+        Extracts and rotates the bounding box region of a detected marker.
+        
+        Returns a closeup view of the marker region, optionally rotated.
+        If no markers, returns a gray placeholder image.
+        """
+        
+        println("[CLOSEUP-EXTRACT] Called with $(length(markers)) markers, rotation=$(rotation_degrees)°")
+        
+        # Return placeholder if no markers
+        if isempty(markers)
+            println("[CLOSEUP-EXTRACT] No markers - returning gray placeholder")
+            return fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
+        end
+        
+        local best_marker = markers[1]
+        println("[CLOSEUP-EXTRACT] Best marker corners: $(best_marker.corners)")
+        
+        # Check if marker has valid corners
+        if isempty(best_marker.corners) || length(best_marker.corners) < 8
+            println("[CLOSEUP-EXTRACT] Invalid corners - returning gray placeholder")
+            return fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
+        end
+        
+        # Extract corners from marker (row, col format)
+        local corners = [
+            (best_marker.corners[1], best_marker.corners[2]),
+            (best_marker.corners[3], best_marker.corners[4]),
+            (best_marker.corners[5], best_marker.corners[6]),
+            (best_marker.corners[7], best_marker.corners[8])
+        ]
+        
+        # Get axis-aligned bounding box
+        local rows = [c[1] for c in corners]
+        local cols = [c[2] for c in corners]
+        local r_min, r_max = floor(Int, minimum(rows)), ceil(Int, maximum(rows))
+        local c_min, c_max = floor(Int, minimum(cols)), ceil(Int, maximum(cols))
+        
+        println("[CLOSEUP-EXTRACT] Bounding box: rows=$(r_min):$(r_max), cols=$(c_min):$(c_max)")
+        
+        # Extract image data
+        local img_data = data(img)
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+        
+        # Clamp to image bounds
+        r_min = max(1, r_min)
+        r_max = min(h, r_max)
+        c_min = max(1, c_min)
+        c_max = min(w, c_max)
+        
+        println("[CLOSEUP-EXTRACT] Clamped bbox: rows=$(r_min):$(r_max), cols=$(c_min):$(c_max), img_size=$(h)x$(w)")
+        
+        # Crop region
+        local cropped = img_data[r_min:r_max, c_min:c_max, :]
+        
+        println("[CLOSEUP-EXTRACT] Cropped size: $(size(cropped))")
+        
+        # Get marker's PCA angle to unrotate it first
+        local pca_angle = best_marker.angle
+        println("[CLOSEUP-EXTRACT] Marker PCA angle: $(pca_angle)°")
+        
+        # Apply rotation: first unrotate by PCA angle, then apply user rotation
+        local total_rotation = -pca_angle + rotation_degrees
+        println("[CLOSEUP-EXTRACT] Total rotation: $(total_rotation)° (PCA correction + user rotation)")
+        
+        # Convert 3D array to 2D RGB matrix for display
+        if abs(total_rotation) > 0.1  # Threshold to avoid unnecessary computation
+            local rotated = rotate_image_region(cropped, total_rotation)
+            local rgb_rotated = convert_to_rgb_matrix(rotated)
+            println("[CLOSEUP-EXTRACT] Returning rotated closeup")
+            return rotr90(rgb_rotated)
+        else
+            local rgb_matrix = convert_to_rgb_matrix(cropped)
+            println("[CLOSEUP-EXTRACT] Returning non-rotated closeup")
+            return rotr90(rgb_matrix)
+        end
+    end
+    
+    # Helper function to convert 3D array (H×W×3) to 2D RGB matrix
+    function convert_to_rgb_matrix(img_data)
+        """
+        Converts a 3D array (height × width × 3) to a 2D matrix of RGB values
+        """
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+        local rgb_matrix = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
+        
+        for i in 1:h
+            for j in 1:w
+                rgb_matrix[i, j] = Bas3ImageSegmentation.RGB{Float32}(
+                    img_data[i, j, 1],  # R
+                    img_data[i, j, 2],  # G
+                    img_data[i, j, 3]   # B
+                )
+            end
+        end
+        
+        return rgb_matrix
+    end
+    
+    # Helper function to rotate an image region
+    function rotate_image_region(img_data, angle_degrees::Float64)
+        """
+        Rotates an image region by the specified angle using bilinear interpolation.
+        Expands canvas to fit entire rotated content without cropping.
+        """
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+        local angle_rad = deg2rad(angle_degrees)
+        local cos_a = cos(angle_rad)
+        local sin_a = sin(angle_rad)
+        
+        # Calculate expanded dimensions to fit entire rotated content
+        local new_h = ceil(Int, abs(h * cos_a) + abs(w * sin_a))
+        local new_w = ceil(Int, abs(w * cos_a) + abs(h * sin_a))
+        
+        # Create output image
+        local rotated = zeros(eltype(img_data), new_h, new_w, Base.size(img_data, 3))
+        
+        # Center points for rotation
+        local center_h = h / 2.0
+        local center_w = w / 2.0
+        local new_center_h = new_h / 2.0
+        local new_center_w = new_w / 2.0
+        
+        # For each pixel in output, find corresponding input pixel
+        for i in 1:new_h
+            for j in 1:new_w
+                # Translate to origin (using new center for output coordinates)
+                local y = i - new_center_h
+                local x = j - new_center_w
+                
+                # Rotate backwards (inverse rotation)
+                local src_y = -x * sin_a + y * cos_a + center_h
+                local src_x = x * cos_a + y * sin_a + center_w
+                
+                # Bilinear interpolation from source image
+                if src_y >= 1 && src_y <= h && src_x >= 1 && src_x <= w
+                    # Get integer and fractional parts
+                    local y1 = floor(Int, src_y)
+                    local x1 = floor(Int, src_x)
+                    local y2 = min(h, y1 + 1)
+                    local x2 = min(w, x1 + 1)
+                    local fy = src_y - y1
+                    local fx = src_x - x1
+                    
+                    # Bilinear interpolation for each channel
+                    for c in 1:Base.size(img_data, 3)
+                        local v11 = img_data[y1, x1, c]
+                        local v12 = img_data[y1, x2, c]
+                        local v21 = img_data[y2, x1, c]
+                        local v22 = img_data[y2, x2, c]
+                        
+                        # Interpolate
+                        local v1 = v11 * (1 - fx) + v12 * fx
+                        local v2 = v21 * (1 - fx) + v22 * fx
+                        rotated[i, j, c] = v1 * (1 - fy) + v2 * fy
+                    end
+                else
+                    # Black background for areas outside original bounds (rotated corners)
+                    for c in 1:Base.size(img_data, 3)
+                        rotated[i, j, c] = 0.0f0
+                    end
+                end
+            end
+        end
+        
+        return rotated
     end
     
     # Check if a point is inside a rotated rectangle defined by c1, c2, angle
@@ -1011,6 +1195,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     local marker_success = Bas3GLMakie.GLMakie.Observable(init_success)
     local marker_message = Bas3GLMakie.GLMakie.Observable(init_message)
     
+    # Observables for closeup view
+    local closeup_rotation = Bas3GLMakie.GLMakie.Observable(0.0)
+    local init_closeup = extract_closeup_region(sets[1][1], init_markers, 0.0)
+    local current_closeup_image = Bas3GLMakie.GLMakie.Observable(init_closeup)
+    
     # Track current image index (fixes crashes when navigating between images)
     local current_image_index = Bas3GLMakie.GLMakie.Observable(1)
     
@@ -1194,20 +1383,31 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_marker_viz[] = create_marker_visualization(sets[idx][1], markers)
             current_markers[] = markers
             current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
+            
+            # Update closeup view with best marker
+            local closeup_img = extract_closeup_region(sets[idx][1], markers, closeup_rotation[])
+            current_closeup_image[] = closeup_img
+            
             # Explicitly notify visualization observables to force UI refresh
             Bas3GLMakie.GLMakie.notify(current_marker_viz)
             Bas3GLMakie.GLMakie.notify(current_markers)
             Bas3GLMakie.GLMakie.notify(current_white_overlay)
+            Bas3GLMakie.GLMakie.notify(current_closeup_image)
         else
             # No markers found - clear detection visuals (both full image and region cases)
             println("[PARAM-UPDATE] Clearing detection results: no markers found")
             current_marker_viz[] = create_marker_visualization(sets[idx][1], MarkerInfo[])
             current_markers[] = MarkerInfo[]
             current_white_overlay[] = create_white_overlay(sets[idx][1], MarkerInfo[])
+            
+            # Show placeholder in closeup
+            current_closeup_image[] = fill(Bas3GLMakie.GLMakie.RGB{Float32}(0.5, 0.5, 0.5), 100, 100)
+            
             # Notify after clearing
             Bas3GLMakie.GLMakie.notify(current_marker_viz)
             Bas3GLMakie.GLMakie.notify(current_markers)
             Bas3GLMakie.GLMakie.notify(current_white_overlay)
+            Bas3GLMakie.GLMakie.notify(current_closeup_image)
         end
         
         println("[PARAM-UPDATE] Setting marker_success=$(success), marker_message=$(message)")
@@ -1805,6 +2005,32 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
     end
     
+    # Closeup rotation callback
+    Bas3GLMakie.GLMakie.on(closeup_rotation_textbox.stored_string) do val
+        angle = tryparse(Float64, val)
+        if angle !== nothing
+            println("[CLOSEUP] Rotation changed to: $(angle) degrees")
+            closeup_rotation[] = angle
+            
+            # Regenerate closeup with new rotation
+            markers = current_markers[]
+            if !isempty(markers)
+                current_idx = current_image_index[]
+                if current_idx >= 1 && current_idx <= length(sets)
+                    closeup_img = extract_closeup_region(
+                        sets[current_idx][1], 
+                        markers, 
+                        angle
+                    )
+                    current_closeup_image[] = closeup_img
+                    Bas3GLMakie.GLMakie.notify(current_closeup_image)
+                end
+            end
+        else
+            println("[CLOSEUP] Invalid rotation angle: $val")
+        end
+    end
+    
     # Position and size textbox callbacks - update selection when edited
     Bas3GLMakie.GLMakie.on(x_textbox.stored_string) do val
         if updating_textboxes[]
@@ -2184,36 +2410,29 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
     end
     
-    # Display marker visualization axis
-    Bas3GLMakie.GLMakie.image!(axs_markers, current_marker_viz)
+    # Display closeup visualization axis (no overlays - just the rotated closeup image)
+    # Use a dynamic approach: recreate the image plot when observable changes dimensions
+    # This is necessary because GLMakie doesn't handle dimension changes well with image!()
+    local closeup_plot_ref = Ref{Any}(nothing)
     
-    # Draw marker centroids and bounding boxes on marker visualization
-    local marker_centroid_plot = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
-    local marker_bbox_plots = []
-    
-    Bas3GLMakie.GLMakie.on(current_markers) do markers
-        println("[OBSERVABLE] current_markers changed: $(length(markers)) markers detected")
+    function update_closeup_plot()
+        # Clear existing plot
+        empty!(axs_closeup)
         
-        # Update centroids - only show the best marker (largest, first in sorted list)
-        if !isempty(markers)
-            try
-                local h = Base.size(data(sets[current_image_index[]][1]), 1)
-                local best_marker = markers[1]  # Only take the first (largest) marker
-                local centroids = [Bas3GLMakie.GLMakie.Point2f(best_marker.centroid[2], h - best_marker.centroid[1] + 1)]
-                marker_centroid_plot[] = centroids
-                println("[OBSERVABLE] Updated marker centroids: $(best_marker.centroid)")
-            catch e
-                println("[ERROR] Failed to update marker centroids: $e")
-                marker_centroid_plot[] = Bas3GLMakie.GLMakie.Point2f[]
-            end
-        else
-            marker_centroid_plot[] = Bas3GLMakie.GLMakie.Point2f[]
-        end
+        # Create new image plot with current observable value
+        closeup_plot_ref[] = Bas3GLMakie.GLMakie.image!(axs_closeup, current_closeup_image[])
+        
+        # Reset axis limits to fit the image
+        Bas3GLMakie.GLMakie.autolimits!(axs_closeup)
     end
     
-    # Draw marker centroids
-    Bas3GLMakie.GLMakie.scatter!(axs_markers, marker_centroid_plot; 
-        color=:red, markersize=15, marker=:xcross)
+    # Initial plot
+    update_closeup_plot()
+    
+    # Update plot when observable changes
+    Bas3GLMakie.GLMakie.on(current_closeup_image) do img
+        update_closeup_plot()
+    end
     
     # Display the input image
     Bas3GLMakie.GLMakie.image!(axs3, current_input_image)
@@ -2442,7 +2661,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         
         # Create axes dictionary for direct access
         axes_dict = Dict{Symbol, Any}(
-            :markers_axis => axs_markers,
+            :closeup_axis => axs_closeup,
             :image_axis => axs3,
             :full_mean_axis => full_mean_ax,
             :full_box_axis => full_box_ax,
@@ -2472,7 +2691,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :current_white_overlay => current_white_overlay,
             :current_marker_viz => current_marker_viz,
             :current_image_index => current_image_index,
-            :current_class_bboxes => current_class_bboxes
+            :current_class_bboxes => current_class_bboxes,
+            
+            # Closeup View
+            :closeup_rotation => closeup_rotation,
+            :current_closeup_image => current_closeup_image
         )
         
         # Create widgets dictionary (Priority 1 + Priority 2 + Priority 3)
@@ -2489,6 +2712,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :clear_selection_button => clear_selection_button,
             :save_mask_button => save_mask_button,
             :selection_status_label => selection_status_label,
+            
+            # Closeup
+            :closeup_rotation_textbox => closeup_rotation_textbox,
             
             # Position/Size Textboxes (Priority 1)
             :x_textbox => x_textbox,
