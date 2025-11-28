@@ -1,6 +1,219 @@
 # Load_Sets__InteractiveUI.jl
 # Interactive visualization module - Figure 4
 
+# Required packages for database functionality
+using XLSX
+using Dates
+
+# ============================================================================
+# DATABASE FUNCTIONS FOR MUHA.XLSX
+# ============================================================================
+
+# Database path: Windows location accessible via WSL
+const DATABASE_PATH = "/mnt/c/Syncthing/MuHa - Bilder/MuHa.xlsx"
+
+"""
+    validate_date(date_str::String) -> (Bool, String)
+
+Validates date string in YYYY-MM-DD format.
+Returns (success, error_message).
+"""
+function validate_date(date_str::String)
+    # Check format with regex
+    if !occursin(r"^\d{4}-\d{2}-\d{2}$", date_str)
+        return (false, "Format muss YYYY-MM-DD sein")
+    end
+    
+    # Check if valid date
+    try
+        parsed = Dates.Date(date_str, "yyyy-mm-dd")
+        
+        # Check not in future
+        if parsed > Dates.today()
+            return (false, "Datum darf nicht in der Zukunft liegen")
+        end
+        
+        return (true, "")
+    catch
+        return (false, "Ungültiges Datum")
+    end
+end
+
+"""
+    validate_patient_id(id_str::String) -> (Bool, String)
+
+Validates patient ID must be integer > 0.
+Returns (success, error_message).
+"""
+function validate_patient_id(id_str::String)
+    if isempty(id_str)
+        return (false, "Patient-ID ist erforderlich")
+    end
+    
+    # Try to parse as integer
+    try
+        id = parse(Int, id_str)
+        
+        if id <= 0
+            return (false, "Patient-ID muss größer als 0 sein")
+        end
+        
+        return (true, "")
+    catch
+        return (false, "Patient-ID muss eine Zahl sein")
+    end
+end
+
+"""
+    validate_info(info_str::String) -> (Bool, String)
+
+Validates info field (max 500 characters).
+Returns (success, error_message).
+"""
+function validate_info(info_str::String)
+    if length(info_str) > 500
+        return (false, "Info darf maximal 500 Zeichen haben")
+    end
+    
+    return (true, "")
+end
+
+"""
+    initialize_database() -> String
+
+Creates MuHa.xlsx if it doesn't exist with proper schema.
+Returns path to database file.
+"""
+function initialize_database()
+    # Try primary location first
+    db_path = DATABASE_PATH
+    
+    # Check if directory exists
+    db_dir = dirname(db_path)
+    if !isdir(db_dir)
+        @warn "MuHa directory not found: $db_dir"
+        # Fallback to Load_Sets directory
+        db_path = joinpath(@__DIR__, "MuHa.xlsx")
+        println("[DATABASE] Using fallback location: $db_path")
+    end
+    
+    # Create if doesn't exist
+    if !isfile(db_path)
+        println("[DATABASE] Creating new database: $db_path")
+        
+        # Create new workbook
+        XLSX.openxlsx(db_path, mode="w") do xf
+            sheet = xf[1]
+            XLSX.rename!(sheet, "Metadata")
+            
+            # Write headers
+            sheet["A1"] = "Image_Index"
+            sheet["B1"] = "Filename"
+            sheet["C1"] = "Date"
+            sheet["D1"] = "Patient_ID"
+            sheet["E1"] = "Info"
+            sheet["F1"] = "Created_At"
+            sheet["G1"] = "Updated_At"
+        end
+        
+        println("[DATABASE] Created successfully")
+    else
+        println("[DATABASE] Existing database found: $db_path")
+    end
+    
+    return db_path
+end
+
+"""
+    find_entry_for_image(db_path::String, image_index::Int) -> (Bool, Int, Dict)
+
+Searches for existing entry for given image index.
+Returns (found, row_number, entry_data).
+"""
+function find_entry_for_image(db_path::String, image_index::Int)
+    xf = XLSX.readxlsx(db_path)
+    sheet = xf["Metadata"]
+    
+    # Get dimensions
+    dims = XLSX.get_dimension(sheet)
+    last_row = dims.stop.row_number
+    
+    # Search for image_index in column A
+    for row in 2:last_row  # Skip header row
+        cell_value = sheet[row, 1]
+        if !isnothing(cell_value) && cell_value == image_index
+            existing = Dict(
+                "filename" => sheet[row, 2],
+                "date" => string(sheet[row, 3]),
+                "patient_id" => sheet[row, 4],
+                "info" => something(sheet[row, 5], ""),
+                "created_at" => string(sheet[row, 6]),
+                "updated_at" => string(sheet[row, 7])
+            )
+            return (true, row, existing)
+        end
+    end
+    
+    return (false, -1, Dict())
+end
+
+"""
+    append_entry(db_path::String, image_index::Int, filename::String, 
+                 date::String, patient_id::Int, info::String)
+
+Appends new entry to database.
+"""
+function append_entry(db_path::String, image_index::Int, filename::String, 
+                     date::String, patient_id::Int, info::String)
+    XLSX.openxlsx(db_path, mode="rw") do xf
+        sheet = xf["Metadata"]
+        
+        # Find next empty row
+        dims = XLSX.get_dimension(sheet)
+        next_row = dims.stop.row_number + 1
+        
+        # Get current timestamp
+        timestamp = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
+        
+        # Write data
+        sheet[next_row, 1] = image_index
+        sheet[next_row, 2] = filename
+        sheet[next_row, 3] = date
+        sheet[next_row, 4] = patient_id
+        sheet[next_row, 5] = info
+        sheet[next_row, 6] = timestamp
+        sheet[next_row, 7] = timestamp
+    end
+    
+    println("[DATABASE] Appended entry for image $image_index")
+end
+
+"""
+    update_entry(db_path::String, row::Int, date::String, patient_id::Int, info::String)
+
+Updates existing entry at given row (preserves Created_At, updates Updated_At).
+"""
+function update_entry(db_path::String, row::Int, date::String, patient_id::Int, info::String)
+    XLSX.openxlsx(db_path, mode="rw") do xf
+        sheet = xf["Metadata"]
+        
+        # Get current timestamp
+        timestamp = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
+        
+        # Update data (preserve Created_At in column F)
+        sheet[row, 3] = date
+        sheet[row, 4] = patient_id
+        sheet[row, 5] = info
+        sheet[row, 7] = timestamp  # Only update Updated_At
+    end
+    
+    println("[DATABASE] Updated entry at row $row")
+end
+
+# ============================================================================
+# INTERACTIVE UI FIGURE CREATION
+# ============================================================================
+
 """
     create_interactive_figure(sets, input_type, raw_output_type; test_mode=false)
 
@@ -87,7 +300,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Figure 4: Image Visualization with White Region Detection
     # Layout: Marker Extraction - Image - Full Image Stats - White Region Stats - Controls
-    local fgr = Figure(size=(2200, 1000))
+    local fgr = Bas3GLMakie.GLMakie.Figure(size=(2200, 1000))
 
     # Add title for image figure
     local img_title = Bas3GLMakie.GLMakie.Label(
@@ -176,6 +389,161 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Fixed(400)) # Marker column
     Bas3GLMakie.GLMakie.colsize!(fgr.layout, 3, Bas3GLMakie.GLMakie.Fixed(300)) # Full image stats column
     Bas3GLMakie.GLMakie.colsize!(fgr.layout, 4, Bas3GLMakie.GLMakie.Fixed(300)) # White region stats column
+    
+    # ========================================================================
+    # DATABASE CONTROLS SECTION (Row 3, spanning columns 1-2)
+    # ========================================================================
+    local db_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[3, 1:2])
+    
+    # Set database controls row size (after creating it)
+    Bas3GLMakie.GLMakie.rowsize!(fgr.layout, 3, Bas3GLMakie.GLMakie.Fixed(120))
+    
+    # Initialize database
+    local db_path = initialize_database()
+    
+    # Section title
+    Bas3GLMakie.GLMakie.Label(
+        db_grid[1, 1:4],
+        "Datenbank Eintrag für MuHa-Bilder",
+        fontsize=16,
+        font=:bold,
+        halign=:center
+    )
+    
+    # Row 2: Date textbox + label + Patient ID textbox + label
+    local date_textbox = Bas3GLMakie.GLMakie.Textbox(
+        db_grid[2, 1],
+        placeholder="YYYY-MM-DD",
+        stored_string=Dates.format(Dates.today(), "yyyy-mm-dd"),
+        width=150
+    )
+    local date_label = Bas3GLMakie.GLMakie.Label(
+        db_grid[2, 2],
+        "Datum",
+        fontsize=12,
+        halign=:left,
+        color=:green  # Start green (initialized with valid date)
+    )
+    
+    local patient_id_textbox = Bas3GLMakie.GLMakie.Textbox(
+        db_grid[2, 3],
+        placeholder="Nummer",
+        width=120
+    )
+    local patient_id_label = Bas3GLMakie.GLMakie.Label(
+        db_grid[2, 4],
+        "Patient-ID",
+        fontsize=12,
+        halign=:left,
+        color=:gray  # Start gray (empty)
+    )
+    
+    # Row 3: Info textbox spanning multiple columns + label + character counter
+    local info_textbox = Bas3GLMakie.GLMakie.Textbox(
+        db_grid[3, 1:3],
+        placeholder="Zusätzliche Informationen (optional)",
+        width=400
+    )
+    local info_label = Bas3GLMakie.GLMakie.Label(
+        db_grid[3, 4],
+        "Info",
+        fontsize=12,
+        halign=:left,
+        color=:gray  # Start gray (optional field)
+    )
+    
+    # Character counter for info field (below textbox)
+    local info_counter_label = Bas3GLMakie.GLMakie.Label(
+        db_grid[3, 1],
+        "0/500",
+        fontsize=10,
+        halign=:left,
+        color=:gray
+    )
+    
+    # Row 4: Save button + Status label
+    local save_db_button = Bas3GLMakie.GLMakie.Button(
+        db_grid[4, 1:2],
+        label="Speichern in Datenbank",
+        width=250
+    )
+    
+    local db_status_label = Bas3GLMakie.GLMakie.Label(
+        db_grid[4, 3:4],
+        "Kein Eintrag vorhanden",
+        fontsize=12,
+        halign=:left,
+        color=:black
+    )
+    
+    # ========================================================================
+    # REAL-TIME VALIDATION CALLBACKS
+    # ========================================================================
+    
+    # Date textbox - real-time validation as user types
+    Bas3GLMakie.GLMakie.on(date_textbox.displayed_string) do str
+        str_clean = something(str, "")
+        
+        if isempty(str_clean)
+            date_label.color = :gray  # Empty - neutral
+        else
+            (valid, msg) = validate_date(str_clean)
+            if valid
+                date_label.color = :green  # Valid - ready
+            else
+                date_label.color = :red  # Invalid - needs fixing
+            end
+        end
+    end
+    
+    # Patient ID textbox - real-time validation as user types
+    Bas3GLMakie.GLMakie.on(patient_id_textbox.displayed_string) do str
+        println("[REALTIME] Patient ID displayed_string changed to: '$str'")
+        flush(stdout)
+        str_clean = something(str, "")
+        
+        if isempty(str_clean)
+            patient_id_label.color = :gray  # Empty - neutral
+        else
+            (valid, msg) = validate_patient_id(str_clean)
+            if valid
+                patient_id_label.color = :green  # Valid - ready
+                println("[REALTIME] Patient ID is VALID")
+            else
+                patient_id_label.color = :red  # Invalid - needs fixing
+                println("[REALTIME] Patient ID is INVALID: $msg")
+            end
+        end
+        flush(stdout)
+    end
+    
+    # Info textbox - real-time character counter
+    Bas3GLMakie.GLMakie.on(info_textbox.displayed_string) do str
+        str_clean = something(str, "")
+        char_count = length(str_clean)
+        
+        # Update counter text
+        info_counter_label.text = "$char_count/500"
+        
+        # Update colors based on length
+        if char_count == 0
+            info_label.color = :gray        # Empty - optional field
+            info_counter_label.color = :gray
+        elseif char_count <= 450
+            info_label.color = :green       # Normal range - good
+            info_counter_label.color = :gray
+        elseif char_count <= 500
+            info_label.color = :orange      # Approaching limit - warning
+            info_counter_label.color = :orange
+        else
+            info_label.color = :red         # Over limit - error
+            info_counter_label.color = :red
+        end
+    end
+    
+    # ========================================================================
+    # END DATABASE CONTROLS SECTION
+    # ========================================================================
     
     # Panel title
     Bas3GLMakie.GLMakie.Label(
@@ -671,13 +1039,24 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     # Helper function to extract and rotate closeup region from marker bounding box
     function extract_closeup_region(img, markers, rotation_degrees::Float64)
         """
-        Extracts and rotates the bounding box region of a detected marker.
+        Extracts the detected marker region using axis-aligned bounding box (AABB) in original space.
         
-        Returns a closeup view of the marker region, optionally rotated.
-        If no markers, returns a gray placeholder image.
+        Uses a simple two-step process:
+        1. Find AABB of masked pixels in original image space
+        2. Extract rectangle and rotate by (pca_angle + user_rotation)
+        
+        This ensures:
+        - User rotation is relative to original detected orientation
+        - rotation=0° shows marker at original angle
+        - rotation=-pca_angle shows horizontal (smallest canvas for nearly-horizontal markers)
+        - Predictable canvas behavior: rotating toward horizontal reduces size
+        
+        Trade-off: AABB may include corner pixels if marker is tilted, resulting in
+        slightly larger base canvas than PCA-aligned extraction. However, this "waste"
+        is recovered when user rotates toward horizontal, and the behavior is more intuitive.
         """
         
-        println("[CLOSEUP-EXTRACT] Called with $(length(markers)) markers, rotation=$(rotation_degrees)°")
+        println("[CLOSEUP-EXTRACT] Called with $(length(markers)) markers, user_rotation=$(rotation_degrees)°")
         
         # Return placeholder if no markers
         if isempty(markers)
@@ -686,66 +1065,318 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
         
         local best_marker = markers[1]
-        println("[CLOSEUP-EXTRACT] Best marker corners: $(best_marker.corners)")
+        local mask = best_marker.mask
+        local pca_angle_rad = best_marker.angle  # PCA angle from detection (RADIANS)
+        local pca_angle = rad2deg(pca_angle_rad)  # Convert to degrees immediately
         
-        # Check if marker has valid corners
-        if isempty(best_marker.corners) || length(best_marker.corners) < 8
-            println("[CLOSEUP-EXTRACT] Invalid corners - returning gray placeholder")
+        # Get image data in original space
+        local img_data = data(img)  # H×W×3 (756×1008×3)
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+        
+        println("[CLOSEUP-EXTRACT] Extracting from mask with size=$(size(mask)), image size=($h, $w)")
+        println("[CLOSEUP-EXTRACT] PCA angle from detection: $(round(pca_angle, digits=2))° ($(round(pca_angle_rad, digits=4)) rad) - extracting at detected angle")
+        
+        # Find all masked pixels
+        local masked_coords = findall(mask)
+        
+        if isempty(masked_coords)
+            println("[CLOSEUP-EXTRACT] Empty mask - returning gray placeholder")
             return fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
         end
         
-        # Extract corners from marker (row, col format)
-        local corners = [
-            (best_marker.corners[1], best_marker.corners[2]),
-            (best_marker.corners[3], best_marker.corners[4]),
-            (best_marker.corners[5], best_marker.corners[6]),
-            (best_marker.corners[7], best_marker.corners[8])
-        ]
+        # Extract using OBB corners directly (the magenta box)
+        # This gives us the exact tight bounding box calculated from PCA
+        println("[CLOSEUP-EXTRACT] Extracting OBB using pre-computed corners")
         
-        # Get axis-aligned bounding box
-        local rows = [c[1] for c in corners]
-        local cols = [c[2] for c in corners]
-        local r_min, r_max = floor(Int, minimum(rows)), ceil(Int, maximum(rows))
-        local c_min, c_max = floor(Int, minimum(cols)), ceil(Int, maximum(cols))
-        
-        println("[CLOSEUP-EXTRACT] Bounding box: rows=$(r_min):$(r_max), cols=$(c_min):$(c_max)")
-        
-        # Extract image data
-        local img_data = data(img)
-        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
-        
-        # Clamp to image bounds
-        r_min = max(1, r_min)
-        r_max = min(h, r_max)
-        c_min = max(1, c_min)
-        c_max = min(w, c_max)
-        
-        println("[CLOSEUP-EXTRACT] Clamped bbox: rows=$(r_min):$(r_max), cols=$(c_min):$(c_max), img_size=$(h)x$(w)")
-        
-        # Crop region
-        local cropped = img_data[r_min:r_max, c_min:c_max, :]
-        
-        println("[CLOSEUP-EXTRACT] Cropped size: $(size(cropped))")
-        
-        # Get marker's PCA angle to unrotate it first
-        local pca_angle = best_marker.angle
-        println("[CLOSEUP-EXTRACT] Marker PCA angle: $(pca_angle)°")
-        
-        # Apply rotation: first unrotate by PCA angle, then apply user rotation
-        local total_rotation = -pca_angle + rotation_degrees
-        println("[CLOSEUP-EXTRACT] Total rotation: $(total_rotation)° (PCA correction + user rotation)")
-        
-        # Convert 3D array to 2D RGB matrix for display
-        if abs(total_rotation) > 0.1  # Threshold to avoid unnecessary computation
-            local rotated = rotate_image_region(cropped, total_rotation)
-            local rgb_rotated = convert_to_rgb_matrix(rotated)
-            println("[CLOSEUP-EXTRACT] Returning rotated closeup")
-            return rotr90(rgb_rotated)
-        else
-            local rgb_matrix = convert_to_rgb_matrix(cropped)
-            println("[CLOSEUP-EXTRACT] Returning non-rotated closeup")
-            return rotr90(rgb_matrix)
+        # Parse OBB corners from marker
+        local corners = best_marker.corners  # [r1,c1, r2,c2, r3,c3, r4,c4]
+        if length(corners) != 8
+            println("[CLOSEUP-EXTRACT] ERROR: Invalid corners data, length=$(length(corners))")
+            return fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
         end
+        
+        local c1 = (corners[1], corners[2])  # (row, col)
+        local c2 = (corners[3], corners[4])
+        local c3 = (corners[5], corners[6])
+        local c4 = (corners[7], corners[8])
+        
+        println("[CLOSEUP-EXTRACT] OBB corners: c1=$(round.(c1, digits=1)), c2=$(round.(c2, digits=1)), c3=$(round.(c3, digits=1)), c4=$(round.(c4, digits=1))")
+        
+        # Calculate OBB dimensions from corners
+        local edge_12 = sqrt((c2[1] - c1[1])^2 + (c2[2] - c1[2])^2)
+        local edge_23 = sqrt((c3[1] - c2[1])^2 + (c3[2] - c2[2])^2)
+        
+        # Width is the longer edge, height is the shorter edge
+        local obb_width = max(edge_12, edge_23)
+        local obb_height = min(edge_12, edge_23)
+        
+        # Determine which edge is the long axis
+        local long_axis_is_12 = edge_12 > edge_23
+        
+        println("[CLOSEUP-EXTRACT] OBB dimensions: $(round(obb_width, digits=1))×$(round(obb_height, digits=1)) (area=$(round(obb_width * obb_height, digits=0)))")
+        
+        # Calculate OBB orientation (angle of long axis)
+        local obb_angle_rad = if long_axis_is_12
+            atan(c2[1] - c1[1], c2[2] - c1[2])  # Angle from c1 to c2
+        else
+            atan(c3[1] - c2[1], c3[2] - c2[2])  # Angle from c2 to c3
+        end
+        local obb_angle_deg = rad2deg(obb_angle_rad)
+        
+        println("[CLOSEUP-EXTRACT] OBB orientation: $(round(obb_angle_deg, digits=2))° (should match PCA angle $(round(pca_angle, digits=2))°)")
+        
+        # Get centroid
+        local centroid_r = best_marker.centroid[1]
+        local centroid_c = best_marker.centroid[2]
+        
+        # Create output canvas at detected angle (no rotation yet)
+        local height = Int(round(obb_height))
+        local width = Int(round(obb_width))
+        local closeup = fill(Float32(0.5), height, width, 3)  # Gray background
+        
+        println("[CLOSEUP-EXTRACT] Extracting $(height)×$(width) canvas at detected angle")
+        
+        # Calculate basis vectors from OBB edges
+        # These define the coordinate system of the rotated rectangle
+        if long_axis_is_12
+            # Width axis (horizontal in output) = c1→c2 direction (normalized)
+            local width_vec_r = (c2[1] - c1[1]) / edge_12
+            local width_vec_c = (c2[2] - c1[2]) / edge_12
+            # Height axis (vertical in output) = c3→c2 direction (REVERSED to fix mirroring)
+            local height_vec_r = (c2[1] - c3[1]) / edge_23
+            local height_vec_c = (c2[2] - c3[2]) / edge_23
+        else
+            # Width axis = c2→c3 direction
+            local width_vec_r = (c3[1] - c2[1]) / edge_23
+            local width_vec_c = (c3[2] - c2[2]) / edge_23
+            # Height axis = c2→c1 direction (REVERSED to fix mirroring)
+            local height_vec_r = (c1[1] - c2[1]) / edge_12
+            local height_vec_c = (c1[2] - c2[2]) / edge_12
+        end
+        
+        println("[CLOSEUP-EXTRACT] OBB basis vectors:")
+        println("  Width axis: ($(round(width_vec_r, digits=3)), $(round(width_vec_c, digits=3)))")
+        println("  Height axis: ($(round(height_vec_r, digits=3)), $(round(height_vec_c, digits=3)))")
+        
+        # Bilinear interpolation helper with mask checking
+        function sample_bilinear_masked(img::Array{Float32,3}, mask::BitMatrix, r::Float64, c::Float64)
+            local h_img, w_img = Base.size(img, 1), Base.size(img, 2)
+            
+            # Clamp to image bounds
+            if r < 1 || r > h_img || c < 1 || c > w_img
+                return (0.5f0, 0.5f0, 0.5f0)  # Gray for out of bounds
+            end
+            
+            # Get integer coordinates for mask check
+            local r_check = round(Int, clamp(r, 1, h_img))
+            local c_check = round(Int, clamp(c, 1, w_img))
+            
+            # Check if this pixel is in the ruler mask
+            if !mask[r_check, c_check]
+                return (0.5f0, 0.5f0, 0.5f0)  # Gray for non-ruler pixels
+            end
+            
+            # Get integer and fractional parts
+            local r0 = floor(Int, r)
+            local c0 = floor(Int, c)
+            local r1 = min(r0 + 1, h_img)
+            local c1 = min(c0 + 1, w_img)
+            local fr = r - r0
+            local fc = c - c0
+            
+            # Bilinear weights
+            local w00 = (1 - fr) * (1 - fc)
+            local w01 = (1 - fr) * fc
+            local w10 = fr * (1 - fc)
+            local w11 = fr * fc
+            
+            # Sample RGB channels
+            return (
+                Float32(w00 * img[r0, c0, 1] + w01 * img[r0, c1, 1] + w10 * img[r1, c0, 1] + w11 * img[r1, c1, 1]),
+                Float32(w00 * img[r0, c0, 2] + w01 * img[r0, c1, 2] + w10 * img[r1, c0, 2] + w11 * img[r1, c1, 2]),
+                Float32(w00 * img[r0, c0, 3] + w01 * img[r0, c1, 3] + w10 * img[r1, c0, 3] + w11 * img[r1, c1, 3])
+            )
+        end
+        
+        # Extract OBB by sampling from original image using basis vectors
+        local pixel_count = 0
+        local masked_pixel_count = 0
+        for out_r in 1:height
+            for out_c in 1:width
+                # Map to OBB local coordinates (centered at origin)
+                local local_r = out_r - height / 2.0
+                local local_c = out_c - width / 2.0
+                
+                # Transform using OBB basis vectors
+                # img_coords = centroid + local_c * width_vec + local_r * height_vec
+                local img_r = centroid_r + local_c * width_vec_r + local_r * height_vec_r
+                local img_c = centroid_c + local_c * width_vec_c + local_r * height_vec_c
+                
+                # Sample with bilinear interpolation and mask checking
+                local rgb = sample_bilinear_masked(img_data, mask, img_r, img_c)
+                closeup[out_r, out_c, 1] = rgb[1]
+                closeup[out_r, out_c, 2] = rgb[2]
+                closeup[out_r, out_c, 3] = rgb[3]
+                
+                # Count sampled pixels
+                pixel_count += 1
+                if rgb[1] != 0.5f0 || rgb[2] != 0.5f0 || rgb[3] != 0.5f0
+                    masked_pixel_count += 1
+                end
+            end
+        end
+        
+        println("[CLOSEUP-EXTRACT] Sampled $(pixel_count) total pixels, $(masked_pixel_count) ruler pixels ($(round(100*masked_pixel_count/pixel_count, digits=1))% fill)")
+        
+        # Apply user rotation from detected angle
+        # Semantic: rotation=0° shows marker at detected angle (as extracted from OBB)
+        # - rotation=0° shows marker at original detected angle (~17.6° tilt)
+        # - rotation=-pca_angle rotates to horizontal
+        # - rotation > 0 rotates clockwise from detected angle
+        # - rotation < 0 rotates counter-clockwise from detected angle
+        local total_rotation = rotation_degrees
+        local final_data = closeup
+        
+        if abs(total_rotation) > 0.1
+            println("[CLOSEUP-EXTRACT] Applying rotation: $(rotation_degrees)° from detected angle")
+            final_data = rotate_image_continuous(closeup, total_rotation)
+            println("[CLOSEUP-EXTRACT] After rotation: $(size(final_data))")
+        else
+            println("[CLOSEUP-EXTRACT] No rotation applied (showing at detected angle)")
+        end
+        
+        # Convert to RGB matrix
+        local rgb_matrix = convert_to_rgb_matrix(final_data)
+        
+        # Apply display rotation (rotr90) to match the red overlay transformation
+        println("[CLOSEUP-EXTRACT] Applying rotr90 to match display coordinate space")
+        return rotr90(rgb_matrix)
+    end
+    
+    # Helper function to rotate image data by any angle with bilinear interpolation
+    function rotate_image_continuous(img_data, angle_degrees::Float64)
+        """
+        Rotates image by any angle using bilinear interpolation.
+        
+        Args:
+            img_data: H×W×C array (Float32)
+            angle_degrees: Rotation angle in degrees (positive = clockwise)
+            
+        Returns:
+            Rotated image with same center, potentially larger dimensions
+        """
+        # Quick path for no rotation
+        if abs(angle_degrees) < 0.1
+            return img_data
+        end
+        
+        local h, w, c = size(img_data)
+        local center_y = (h + 1) / 2.0
+        local center_x = (w + 1) / 2.0
+        
+        # Convert angle to radians (clockwise rotation)
+        local angle_rad = -deg2rad(angle_degrees)  # Negative for clockwise
+        local cos_a = cos(angle_rad)
+        local sin_a = sin(angle_rad)
+        
+        # Calculate new dimensions to fit entire rotated image
+        local corners_y = [1.0, 1.0, Float64(h), Float64(h)]
+        local corners_x = [1.0, Float64(w), 1.0, Float64(w)]
+        local rotated_corners_y = Float64[]
+        local rotated_corners_x = Float64[]
+        
+        for i in 1:4
+            local dy = corners_y[i] - center_y
+            local dx = corners_x[i] - center_x
+            local new_y = dy * cos_a - dx * sin_a + center_y
+            local new_x = dy * sin_a + dx * cos_a + center_x
+            push!(rotated_corners_y, new_y)
+            push!(rotated_corners_x, new_x)
+        end
+        
+        local new_h = ceil(Int, maximum(rotated_corners_y) - minimum(rotated_corners_y)) + 1
+        local new_w = ceil(Int, maximum(rotated_corners_x) - minimum(rotated_corners_x)) + 1
+        local new_center_y = (new_h + 1) / 2.0
+        local new_center_x = (new_w + 1) / 2.0
+        
+        println("[ROTATE] Input: $(h)×$(w)×$(c), angle=$(angle_degrees)°, output: $(new_h)×$(new_w)")
+        
+        # Create output array with gray background
+        local rotated = fill(Float32(0.5), new_h, new_w, c)
+        
+        # Reverse rotation matrix (to find source coordinates from destination)
+        local cos_a_inv = cos(-angle_rad)
+        local sin_a_inv = sin(-angle_rad)
+        
+        # For each output pixel, find corresponding source pixel
+        for out_y in 1:new_h
+            for out_x in 1:new_w
+                # Translate to centered coordinates
+                local dy = out_y - new_center_y
+                local dx = out_x - new_center_x
+                
+                # Rotate back to source coordinates
+                local src_y = dy * cos_a_inv - dx * sin_a_inv + center_y
+                local src_x = dy * sin_a_inv + dx * cos_a_inv + center_x
+                
+                # Bilinear interpolation if within source bounds
+                if src_y >= 1.0 && src_y <= h && src_x >= 1.0 && src_x <= w
+                    local y0 = floor(Int, src_y)
+                    local x0 = floor(Int, src_x)
+                    local y1 = min(y0 + 1, h)
+                    local x1 = min(x0 + 1, w)
+                    
+                    local fy = src_y - y0
+                    local fx = src_x - x0
+                    
+                    # Bilinear weights
+                    local w00 = (1 - fx) * (1 - fy)
+                    local w10 = fx * (1 - fy)
+                    local w01 = (1 - fx) * fy
+                    local w11 = fx * fy
+                    
+                    # Interpolate each channel
+                    for ch in 1:c
+                        rotated[out_y, out_x, ch] = Float32(
+                            w00 * img_data[y0, x0, ch] +
+                            w10 * img_data[y0, x1, ch] +
+                            w01 * img_data[y1, x0, ch] +
+                            w11 * img_data[y1, x1, ch]
+                        )
+                    end
+                end
+            end
+        end
+        
+        return rotated
+    end
+    
+    # Helper to rotate 3D array 90° clockwise
+    function rotr90_3d(img_data)
+        local h, w, c = size(img_data)
+        local rotated = zeros(Float32, w, h, c)
+        for i in 1:h
+            for j in 1:w
+                for ch in 1:c
+                    rotated[j, h - i + 1, ch] = img_data[i, j, ch]
+                end
+            end
+        end
+        return rotated
+    end
+    
+    # Helper to rotate 3D array 90° counter-clockwise
+    function rotl90_3d(img_data)
+        local h, w, c = size(img_data)
+        local rotated = zeros(Float32, w, h, c)
+        for i in 1:h
+            for j in 1:w
+                for ch in 1:c
+                    rotated[w - j + 1, i, ch] = img_data[i, j, ch]
+                end
+            end
+        end
+        return rotated
     end
     
     # Helper function to convert 3D array (H×W×3) to 2D RGB matrix
@@ -767,75 +1398,6 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
         
         return rgb_matrix
-    end
-    
-    # Helper function to rotate an image region
-    function rotate_image_region(img_data, angle_degrees::Float64)
-        """
-        Rotates an image region by the specified angle using bilinear interpolation.
-        Expands canvas to fit entire rotated content without cropping.
-        """
-        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
-        local angle_rad = deg2rad(angle_degrees)
-        local cos_a = cos(angle_rad)
-        local sin_a = sin(angle_rad)
-        
-        # Calculate expanded dimensions to fit entire rotated content
-        local new_h = ceil(Int, abs(h * cos_a) + abs(w * sin_a))
-        local new_w = ceil(Int, abs(w * cos_a) + abs(h * sin_a))
-        
-        # Create output image
-        local rotated = zeros(eltype(img_data), new_h, new_w, Base.size(img_data, 3))
-        
-        # Center points for rotation
-        local center_h = h / 2.0
-        local center_w = w / 2.0
-        local new_center_h = new_h / 2.0
-        local new_center_w = new_w / 2.0
-        
-        # For each pixel in output, find corresponding input pixel
-        for i in 1:new_h
-            for j in 1:new_w
-                # Translate to origin (using new center for output coordinates)
-                local y = i - new_center_h
-                local x = j - new_center_w
-                
-                # Rotate backwards (inverse rotation)
-                local src_y = -x * sin_a + y * cos_a + center_h
-                local src_x = x * cos_a + y * sin_a + center_w
-                
-                # Bilinear interpolation from source image
-                if src_y >= 1 && src_y <= h && src_x >= 1 && src_x <= w
-                    # Get integer and fractional parts
-                    local y1 = floor(Int, src_y)
-                    local x1 = floor(Int, src_x)
-                    local y2 = min(h, y1 + 1)
-                    local x2 = min(w, x1 + 1)
-                    local fy = src_y - y1
-                    local fx = src_x - x1
-                    
-                    # Bilinear interpolation for each channel
-                    for c in 1:Base.size(img_data, 3)
-                        local v11 = img_data[y1, x1, c]
-                        local v12 = img_data[y1, x2, c]
-                        local v21 = img_data[y2, x1, c]
-                        local v22 = img_data[y2, x2, c]
-                        
-                        # Interpolate
-                        local v1 = v11 * (1 - fx) + v12 * fx
-                        local v2 = v21 * (1 - fx) + v22 * fx
-                        rotated[i, j, c] = v1 * (1 - fy) + v2 * fy
-                    end
-                else
-                    # Black background for areas outside original bounds (rotated corners)
-                    for c in 1:Base.size(img_data, 3)
-                        rotated[i, j, c] = 0.0f0
-                    end
-                end
-            end
-        end
-        
-        return rotated
     end
     
     # Check if a point is inside a rotated rectangle defined by c1, c2, angle
@@ -1197,6 +1759,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     
     # Observables for closeup view
     local closeup_rotation = Bas3GLMakie.GLMakie.Observable(0.0)
+    # Use main detection markers for closeup (single source of truth)
     local init_closeup = extract_closeup_region(sets[1][1], init_markers, 0.0)
     local current_closeup_image = Bas3GLMakie.GLMakie.Observable(init_closeup)
     
@@ -1316,6 +1879,18 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
     end
     
+    # Helper function to update database status label for current image
+    function update_database_status(idx)
+        (found, row, data) = find_entry_for_image(db_path, idx)
+        if found
+            db_status_label.text = "Eintrag vom $(data["date"]) (Patient: $(data["patient_id"]))"
+            db_status_label.color = :green
+        else
+            db_status_label.text = "Kein Eintrag vorhanden"
+            db_status_label.color = :black
+        end
+    end
+    
     # Helper function to update the image display (core logic without textbox update)
     function update_image_display_internal(idx, threshold=0.7, threshold_upper=1.0, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3, adaptive=false, adaptive_window=25, adaptive_offset=0.1)
         println("[UPDATE] Updating to image $idx with params: threshold=$threshold-$threshold_upper, min_area=$min_component_area, aspect_ratio=$preferred_aspect_ratio, kernel_size=$kernel_size, adaptive=$adaptive")
@@ -1384,7 +1959,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_markers[] = markers
             current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
             
-            # Update closeup view with best marker
+            # Update closeup view using same markers as main detection
             local closeup_img = extract_closeup_region(sets[idx][1], markers, closeup_rotation[])
             current_closeup_image[] = closeup_img
             
@@ -1654,6 +2229,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
         
         println("[UPDATE] Successfully updated to image $idx (markers detected: $(length(current_markers[])))")
+        
+        # Update database status and clear info textbox for new image
+        update_database_status(idx)
+        info_textbox.stored_string[] = ""
+        
         return true
     end
     
@@ -1822,6 +2402,116 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             println("[NAVIGATION] Cannot go to previous image (current_idx=$current_idx)")
         end
     end
+    
+    # Database save button callback
+    Bas3GLMakie.GLMakie.on(save_db_button.clicks) do n
+        println("[DATABASE] Save button clicked")
+        flush(stdout)
+        
+        try
+            println("[DATABASE] Entering try block...")
+            flush(stdout)
+            # Get current image index
+            current_idx = tryparse(Int, textbox.stored_string[])
+            println("[DATABASE] Current index: $current_idx")
+            flush(stdout)
+            
+            if current_idx === nothing || current_idx < 1 || current_idx > length(sets)
+                db_status_label.text = "Fehler: Ungültiger Bildindex"
+                db_status_label.color = :red
+                return
+            end
+            
+            # Get textbox values from displayed_string (current typed value)
+            # NOTE: We read from displayed_string (not stored_string) because:
+            # - displayed_string = current typed value (what user sees)
+            # - stored_string = committed value (requires Enter key press)
+            # - Save button should capture current state without requiring Enter
+            # - This is consistent with real-time validation which watches displayed_string
+            date_str = something(date_textbox.displayed_string[], "")
+            patient_id_str = something(patient_id_textbox.displayed_string[], "")
+            info_str = something(info_textbox.displayed_string[], "")
+            println("[DATABASE] Retrieved values: date='$date_str', patient='$patient_id_str', info='$info_str'")
+            flush(stdout)
+            
+            # Validate date
+            println("[DATABASE] Validating date...")
+            flush(stdout)
+            (valid_date, date_msg) = validate_date(date_str)
+            println("[DATABASE] Date validation result: valid=$valid_date, msg='$date_msg'")
+            flush(stdout)
+            if !valid_date
+                db_status_label.text = "Fehler: $date_msg"
+                db_status_label.color = :red
+                return
+            end
+            
+            # Validate patient ID
+            println("[DATABASE] Validating patient ID...")
+            flush(stdout)
+            (valid_id, id_msg) = validate_patient_id(patient_id_str)
+            println("[DATABASE] Patient ID validation result: valid=$valid_id, msg='$id_msg'")
+            flush(stdout)
+            if !valid_id
+                db_status_label.text = "Fehler: $id_msg"
+                db_status_label.color = :red
+                return
+            end
+            
+            # Validate info
+            (valid_info, info_msg) = validate_info(info_str)
+            if !valid_info
+                db_status_label.text = "Fehler: $info_msg"
+                db_status_label.color = :red
+                return
+            end
+            
+            # Parse patient ID
+            patient_id = parse(Int, patient_id_str)
+            
+            # Get current image filename (use index-based naming)
+            filename = "image_$(lpad(current_idx, 3, '0')).png"
+            
+            # Check if entry already exists
+            (found, row, existing) = find_entry_for_image(db_path, current_idx)
+            
+            if found
+                # Show confirmation for update
+                println("[DATABASE] Entry exists for image $current_idx")
+                println("  Existing: Date=$(existing["date"]), Patient=$(existing["patient_id"]), Info=$(existing["info"])")
+                println("  New: Date=$date_str, Patient=$patient_id, Info=$info_str")
+                
+                # TODO: In a full implementation, show a proper dialog
+                # For now, we'll update directly with a warning message
+                db_status_label.text = "Warnung: Eintrag wird aktualisiert..."
+                db_status_label.color = :orange
+                
+                # Update entry
+                update_entry(db_path, row, date_str, patient_id, info_str)
+                db_status_label.text = "Aktualisiert! Bild $current_idx"
+                db_status_label.color = :green
+            else
+                # Append new entry
+                append_entry(db_path, current_idx, filename, date_str, patient_id, info_str)
+                db_status_label.text = "Gespeichert! Bild $current_idx"
+                db_status_label.color = :green
+            end
+            
+            # Clear info textbox (keep date and patient_id for batch entry)
+            info_textbox.stored_string[] = ""
+            
+            println("[DATABASE] Save completed for image $current_idx")
+        catch e
+            error_msg = sprint(showerror, e, catch_backtrace())
+            println("[DATABASE ERROR] Exception occurred:")
+            println(error_msg)
+            db_status_label.text = "Fehler: $(typeof(e))"
+            db_status_label.color = :red
+        end
+    end
+    
+    # Initialize database status for first image
+    update_database_status(1)
     
     # Helper function to update white detection with current parameters
     function update_white_detection(source="manual")
@@ -2012,19 +2702,16 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             println("[CLOSEUP] Rotation changed to: $(angle) degrees")
             closeup_rotation[] = angle
             
-            # Regenerate closeup with new rotation
-            markers = current_markers[]
-            if !isempty(markers)
-                current_idx = current_image_index[]
-                if current_idx >= 1 && current_idx <= length(sets)
-                    closeup_img = extract_closeup_region(
-                        sets[current_idx][1], 
-                        markers, 
-                        angle
-                    )
-                    current_closeup_image[] = closeup_img
-                    Bas3GLMakie.GLMakie.notify(current_closeup_image)
-                end
+            # Regenerate closeup with new rotation using current markers
+            current_idx = current_image_index[]
+            if current_idx >= 1 && current_idx <= length(sets)
+                closeup_img = extract_closeup_region(
+                    sets[current_idx][1], 
+                    current_markers[],  # Use current markers directly
+                    angle
+                )
+                current_closeup_image[] = closeup_img
+                Bas3GLMakie.GLMakie.notify(current_closeup_image)
             end
         else
             println("[CLOSEUP] Invalid rotation angle: $val")
@@ -2656,6 +3343,52 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     println("  - Enable region selection to limit white detection area\n")
     
     # Test mode: Return figure + observables + widgets for programmatic control
+    # Add keyboard shortcut to save debug images (Press 'S' key)
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).keyboardbutton) do event
+        if event.action == Bas3GLMakie.GLMakie.Keyboard.press || event.action == Bas3GLMakie.GLMakie.Keyboard.repeat
+            if event.key == Bas3GLMakie.GLMakie.Keyboard.s
+                println("[DEBUG] 'S' key pressed - Saving debug images...")
+                
+                # Get current image index
+                current_idx = current_image_index[]
+                if current_idx === nothing || current_idx < 1 || current_idx > length(sets)
+                    println("[DEBUG] No valid image loaded")
+                    return
+                end
+                
+                # Save original image
+                original_img = current_input_image[]
+                if original_img !== nothing
+                    save("/tmp/debug_original_image.png", Bas3GLMakie.GLMakie.rotr90(original_img))
+                    println("[DEBUG] ✓ Saved: /tmp/debug_original_image.png (size: $(size(original_img)))")
+                end
+                
+                # Save closeup image  
+                closeup_img = current_closeup_image[]
+                if closeup_img !== nothing
+                    save("/tmp/debug_closeup_image.png", closeup_img)
+                    println("[DEBUG] ✓ Saved: /tmp/debug_closeup_image.png (size: $(size(closeup_img)))")
+                end
+                
+                # Save marker visualization
+                marker_viz = current_marker_viz[]
+                if marker_viz !== nothing
+                    save("/tmp/debug_marker_viz.png", Bas3GLMakie.GLMakie.rotr90(marker_viz))
+                    println("[DEBUG] ✓ Saved: /tmp/debug_marker_viz.png (size: $(size(marker_viz)))")
+                end
+                
+                # Save current output (segmented) image
+                output_img = current_output_image[]
+                if output_img !== nothing
+                    save("/tmp/debug_output_image.png", Bas3GLMakie.GLMakie.rotr90(output_img))
+                    println("[DEBUG] ✓ Saved: /tmp/debug_output_image.png (size: $(size(output_img)))")
+                end
+                
+                println("[DEBUG] All available images saved to /tmp/debug_*.png")
+            end
+        end
+    end
+    
     if test_mode
         println("[TEST MODE] Returning figure with observables and widgets access")
         
@@ -2734,7 +3467,14 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             :adaptive_offset_textbox => adaptive_offset_textbox,
             
             # Display (Priority 3)
-            :segmentation_toggle => segmentation_toggle
+            :segmentation_toggle => segmentation_toggle,
+            
+            # Database Controls
+            :date_textbox => date_textbox,
+            :patient_id_textbox => patient_id_textbox,
+            :info_textbox => info_textbox,
+            :save_db_button => save_db_button,
+            :db_status_label => db_status_label
         )
         
         # Return named tuple with all components

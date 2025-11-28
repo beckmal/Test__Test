@@ -361,8 +361,21 @@ function extract_white_mask(img; threshold=0.7, threshold_upper=1.0, min_compone
         # Normalize density to 0-1 range (assuming density typically < 1.0)
         normalized_density = min(rotated_density, 1.0)
         
-        # Combined score: weighted average of density and aspect ratio match
-        combined_score = (1.0 - aspect_ratio_weight) * normalized_density + aspect_ratio_weight * aspect_ratio_score
+        # Calculate brightness score: mean brightness of component pixels
+        brightness_sum = 0.0
+        for coord in pixel_coords
+            # Get RGB values at this pixel
+            r = rgb_data[coord[1], coord[2], 1]
+            g = rgb_data[coord[1], coord[2], 2]
+            b = rgb_data[coord[1], coord[2], 3]
+            # Mean RGB as brightness
+            brightness_sum += (r + g + b) / 3.0
+        end
+        brightness_score = brightness_sum / length(pixel_coords)
+        
+        # Combined score: prioritize brightness for white ruler detection
+        # Weights: 50% brightness, 30% density, 20% aspect ratio
+        combined_score = 0.5 * brightness_score + 0.3 * normalized_density + 0.2 * aspect_ratio_score
         
         # Select component with highest combined score
         if combined_score > best_score
@@ -373,7 +386,7 @@ function extract_white_mask(img; threshold=0.7, threshold_upper=1.0, min_compone
             best_rotation_angle = rotation_angle
             best_size = component_size
             best_aspect_ratio = aspect_ratio
-            println("[COMPONENT-ANALYSIS] Label $label: size=$component_size, density=$(round(rotated_density, digits=3)), aspect=$(round(aspect_ratio, digits=2)), score=$(round(combined_score, digits=3))")
+            println("[COMPONENT-ANALYSIS] Label $label: size=$component_size, brightness=$(round(brightness_score, digits=3)), density=$(round(rotated_density, digits=3)), aspect=$(round(aspect_ratio, digits=2)), score=$(round(combined_score, digits=3))")
         end
     end
     

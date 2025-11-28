@@ -33,5 +33,19 @@ println("  - Browse images using the image index slider")
 println("  - Close window when done")
 println("")
 
-# Display the figure (GLMakie keeps process alive automatically)
+# Display the figure
 display(Bas3GLMakie.GLMakie.Screen(), interactive_fig)
+
+# Keep the process alive to maintain the window
+println("\nUI window is now open. Press Ctrl+C to close.")
+try
+    while true
+        sleep(1)
+    end
+catch e
+    if isa(e, InterruptException)
+        println("\nClosing UI...")
+    else
+        rethrow(e)
+    end
+end
