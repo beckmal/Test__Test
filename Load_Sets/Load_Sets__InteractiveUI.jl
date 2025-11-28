@@ -1841,6 +1841,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_white_overlay[] = create_white_overlay(img, markers)
             current_marker_viz[] = create_marker_visualization(img, markers)
             current_markers[] = markers
+            
+            # Update closeup view using same markers as region detection
+            local closeup_img = extract_closeup_region(img, markers, closeup_rotation[])
+            current_closeup_image[] = closeup_img
+            
             println("[AUTO-UPDATE] Setting marker_success=$(success), marker_message=$(message)")
             marker_success[] = success
             marker_message[] = message
@@ -1851,7 +1856,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.notify(current_marker_viz)
             Bas3GLMakie.GLMakie.notify(current_markers)
             Bas3GLMakie.GLMakie.notify(current_class_bboxes)
-            println("[AUTO-UPDATE] Display refreshed: markers, overlays, and bounding boxes updated")
+            Bas3GLMakie.GLMakie.notify(current_closeup_image)
+            println("[AUTO-UPDATE] Display refreshed: markers, overlays, bounding boxes, and closeup updated")
         else
             println("[AUTO-UPDATE] No markers found, success=$(success)")
             println("[AUTO-UPDATE] Clearing previous detection results")
@@ -1861,6 +1867,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             current_white_overlay[] = create_white_overlay(img, MarkerInfo[])  # Empty overlay
             current_marker_viz[] = create_marker_visualization(img, MarkerInfo[])  # Empty/black image
             current_markers[] = MarkerInfo[]  # Empty list
+            
+            # Clear closeup view (show placeholder)
+            current_closeup_image[] = fill(Bas3GLMakie.GLMakie.RGB{Float32}(0.5, 0.5, 0.5), 100, 100)
             
             # Update status with enhanced message showing rotation angle if applicable
             marker_success[] = false
@@ -1874,6 +1883,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.notify(current_white_overlay)
             Bas3GLMakie.GLMakie.notify(current_marker_viz)
             Bas3GLMakie.GLMakie.notify(current_markers)
+            Bas3GLMakie.GLMakie.notify(current_closeup_image)
             
             println("[AUTO-UPDATE] Display cleared: no markers in selected region")
         end
@@ -2932,6 +2942,13 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                         current_white_overlay[] = create_white_overlay(img, markers)
                         current_marker_viz[] = create_marker_visualization(img, markers)
                         current_markers[] = markers
+                        
+                        # Update closeup view using same markers as selection detection
+                        local closeup_img = extract_closeup_region(img, markers, closeup_rotation[])
+                        current_closeup_image[] = closeup_img
+                        Bas3GLMakie.GLMakie.notify(current_closeup_image)
+                        println("[SELECTION-CALLBACK] Closeup updated with $(length(markers)) marker(s)")
+                        
                         println("[SELECTION-CALLBACK] Setting marker_success=$(success), marker_message=$(message)")
                         marker_success[] = success
                         marker_message[] = message
@@ -2943,6 +2960,11 @@ function create_interactive_figure(sets, input_type, raw_output_type;
                         current_white_overlay[] = create_white_overlay(img, MarkerInfo[])
                         current_marker_viz[] = create_marker_visualization(img, MarkerInfo[])
                         current_markers[] = MarkerInfo[]
+                        
+                        # Clear closeup view (show placeholder)
+                        current_closeup_image[] = fill(Bas3GLMakie.GLMakie.RGB{Float32}(0.5, 0.5, 0.5), 100, 100)
+                        Bas3GLMakie.GLMakie.notify(current_closeup_image)
+                        println("[SELECTION-CALLBACK] Closeup cleared (no markers)")
                         
                         # Update status with enhanced message
                         println("[SELECTION-CALLBACK] Setting marker_success=false, marker_message=$(message)")
