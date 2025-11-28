@@ -445,11 +445,11 @@ end
 
 # User-specified target distribution
 const TARGET_DISTRIBUTION = Dict{Symbol, Float64}(
-    :scar => 5.0,        # 5%
-    :redness => 5.0,     # 5%
-    :hematoma => 15.0,   # 15%
-    :necrosis => 1.0,    # 1%
-    :background => 74.0  # 74%
+    :scar => 15.0,        # 5%
+    :redness => 15.0,     # 5%
+    :hematoma => 30.0,   # 15%
+    :necrosis => 5.0,    # 1%
+    :background => 35.0  # 74%
 )
 
 println("\n=== Target Distribution ===")
@@ -943,5 +943,394 @@ println("Augmented image size:     $(augmented_size[1])x$(augmented_size[2]) pix
 println("Storage location:         $(augmented_dir)")
 println("Metadata location:        $(metadata_dir)")
 println("="^70)
+
+# ============================================================================
+# Visualization of Augmentation Results
+# ============================================================================
+
+println("\n=== Generating Visualizations ===")
+
+# Load metadata for visualization
+println("Loading metadata for visualization...")
+summary_data = JLD2.load(joinpath(metadata_dir, "augmentation_summary.jld2"))
+all_metadata = summary_data["all_metadata"]
+target_dist = summary_data["target_distribution"]
+
+# Extract parameter arrays from metadata
+scale_factors = [m.scale_factor for m in all_metadata]
+rotation_angles = [m.rotation_angle for m in all_metadata]
+shear_x_angles = [m.shear_x_angle for m in all_metadata]
+shear_y_angles = [m.shear_y_angle for m in all_metadata]
+brightness_factors = [m.brightness_factor for m in all_metadata]
+saturation_offsets = [m.saturation_offset for m in all_metadata]
+blur_kernel_sizes = [m.blur_kernel_size for m in all_metadata]
+blur_sigmas = [m.blur_sigma for m in all_metadata]
+flip_types = [m.flip_type for m in all_metadata]
+source_indices = [m.source_index for m in all_metadata]
+target_classes = [m.target_class for m in all_metadata]
+
+# Quality metrics
+scar_pcts = [m.scar_percentage for m in all_metadata]
+redness_pcts = [m.redness_percentage for m in all_metadata]
+hematoma_pcts = [m.hematoma_percentage for m in all_metadata]
+necrosis_pcts = [m.necrosis_percentage for m in all_metadata]
+background_pcts = [m.background_percentage for m in all_metadata]
+
+# ============================================================================
+# Figure 1: Parameter Distribution Histograms
+# ============================================================================
+
+println("Creating parameter distribution plots...")
+
+fig1 = Figure(size=(1800, 1200))
+fig1[0, :] = Label(fig1, "Augmentation Parameter Distributions (N=$(length(all_metadata)))", fontsize=24, font=:bold)
+
+# Scale factor histogram
+ax1 = Axis(fig1[1, 1], title="Scale Factor", xlabel="Scale", ylabel="Count")
+hist!(ax1, scale_factors, bins=20, color=:steelblue)
+
+# Rotation angle histogram
+ax2 = Axis(fig1[1, 2], title="Rotation Angle", xlabel="Degrees", ylabel="Count")
+hist!(ax2, rotation_angles, bins=36, color=:coral)
+
+# Shear X histogram
+ax3 = Axis(fig1[1, 3], title="Shear X Angle", xlabel="Degrees", ylabel="Count")
+hist!(ax3, shear_x_angles, bins=20, color=:mediumseagreen)
+
+# Shear Y histogram
+ax4 = Axis(fig1[2, 1], title="Shear Y Angle", xlabel="Degrees", ylabel="Count")
+hist!(ax4, shear_y_angles, bins=20, color=:mediumpurple)
+
+# Brightness histogram
+ax5 = Axis(fig1[2, 2], title="Brightness Factor", xlabel="Factor", ylabel="Count")
+hist!(ax5, brightness_factors, bins=10, color=:gold)
+
+# Saturation histogram
+ax6 = Axis(fig1[2, 3], title="Saturation Offset", xlabel="Offset", ylabel="Count")
+hist!(ax6, saturation_offsets, bins=10, color=:darkorange)
+
+# Blur kernel size bar chart
+ax7 = Axis(fig1[3, 1], title="Blur Kernel Size", xlabel="Size", ylabel="Count", xticks=[3, 5, 7])
+kernel_counts = [count(==(k), blur_kernel_sizes) for k in [3, 5, 7]]
+barplot!(ax7, [3, 5, 7], kernel_counts, color=:slategray)
+
+# Blur sigma histogram
+ax8 = Axis(fig1[3, 2], title="Blur Sigma", xlabel="σ", ylabel="Count")
+hist!(ax8, blur_sigmas, bins=20, color=:teal)
+
+# Flip type bar chart
+ax9 = Axis(fig1[3, 3], title="Flip Type", xlabel="Type", ylabel="Count", 
+           xticks=(1:3, ["FlipX", "FlipY", "NoOp"]))
+flip_counts = [count(==(t), flip_types) for t in [:flipx, :flipy, :noop]]
+barplot!(ax9, 1:3, flip_counts, color=[:indianred, :cornflowerblue, :darkgray])
+
+# Save Figure 1
+fig1_filename = joinpath(metadata_dir, "augmentation_parameter_distributions.png")
+save(fig1_filename, fig1)
+println("  Saved: $(fig1_filename)")
+
+# ============================================================================
+# Figure 2: Source Image Usage and Class Distribution
+# ============================================================================
+
+println("Creating source usage and class distribution plots...")
+
+fig2 = Figure(size=(1600, 1000))
+fig2[0, :] = Label(fig2, "Source Image Usage & Class Distribution", fontsize=24, font=:bold)
+
+# Source image usage histogram
+ax_source = Axis(fig2[1, 1:2], title="Source Image Usage Distribution", 
+                 xlabel="Source Image Index", ylabel="Usage Count")
+source_usage = [count(==(i), source_indices) for i in 1:length(sets)]
+# Only show non-zero usage
+used_sources = findall(>(0), source_usage)
+barplot!(ax_source, used_sources, source_usage[used_sources], color=:steelblue, 
+         strokewidth=0.5, strokecolor=:black)
+
+# Target class distribution (actual vs target)
+ax_class = Axis(fig2[2, 1], title="Target Class Distribution", 
+                xlabel="Class", ylabel="Sample Count",
+                xticks=(1:5, ["Scar", "Redness", "Hematoma", "Necrosis", "Background"]))
+
+class_order = [:scar, :redness, :hematoma, :necrosis, :background]
+actual_counts = [count(==(c), target_classes) for c in class_order]
+target_counts = [round(Int, target_dist[c] / 100 * length(all_metadata)) for c in class_order]
+
+# Grouped bar chart
+barplot!(ax_class, (1:5) .- 0.15, actual_counts, width=0.3, color=:steelblue, label="Actual")
+barplot!(ax_class, (1:5) .+ 0.15, target_counts, width=0.3, color=:coral, label="Target")
+axislegend(ax_class, position=:rt)
+
+# Pixel coverage distribution per class (box plot style using scatter + lines)
+ax_pixel = Axis(fig2[2, 2], title="Pixel Coverage Distribution by Class",
+                xlabel="Class", ylabel="Coverage (%)",
+                xticks=(1:5, ["Scar", "Redness", "Hematoma", "Necrosis", "Background"]))
+
+pixel_data = [scar_pcts, redness_pcts, hematoma_pcts, necrosis_pcts, background_pcts]
+class_colors = [:indianred, :mediumseagreen, :cornflowerblue, :gold, :slategray]
+
+for (i, (pcts, col)) in enumerate(zip(pixel_data, class_colors))
+    μ = mean(pcts)
+    σ = std(pcts)
+    min_v = minimum(pcts)
+    max_v = maximum(pcts)
+    
+    # Draw range line
+    lines!(ax_pixel, [i, i], [min_v, max_v], color=col, linewidth=2)
+    # Draw mean ± std box
+    lines!(ax_pixel, [i-0.2, i+0.2], [μ-σ, μ-σ], color=col, linewidth=2)
+    lines!(ax_pixel, [i-0.2, i+0.2], [μ+σ, μ+σ], color=col, linewidth=2)
+    lines!(ax_pixel, [i-0.2, i-0.2], [μ-σ, μ+σ], color=col, linewidth=2)
+    lines!(ax_pixel, [i+0.2, i+0.2], [μ-σ, μ+σ], color=col, linewidth=2)
+    # Draw mean point
+    scatter!(ax_pixel, [i], [μ], color=col, markersize=12)
+end
+
+# Save Figure 2
+fig2_filename = joinpath(metadata_dir, "augmentation_source_and_class_distribution.png")
+save(fig2_filename, fig2)
+println("  Saved: $(fig2_filename)")
+
+# ============================================================================
+# Figure 3: Quality Metrics Heatmap and Correlation
+# ============================================================================
+
+println("Creating quality metrics visualization...")
+
+fig3 = Figure(size=(1600, 1000))
+fig3[0, :] = Label(fig3, "Quality Metrics Analysis", fontsize=24, font=:bold)
+
+# Stacked area showing class composition across samples (first 100 samples)
+ax_stack = Axis(fig3[1, 1:2], title="Class Composition per Sample (first 100 samples)",
+                xlabel="Sample Index", ylabel="Coverage (%)")
+
+n_show = min(100, length(all_metadata))
+sample_range = 1:n_show
+
+# Stack the percentages
+y_scar = scar_pcts[sample_range]
+y_redness = y_scar .+ redness_pcts[sample_range]
+y_hematoma = y_redness .+ hematoma_pcts[sample_range]
+y_necrosis = y_hematoma .+ necrosis_pcts[sample_range]
+y_background = y_necrosis .+ background_pcts[sample_range]
+
+band!(ax_stack, collect(sample_range), zeros(n_show), y_scar, color=(:indianred, 0.8), label="Scar")
+band!(ax_stack, collect(sample_range), y_scar, y_redness, color=(:mediumseagreen, 0.8), label="Redness")
+band!(ax_stack, collect(sample_range), y_redness, y_hematoma, color=(:cornflowerblue, 0.8), label="Hematoma")
+band!(ax_stack, collect(sample_range), y_hematoma, y_necrosis, color=(:gold, 0.8), label="Necrosis")
+band!(ax_stack, collect(sample_range), y_necrosis, y_background, color=(:slategray, 0.8), label="Background")
+
+axislegend(ax_stack, position=:rt, nbanks=2)
+
+# Mean pixel coverage by target class
+ax_mean = Axis(fig3[2, 1], title="Mean Pixel Coverage by Target Class",
+               xlabel="Target Class", ylabel="Mean Coverage (%)",
+               xticks=(1:5, ["Scar", "Redness", "Hematoma", "Necrosis", "Background"]))
+
+# Group samples by target class and compute mean pixel coverage for each class
+target_class_indices = Dict(c => findall(==(c), target_classes) for c in class_order)
+
+# For each target class, show mean of the corresponding pixel class
+mean_coverage_by_target = Float64[]
+for (i, tc) in enumerate(class_order)
+    indices = target_class_indices[tc]
+    if tc == :scar
+        push!(mean_coverage_by_target, mean(scar_pcts[indices]))
+    elseif tc == :redness
+        push!(mean_coverage_by_target, mean(redness_pcts[indices]))
+    elseif tc == :hematoma
+        push!(mean_coverage_by_target, mean(hematoma_pcts[indices]))
+    elseif tc == :necrosis
+        push!(mean_coverage_by_target, mean(necrosis_pcts[indices]))
+    else
+        push!(mean_coverage_by_target, mean(background_pcts[indices]))
+    end
+end
+
+barplot!(ax_mean, 1:5, mean_coverage_by_target, color=class_colors)
+
+# Smart crop position scatter plot
+ax_crop = Axis(fig3[2, 2], title="Smart Crop Positions",
+               xlabel="X Start", ylabel="Y Start")
+crop_x = [m.smart_crop_x_start for m in all_metadata]
+crop_y = [m.smart_crop_y_start for m in all_metadata]
+
+# Color by target class
+target_class_nums = [findfirst(==(m.target_class), class_order) for m in all_metadata]
+scatter!(ax_crop, crop_x, crop_y, color=target_class_nums, colormap=:viridis, 
+         markersize=4, alpha=0.5)
+
+# Save Figure 3
+fig3_filename = joinpath(metadata_dir, "augmentation_quality_metrics.png")
+save(fig3_filename, fig3)
+println("  Saved: $(fig3_filename)")
+
+# ============================================================================
+# Figure 4: Sample Gallery with Metadata Overlay
+# ============================================================================
+
+println("Creating sample gallery...")
+
+fig4 = Figure(size=(2000, 1400))
+fig4[0, :] = Label(fig4, "Sample Augmented Images with Parameters", fontsize=24, font=:bold)
+
+# Select samples: one from each target class
+gallery_indices = Int[]
+for tc in class_order
+    indices = findall(==(tc), target_classes)
+    if !isempty(indices)
+        push!(gallery_indices, rand(indices))
+    end
+end
+
+# Add a few more random samples
+while length(gallery_indices) < 10
+    idx = rand(1:length(all_metadata))
+    if !(idx in gallery_indices)
+        push!(gallery_indices, idx)
+    end
+end
+
+for (plot_idx, aug_idx) in enumerate(gallery_indices[1:min(10, length(gallery_indices))])
+    row = div(plot_idx - 1, 5) + 1
+    col = mod(plot_idx - 1, 5) + 1
+    
+    input_image, output_image, source_idx = augmented_sets[aug_idx]
+    m = all_metadata[aug_idx]
+    
+    # Create subplot for input image
+    ax = Axis(fig4[row*2-1, col], aspect=DataAspect(),
+              title="Sample #$(aug_idx)", titlesize=10)
+    rgb_data = data(input_image)
+    img_matrix = [RGB(rgb_data[i, j, 1], rgb_data[i, j, 2], rgb_data[i, j, 3]) 
+                  for i in 1:size(rgb_data, 1), j in 1:size(rgb_data, 2)]
+    img_rotated = rotr90(img_matrix)
+    image!(ax, img_rotated)
+    hidedecorations!(ax)
+    
+    # Create subplot for segmentation mask
+    ax_mask = Axis(fig4[row*2, col], aspect=DataAspect())
+    output_data = data(output_image)
+    mask_matrix = [RGB(
+        output_data[i, j, 1] + output_data[i, j, 4],
+        output_data[i, j, 2] + output_data[i, j, 4],
+        output_data[i, j, 3]
+    ) for i in 1:size(output_data, 1), j in 1:size(output_data, 2)]
+    mask_rotated = rotr90(mask_matrix)
+    image!(ax_mask, mask_rotated)
+    hidedecorations!(ax_mask)
+    
+    # Add metadata text below each pair
+    param_text = "Src:$(m.source_index) | $(m.target_class)\nRot:$(round(m.rotation_angle,digits=0))° | Scale:$(round(m.scale_factor,digits=2))"
+    Label(fig4[row*2+1, col], param_text, fontsize=8, halign=:center)
+end
+
+# Add legend
+legend_text = "Classes: Scar(Red) | Redness(Green) | Hematoma(Blue) | Necrosis(Yellow) | Background(Black)"
+Label(fig4[end+1, :], legend_text, fontsize=12, halign=:center)
+
+# Save Figure 4
+fig4_filename = joinpath(metadata_dir, "augmentation_sample_gallery.png")
+save(fig4_filename, fig4)
+println("  Saved: $(fig4_filename)")
+
+# ============================================================================
+# Figure 5: Summary Statistics Dashboard
+# ============================================================================
+
+println("Creating summary dashboard...")
+
+fig5 = Figure(size=(1400, 900))
+fig5[0, :] = Label(fig5, "Augmentation Summary Dashboard", fontsize=24, font=:bold)
+
+# Statistics text panel
+stats_text = """
+Dataset Statistics:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total Augmented Samples: $(length(all_metadata))
+Original Source Images: $(length(sets))
+Unique Sources Used: $(length(unique(source_indices)))
+Image Size: $(augmented_size[1])×$(augmented_size[2]) pixels
+
+Parameter Ranges:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Scale Factor: $(round(minimum(scale_factors), digits=2)) - $(round(maximum(scale_factors), digits=2))
+Rotation: $(round(minimum(rotation_angles), digits=1))° - $(round(maximum(rotation_angles), digits=1))°
+Shear X: $(round(minimum(shear_x_angles), digits=1))° - $(round(maximum(shear_x_angles), digits=1))°
+Shear Y: $(round(minimum(shear_y_angles), digits=1))° - $(round(maximum(shear_y_angles), digits=1))°
+Brightness: $(round(minimum(brightness_factors), digits=2)) - $(round(maximum(brightness_factors), digits=2))
+Saturation: $(round(minimum(saturation_offsets), digits=2)) - $(round(maximum(saturation_offsets), digits=2))
+Blur σ: $(round(minimum(blur_sigmas), digits=2)) - $(round(maximum(blur_sigmas), digits=2))
+
+Class Distribution:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Scar: $(count(==(Symbol("scar")), target_classes)) samples ($(round(mean(scar_pcts), digits=2))% mean coverage)
+Redness: $(count(==(Symbol("redness")), target_classes)) samples ($(round(mean(redness_pcts), digits=2))% mean coverage)
+Hematoma: $(count(==(Symbol("hematoma")), target_classes)) samples ($(round(mean(hematoma_pcts), digits=2))% mean coverage)
+Necrosis: $(count(==(Symbol("necrosis")), target_classes)) samples ($(round(mean(necrosis_pcts), digits=2))% mean coverage)
+Background: $(count(==(Symbol("background")), target_classes)) samples ($(round(mean(background_pcts), digits=2))% mean coverage)
+"""
+
+Label(fig5[1, 1], stats_text, fontsize=12, halign=:left, valign=:top, font=:regular,
+      tellwidth=false, tellheight=false)
+
+# Pie chart for target class distribution
+ax_pie = Axis(fig5[1, 2], title="Target Class Distribution", aspect=DataAspect())
+hidedecorations!(ax_pie)
+hidespines!(ax_pie)
+
+pie_values = [count(==(c), target_classes) for c in class_order]
+pie_colors = class_colors
+
+# Simple pie chart using arcs - wrapped in let block for proper scope
+let
+    total = sum(pie_values)
+    start_angle = 0.0
+    for (i, (val, col)) in enumerate(zip(pie_values, pie_colors))
+        angle = 2π * val / total
+        end_angle = start_angle + angle
+        
+        # Draw pie slice as polygon
+        n_points = max(10, round(Int, angle * 20))
+        angles = range(start_angle, end_angle, length=n_points)
+        xs = [0.0; cos.(angles)]
+        ys = [0.0; sin.(angles)]
+        poly!(ax_pie, Point2f.(xs, ys), color=col)
+        
+        # Add label
+        mid_angle = (start_angle + end_angle) / 2
+        label_r = 0.7
+        text!(ax_pie, label_r * cos(mid_angle), label_r * sin(mid_angle),
+              text="$(round(100*val/total, digits=1))%", fontsize=10, align=(:center, :center))
+        
+        start_angle = end_angle
+    end
+end
+
+limits!(ax_pie, -1.3, 1.3, -1.3, 1.3)
+
+# Save Figure 5
+fig5_filename = joinpath(metadata_dir, "augmentation_summary_dashboard.png")
+save(fig5_filename, fig5)
+println("  Saved: $(fig5_filename)")
+
+# ============================================================================
+# Display all figures
+# ============================================================================
+
+println("\n=== Visualization Complete ===")
+println("Generated 5 visualization files:")
+println("  1. $(fig1_filename)")
+println("  2. $(fig2_filename)")
+println("  3. $(fig3_filename)")
+println("  4. $(fig4_filename)")
+println("  5. $(fig5_filename)")
+
+# Display figures (if running interactively)
+display(fig1)
+display(fig2)
+display(fig3)
+display(fig4)
+display(fig5)
 
 println("\n✓ Balanced augmentation process complete!")
