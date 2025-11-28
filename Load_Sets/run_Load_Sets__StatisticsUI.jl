@@ -52,6 +52,7 @@ const stats_fig = create_class_statistics_figure(sets, class_stats, class_names_
 # Save figure
 const stats_filename = "Full_Dataset_Class_Area_Statistics_$(length(sets))_images.png"
 Bas3GLMakie.GLMakie.save(stats_filename, stats_fig)
+Bas3GLMakie.GLMakie.display(Bas3GLMakie.GLMakie.Screen(), stats_fig)
 println("✓ Saved: $(stats_filename)")
 
 # ============================================================================
@@ -63,6 +64,7 @@ const bbox_fig = create_bbox_statistics_figure(sets, bbox_stats, bbox_classes, c
 # Save figure
 const bbox_filename = "Full_Dataset_Bounding_Box_Statistics_$(length(sets))_images.png"
 Bas3GLMakie.GLMakie.save(bbox_filename, bbox_fig)
+Bas3GLMakie.GLMakie.display(Bas3GLMakie.GLMakie.Screen(), bbox_fig)
 println("✓ Saved: $(bbox_filename)")
 
 # ============================================================================
@@ -74,6 +76,7 @@ const channel_fig = create_channel_statistics_figure(sets, inputs, channel_stats
 # Save figure
 const channel_filename = "Full_Dataset_RGB_Channel_Statistics_$(length(sets))_images.png"
 Bas3GLMakie.GLMakie.save(channel_filename, channel_fig)
+Bas3GLMakie.GLMakie.display(Bas3GLMakie.GLMakie.Screen(), channel_fig)
 println("✓ Saved: $(channel_filename)")
 
 # ============================================================================

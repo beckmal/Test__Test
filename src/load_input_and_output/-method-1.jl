@@ -7,7 +7,7 @@ import Bas3.is_iterable
 #=
 function load_input_and_output(base_path, data_index; input_shape=input_shape, output_shape=output_shape)
     #=
-    input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="bmp")
+    input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="png")
     input_image_size = size(input_image)
 
     input_images = decompose_image_to_values(input_shape, input_image)
@@ -17,7 +17,7 @@ function load_input_and_output(base_path, data_index; input_shape=input_shape, o
     local canonicalized_input_shape = ()
     for index in 1:length(input_shape)
         if is_iterable(input_shape[index]) == true
-            input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="bmp")
+        input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="png")
             input_image = imresize(input_image; ratio=1/4)
             input_image_size = size(input_image)
             input_images = (input_images..., decompose_image_to_values(input_shape[index], input_image)...)
@@ -42,7 +42,7 @@ function load_input_and_output(base_path, data_index; input_shape=input_shape, o
     _length = length(output_shape)
     output_data = Array{Float32, 3}(undef, data_size[1], data_size[2], _length)
     for index in 1:_length
-        output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="bmp")
+        output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="png")
         output_image_size = size(output_image)
         if output_image_size[1:2] != input_image_size[1:2]
             error("Output image size $(output_image_size) does not match input image size $(input_image_size)")
@@ -59,7 +59,7 @@ function load_input_and_output(base_path, data_index; input_shape=input_shape, o
         if is_iterable(output_shape[index]) == true
             throw(ArgumentError("Output cant be iterable, got $(output_shape[index])"))
         else
-            output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="bmp")
+            output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="png")
             output_image = imresize(output_image; ratio=1/4)
             output_image_size = size(output_image)
             if output_image_size[1:2] != input_image_size[1:2]
@@ -83,7 +83,7 @@ end
 =#
 @__(function load_input_and_output(base_path, data_index; input_type, input_collection=false, output_type, output_collection=false)
     #=
-    input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="bmp")
+    input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="png")
     input_image_size = size(input_image)
 
     input_images = decompose_image_to_values(input_shape, input_image)
@@ -93,7 +93,7 @@ end
     local canonicalized_input_shape = ()
     input_shape = shape(input_type)
     if input_collection == false
-        input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="bmp")
+        input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="png")
         #
         input_image = imresize(input_image; ratio=1/4)
         #
@@ -114,7 +114,7 @@ end
         throw("TODO")
     else
         for index in 1:length(output_shape)
-            output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="bmp")
+            output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="png")
             #
             output_image = imresize(output_image; ratio=1/4)
             #
