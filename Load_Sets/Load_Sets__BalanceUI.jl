@@ -39,8 +39,12 @@ function create_balance_figure(sets, input_type, raw_output_type;
                                test_mode::Bool=false)
     println("[INFO] Creating balance viewer with $(length(sets)) images (test_mode=$test_mode)")
     
-    # Base path for MuHa folders (use Linux/WSL path format)
-    local BASE_PATH = "/mnt/c/Syncthing/MuHa - Bilder"
+    # Base path for MuHa folders - detect Windows vs WSL/Linux
+    local BASE_PATH = if Sys.iswindows()
+        raw"C:\Syncthing\MuHa - Bilder"
+    else
+        "/mnt/c/Syncthing/MuHa - Bilder"
+    end
     
     # Figure: 3 rows x 4 columns
     # Row 1: Original Image | Full Image Histogram (Before) | Masked Region Histogram (Before) | Mean HSV Values (Before)
@@ -430,6 +434,15 @@ function create_balance_figure(sets, input_type, raw_output_type;
         local h_values, s_values, v_values, median_h, median_s, median_v = extract_hsv_values(img)
         
         println("[HISTOGRAM] Updating Observable data with $(length(h_values)) values")
+        
+        # BUGFIX: Makie hist! crashes on empty arrays (extrema() fails)
+        # If no pixels extracted, use placeholder value to avoid crash
+        if isempty(h_values)
+            println("[HISTOGRAM] ⚠ No pixels to histogram - using placeholder values")
+            h_values = Float64[0.0]
+            s_values = Float64[0.0]
+            v_values = Float64[0.0]
+        end
         
         # Update Observables - this automatically updates the histograms
         h_obs[] = h_values

@@ -37,7 +37,8 @@ include("Load_Sets__Core.jl")
 println("Loading dataset...")
 
 # Load dataset files from disk (uses existing cache if available)
-const sets = load_original_sets(50, false)
+# Load all 306 images
+const sets = load_original_sets(306, false)
 println("Loaded $(length(sets)) image sets")
 
 # Split into inputs and raw outputs (used by many UI scripts)

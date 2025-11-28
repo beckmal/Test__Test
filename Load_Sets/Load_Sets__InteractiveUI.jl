@@ -9,8 +9,8 @@ using Dates
 # DATABASE FUNCTIONS FOR MUHA.XLSX
 # ============================================================================
 
-# Database path: Windows location accessible via WSL
-const DATABASE_PATH = "/mnt/c/Syncthing/MuHa - Bilder/MuHa.xlsx"
+# Database path: Platform-independent, uses @__DIR__ to resolve at runtime
+# This ensures it works on Windows, WSL, Linux, etc. without hardcoded paths
 
 """
     validate_date(date_str::String) -> (Bool, String)
@@ -83,19 +83,13 @@ end
 
 Creates MuHa.xlsx if it doesn't exist with proper schema.
 Returns path to database file.
+
+Platform-independent: Always uses the Load_Sets directory where this script lives.
 """
 function initialize_database()
-    # Try primary location first
-    db_path = DATABASE_PATH
-    
-    # Check if directory exists
-    db_dir = dirname(db_path)
-    if !isdir(db_dir)
-        @warn "MuHa directory not found: $db_dir"
-        # Fallback to Load_Sets directory
-        db_path = joinpath(@__DIR__, "MuHa.xlsx")
-        println("[DATABASE] Using fallback location: $db_path")
-    end
+    # Platform-independent: database lives next to this script
+    db_path = joinpath(@__DIR__, "MuHa.xlsx")
+    println("[DATABASE] Using location: $db_path")
     
     # Create if doesn't exist
     if !isfile(db_path)
@@ -3090,8 +3084,12 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             mask_img = zeros(Bas3ImageSegmentation.RGB{Float32}, h, w)
             mask_img[mask] .= Bas3ImageSegmentation.RGB{Float32}(1.0f0, 1.0f0, 1.0f0)  # White where mask is true
             
+            # Apply rotr90 to match UI display coordinate system
+            # This ensures saved mask aligns with how images are displayed in the UI
+            mask_img_rotated = rotr90(mask_img)
+            
             # Save to MuHa folder
-            Bas3GLMakie.GLMakie.save(output_path, mask_img)
+            Bas3GLMakie.GLMakie.save(output_path, mask_img_rotated)
             
             println("[SAVE] ✓ Mask saved to: $output_path")
             selection_status_label.text = "✓ Gespeichert: $folder_name"
