@@ -5,6 +5,7 @@
 using XLSX
 using Dates
 using LinearAlgebra: eigen
+using Statistics: median
 
 # ============================================================================
 # DATABASE FUNCTIONS FOR MUHA.XLSX (Shared with InteractiveUI)
@@ -20,7 +21,8 @@ function get_database_path()
     # Construct platform-independent path to the database
     # Base location: Syncthing/MuHa - Bilder/MuHa.xlsx on C: drive
     if Sys.iswindows()
-        primary_path = joinpath("C:", "Syncthing", "MuHa - Bilder", "MuHa.xlsx")
+        # On Windows, need C:\\ (with separator) not just C:
+        primary_path = joinpath("C:\\", "Syncthing", "MuHa - Bilder", "MuHa.xlsx")
     else
         # WSL/Linux: C: drive mounted at /mnt/c
         primary_path = joinpath("/mnt", "c", "Syncthing", "MuHa - Bilder", "MuHa.xlsx")
@@ -413,6 +415,170 @@ function draw_bboxes_on_axis!(ax, bboxes_dict, img_height)
 end
 
 # ============================================================================
+# HSV HISTOGRAM EXTRACTION FOR CLASS REGIONS
+# ============================================================================
+
+# Import Colors for HSV conversion (available via Bas3ImageSegmentation)
+using Colors: HSV, RGB
+
+# German class names for display
+const CLASS_NAMES_DE_HSV = Dict(
+    :scar => "Narbe",
+    :redness => "Rötung", 
+    :hematoma => "Hämatom",
+    :necrosis => "Nekrose"
+)
+
+"""
+    extract_class_hsv_values(input_img, output_img, classes)
+
+Extract HSV values for each class based on segmentation mask.
+Returns Dict mapping class symbol to NamedTuple with:
+- h_values, s_values, v_values: Arrays for histogram
+- median_h, median_s, median_v: Median values
+- count: Number of pixels
+"""
+function extract_class_hsv_values(input_img, output_img, classes)
+    local input_data = data(input_img)
+    local output_data = data(output_img)
+    local results = Dict{Symbol, NamedTuple}()
+    
+    for (class_idx, class) in enumerate(classes)
+        if class == :background
+            continue
+        end
+        
+        # Get class mask (pixels belonging to this class)
+        local class_mask = output_data[:, :, class_idx] .> 0.5
+        
+        if !any(class_mask)
+            results[class] = (
+                h_values = Float64[],
+                s_values = Float64[],
+                v_values = Float64[],
+                median_h = NaN,
+                median_s = NaN,
+                median_v = NaN,
+                count = 0
+            )
+            continue
+        end
+        
+        # Count pixels for pre-allocation
+        local pixel_indices = findall(class_mask)
+        local n_pixels = length(pixel_indices)
+        
+        # Pre-allocate arrays
+        local h_values = Vector{Float64}(undef, n_pixels)
+        local s_values = Vector{Float64}(undef, n_pixels)
+        local v_values = Vector{Float64}(undef, n_pixels)
+        
+        # Extract HSV values from input image at masked locations
+        @inbounds for (i, idx) in enumerate(pixel_indices)
+            local r, c = idx[1], idx[2]
+            # Get RGB values from input data array (row, col, channel)
+            local red = input_data[r, c, 1]
+            local green = input_data[r, c, 2]
+            local blue = input_data[r, c, 3]
+            local rgb_pixel = RGB(red, green, blue)
+            local hsv_pixel = HSV(rgb_pixel)
+            
+            h_values[i] = hsv_pixel.h           # 0-360°
+            s_values[i] = hsv_pixel.s * 100.0   # 0-100%
+            v_values[i] = hsv_pixel.v * 100.0   # 0-100%
+        end
+        
+        # Compute medians
+        local median_h = n_pixels > 0 ? median(h_values) : NaN
+        local median_s = n_pixels > 0 ? median(s_values) : NaN
+        local median_v = n_pixels > 0 ? median(v_values) : NaN
+        
+        results[class] = (
+            h_values = h_values,
+            s_values = s_values,
+            v_values = v_values,
+            median_h = median_h,
+            median_s = median_s,
+            median_v = median_v,
+            count = n_pixels
+        )
+    end
+    
+    return results
+end
+
+"""
+    create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
+
+Create vertically stacked mini HSV histograms for each class (4 rows x 1 column).
+Returns the created GridLayout.
+"""
+function create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
+    # Define class order for vertical stack: scar, redness, hematoma, necrosis
+    local class_order = [:scar, :redness, :hematoma, :necrosis]
+    
+    # Create vertical nested grid (4 rows, 1 column)
+    local hsv_grid = Bas3GLMakie.GLMakie.GridLayout(parent_layout)
+    
+    for (row_idx, class) in enumerate(class_order)
+        local class_data = get(hsv_class_data, class, nothing)
+        local color = BBOX_COLORS[class][1]
+        local class_name = get(CLASS_NAMES_DE_HSV, class, string(class))
+        
+        if isnothing(class_data) || class_data.count == 0
+            # No data - show placeholder
+            Bas3GLMakie.GLMakie.Label(
+                hsv_grid[row_idx, 1],
+                "$class_name (keine Pixel)",
+                fontsize=8,
+                color=:gray,
+                halign=:center
+            )
+            continue
+        end
+        
+        # Create compact title with class name and stats on one line
+        local title_text = "$class_name n=$(class_data.count) H=$(round(Int, class_data.median_h))° S=$(round(Int, class_data.median_s))% V=$(round(Int, class_data.median_v))%"
+        
+        local ax = Bas3GLMakie.GLMakie.Axis(
+            hsv_grid[row_idx, 1],
+            title=title_text,
+            titlesize=7,
+            titlecolor=color,
+            xlabelsize=6,
+            ylabelsize=6,
+            xticklabelsize=5,
+            yticklabelsize=5
+        )
+        
+        # Hide decorations for compact display
+        Bas3GLMakie.GLMakie.hideydecorations!(ax)
+        Bas3GLMakie.GLMakie.hidexdecorations!(ax)
+        
+        # Plot H, S, V histograms with transparency
+        if length(class_data.h_values) > 0
+            # Hue (0-360) - normalize to percentage for consistent scale
+            local h_normalized = class_data.h_values ./ 3.6
+            Bas3GLMakie.GLMakie.hist!(ax, h_normalized, bins=12, color=(:orange, 0.5), normalization=:pdf)
+            
+            # Saturation (0-100)
+            Bas3GLMakie.GLMakie.hist!(ax, class_data.s_values, bins=12, color=(:magenta, 0.4), normalization=:pdf)
+            
+            # Value (0-100)
+            Bas3GLMakie.GLMakie.hist!(ax, class_data.v_values, bins=12, color=(:gray, 0.4), normalization=:pdf)
+        end
+        
+        # Set axis limits
+        Bas3GLMakie.GLMakie.xlims!(ax, 0, 100)
+    end
+    
+    # Set tight row spacing for vertical stack
+    Bas3GLMakie.GLMakie.rowgap!(hsv_grid, 2)
+    
+    return hsv_grid
+end
+
+# ============================================================================
 # COMPARE UI FIGURE CREATION
 # ============================================================================
 
@@ -514,6 +680,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local save_buttons = []
     local image_labels = []
     local image_observables = []
+    local hsv_grids = []        # NEW: HSV histogram 2x2 grids
+    local hsv_class_data = []   # NEW: HSV data per image
     local current_entries = Bas3GLMakie.GLMakie.Observable(NamedTuple[])
     local current_patient_id = Bas3GLMakie.GLMakie.Observable(isempty(all_patient_ids) ? 0 : all_patient_ids[1])
     
@@ -532,6 +700,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 return (
                     input = rotr90(image(input_img)),
                     output = rotr90(image(output_img)),
+                    input_raw = input_img,    # Keep raw for HSV extraction
                     output_raw = output_img,  # Keep raw for bbox extraction
                     height = Base.size(data(input_img), 1)  # Original height before rotr90
                 )
@@ -539,7 +708,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         end
         # Return placeholder if not found
         local placeholder = fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
-        return (input = placeholder, output = placeholder, output_raw = nothing, height = 100)
+        return (input = placeholder, output = placeholder, input_raw = nothing, output_raw = nothing, height = 100)
     end
     
     # Legacy function for compatibility
@@ -587,6 +756,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         empty!(save_buttons)
         empty!(image_labels)
         empty!(image_observables)
+        empty!(hsv_grids)       # NEW
+        empty!(hsv_class_data)  # NEW
         
         println("[COMPARE-UI] Grid cleared, $(length(images_grid.content)) items remaining")
     end
@@ -666,8 +837,24 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 println("[COMPARE-UI] Drew bounding boxes for image $(entry.image_index): $(sum(length(v) for v in values(bboxes))) boxes")
             end
             
-            # Row 3: Date label + textbox
-            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
+            # Row 3: HSV mini histograms (2x2 grid per class)
+            if !isnothing(images.output_raw) && !isnothing(images.input_raw)
+                local class_hsv = extract_class_hsv_values(images.input_raw, images.output_raw, classes)
+                push!(hsv_class_data, class_hsv)
+                
+                local hsv_grid = create_hsv_mini_histograms!(images_grid[3, col], class_hsv, classes)
+                push!(hsv_grids, hsv_grid)
+                
+                # Log HSV extraction
+                local total_pixels = sum(d.count for d in values(class_hsv))
+                println("[COMPARE-UI] Extracted HSV for image $(entry.image_index): $total_pixels pixels across $(length(class_hsv)) classes")
+            else
+                push!(hsv_class_data, Dict())
+                push!(hsv_grids, nothing)
+            end
+            
+            # Row 4: Date label + textbox
+            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
             Bas3GLMakie.GLMakie.Label(
                 date_grid[1, 1],
                 "Datum:",
@@ -682,8 +869,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(date_textboxes, date_tb)
             
-            # Row 4: Info label + textbox
-            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
+            # Row 5: Info label + textbox
+            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
             Bas3GLMakie.GLMakie.Label(
                 info_grid[1, 1],
                 "Info:",
@@ -698,8 +885,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(info_textboxes, info_tb)
             
-            # Row 5: Patient-ID label + textbox (for reassignment)
-            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
+            # Row 6: Patient-ID label + textbox (for reassignment)
+            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[6, col])
             Bas3GLMakie.GLMakie.Label(
                 pid_grid[1, 1],
                 "Patient:",
@@ -714,9 +901,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(patient_id_textboxes, pid_tb)
             
-            # Row 6: Save button (moved from Row 5)
+            # Row 7: Save button
             local save_btn = Bas3GLMakie.GLMakie.Button(
-                images_grid[6, col],
+                images_grid[7, col],
                 label="Speichern",
                 fontsize=11
             )
@@ -796,7 +983,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         # Show message if more images exist
         if length(entries) > max_images_per_row
             Bas3GLMakie.GLMakie.Label(
-                images_grid[7, 1:num_images],
+                images_grid[8, 1:num_images],
                 "Weitere $(length(entries) - max_images_per_row) Bilder vorhanden (max. $max_images_per_row angezeigt)",
                 fontsize=12,
                 halign=:center,
@@ -811,11 +998,12 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         
         # Set row sizes
         Bas3GLMakie.GLMakie.rowsize!(images_grid, 1, Bas3GLMakie.GLMakie.Fixed(30))   # Label
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(400))  # Image
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(40))   # Date
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(40))   # Info
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(300))  # Image (reduced for HSV space)
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(200))  # HSV histograms (4 stacked)
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(40))   # Date
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Info
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
     end
     
     # ========================================================================
@@ -919,6 +1107,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 :save_buttons => save_buttons,
                 :image_labels => image_labels,
                 :image_observables => image_observables,
+                :hsv_grids => hsv_grids,           # NEW: HSV histogram grids
+                :hsv_class_data => hsv_class_data, # NEW: HSV data per image
             ),
             # Expose helper functions for testing
             functions = Dict(
