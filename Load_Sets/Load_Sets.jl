@@ -4,7 +4,7 @@
 # This file provides the base setup for all Load_Sets scripts:
 # - Activates the environment
 # - Loads all modular components from Load_Sets__Core.jl
-# - Loads the dataset (using existing cache if available)
+# - Loads the dataset (using file-backed memory mapping for efficiency)
 # - Defines core variables used by UI and statistics scripts
 #
 # Use this file as a base for:
@@ -31,19 +31,19 @@ include("Load_Sets__Core.jl")
 # - From Utilities: find_outliers, compute_skewness
 # - From Statistics: compute_class_area_statistics, compute_bounding_box_statistics, compute_channel_statistics
 # - From ConnectedComponents: find_connected_components, extract_white_mask
-# - From DataLoading: load_original_sets
+# - From DataLoading: load_original_sets, MmapImageSet
 # - From Initialization: reporters (initialized packages)
 
-println("Loading dataset...")
+println("Loading dataset with file-backed memory mapping...")
 
-# Load dataset files from disk (uses existing cache if available)
-# Load all 306 images
+# Load dataset files from disk using file-backed mmap
+# This creates lightweight wrappers; actual data is loaded on-demand by the OS
 const sets = load_original_sets(306, false)
-println("Loaded $(length(sets)) image sets")
+println("Prepared $(length(sets)) image sets (file-backed mmap)")
 
-# Split into inputs and raw outputs (used by many UI scripts)
-const inputs = [set[1] for set in sets]
-const raw_outputs = [set[2] for set in sets]
+# Note: With mmap, we don't pre-load inputs/outputs to avoid loading all data into RAM
+# Access individual images via sets[i][1] (input) and sets[i][2] (output)
+# The OS will automatically page data in/out as needed
 
 # Export convenience dictionaries for German names and colors
 const class_names_de = CLASS_NAMES_DE
@@ -51,9 +51,8 @@ const channel_names_de = CHANNEL_NAMES_DE
 
 println("=== Base setup complete ===")
 println("Variables available:")
-println("  - sets: $(length(sets)) image pairs")
-println("  - inputs: input images")
-println("  - raw_outputs: raw output masks")
+println("  - sets: $(length(sets)) image pairs (file-backed mmap)")
+println("  - Access via sets[i][1] (input), sets[i][2] (output), sets[i][3] (index)")
 println("  - class_names_de: German class name mappings")
 println("  - channel_names_de: German channel name mappings")
 println("")

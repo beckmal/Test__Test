@@ -6,6 +6,15 @@
 
 Data loading module for wound image datasets.
 Handles loading from disk and generating augmented datasets.
+
+Storage architecture:
+- Binary files (.bin): Raw image data for memory-mapped access
+- JLD2 files (.jld2): Metadata only (dims, element types, index)
+
+This design provides:
+- Efficient mmap access (OS handles paging)
+- Small metadata files (~1KB vs ~97MB)
+- No redundant data storage
 """
 
 using Random
@@ -19,11 +28,143 @@ using Mmap
 # Dataset Cache
 # ============================================================================
 
-# Global cache for loaded datasets to avoid reloading on subsequent calls
-const _LOADED_SETS_CACHE = try
-    _LOADED_SETS_CACHE
+# Global cache for open file handles (to keep mmaps valid)
+const _MMAP_FILE_HANDLES = try
+    _MMAP_FILE_HANDLES
 catch
-    Dict{Int, Vector}()
+    Dict{String, IOStream}()
+end
+
+# ============================================================================
+# File-Backed Memory Mapping
+# ============================================================================
+
+"""
+    save_image_binary(file_path, image_data) -> (dims, element_type)
+
+Save image data to a raw binary file for memory mapping.
+Returns the dimensions of the saved array and the element type.
+Preserves the original data type (e.g., N0f8) for efficient storage.
+"""
+function save_image_binary(file_path::String, image_data)
+    # Get raw data - may be Array or VectorOfArray depending on image type
+    d = data(image_data)
+    
+    # Get dimensions and element type from the type parameters
+    T = typeof(image_data)
+    if T <: v__Image_Data_Static_Channel
+        # Extract from type: v__Image_Data_Static_Channel{type, size_type, shape_type, ...}
+        size_type = T.parameters[2]
+        shape_type = T.parameters[3]
+        h, w = parameters(size_type)
+        c = length(parameters(shape_type))
+        dims = (h, w, c)
+        # Get element type from the channel data
+        elem_type = eltype(d[:, :, 1])
+    elseif T <: v__Image_Data_Static_Data
+        # Extract from type: v__Image_Data_Static_Data{type, size_type, shape_type, data_type}
+        size_type = T.parameters[2]
+        shape_type = T.parameters[3]
+        h, w = parameters(size_type)
+        c = length(parameters(shape_type))
+        dims = (h, w, c)
+        elem_type = T.parameters[1]  # element type from type parameter
+    else
+        # Fallback: try to get size from data
+        dims = size(d)
+        elem_type = eltype(d)
+    end
+    
+    # Convert to contiguous array preserving original element type
+    arr = Array{elem_type}(undef, dims...)
+    for i in 1:dims[3]
+        arr[:, :, i] .= d[:, :, i]
+    end
+    
+    open(file_path, "w") do io
+        write(io, arr)
+    end
+    return (dims, elem_type)
+end
+
+"""
+    load_image_mmap(file_path, dims, element_type) -> Array
+
+Load image data using file-backed memory mapping.
+This maps the file directly into virtual memory without loading into RAM.
+"""
+function load_image_mmap(file_path::String, dims::Tuple, element_type::Type)
+    # Keep file handle open to maintain mmap validity
+    if !haskey(_MMAP_FILE_HANDLES, file_path)
+        _MMAP_FILE_HANDLES[file_path] = open(file_path, "r")
+    end
+    io = _MMAP_FILE_HANDLES[file_path]
+    seekstart(io)
+    return Mmap.mmap(io, Array{element_type, length(dims)}, dims)
+end
+
+"""
+    MmapImageSet
+
+A struct that holds file-backed memory-mapped image data.
+The actual data is only loaded into RAM when accessed, and the OS
+handles paging data in/out automatically.
+"""
+struct MmapImageSet
+    input_path::String
+    output_path::String
+    input_dims::Tuple{Int,Int,Int}
+    output_dims::Tuple{Int,Int,Int}
+    input_elem_type::Type
+    output_elem_type::Type
+    input_type::Any
+    output_type::Any
+    index::Int
+end
+
+"""
+    get_input(mset::MmapImageSet) -> Image
+
+Get the input image, memory-mapped from disk.
+"""
+function get_input(mset::MmapImageSet)
+    mapped_data = load_image_mmap(mset.input_path, mset.input_dims, mset.input_elem_type)
+    # Reconstruct the image type from mapped data
+    return mset.input_type(mapped_data)
+end
+
+"""
+    get_output(mset::MmapImageSet) -> Image
+
+Get the output image, memory-mapped from disk.
+"""
+function get_output(mset::MmapImageSet)
+    mapped_data = load_image_mmap(mset.output_path, mset.output_dims, mset.output_elem_type)
+    return mset.output_type(mapped_data)
+end
+
+# Make MmapImageSet indexable like a tuple: set[1]=input, set[2]=output, set[3]=index
+function Base.getindex(mset::MmapImageSet, i::Int)
+    if i == 1
+        return get_input(mset)
+    elseif i == 2
+        return get_output(mset)
+    elseif i == 3
+        return mset.index
+    else
+        throw(BoundsError(mset, i))
+    end
+end
+Base.length(::MmapImageSet) = 3
+Base.iterate(mset::MmapImageSet) = (get_input(mset), 2)
+function Base.iterate(mset::MmapImageSet, state::Int)
+    if state == 2
+        return (get_output(mset), 3)
+    elseif state == 3
+        return (mset.index, 4)
+    else
+        return nothing
+    end
 end
 
 # ============================================================================
@@ -31,7 +172,7 @@ end
 # ============================================================================
 
 """
-    load_original_sets(length::Int=306, regenerate::Bool=false; resize_ratio=1) -> Vector{Tuple}
+    load_original_sets(length::Int=306, regenerate::Bool=false; resize_ratio=1) -> Vector{MmapImageSet}
 
 Load original wound image dataset from disk or generate from source.
 
@@ -41,41 +182,21 @@ Load original wound image dataset from disk or generate from source.
 - `resize_ratio`: Ratio for image resizing (default: 1 = no resize, 1//4 = quarter size)
 
 # Returns
-- `Vector{Tuple}`: Vector of (input_image, output_mask, index) tuples
+- `Vector{MmapImageSet}`: Vector of memory-mapped image set wrappers
 
-# Example
-```julia
-sets = load_original_sets(306, false)  # Load first 306 images from disk
-sets = load_original_sets(306, true; resize_ratio=1)  # Regenerate at full resolution
-```
-
-# File Structure
-- Loads from: `base_path/original/{index}.jld2`
-- Generates from: `base_path/../MuHa - Bilder/`  (source images)
+# File Structure (binary-only with JLD2 metadata)
+- Binary input data: `base_path/original/{index}_input.bin`
+- Binary output data: `base_path/original/{index}_output.bin`
+- JLD2 metadata: `base_path/original/{index}_meta.jld2` (dims, elem_types, index only)
 """
 function load_original_sets(_length::Int=306, regenerate_images::Bool=false; resize_ratio=1)
-    # Check cache first
-    if haskey(_LOADED_SETS_CACHE, _length) && !regenerate_images
-        cached_sets = _LOADED_SETS_CACHE[_length]
-        println("Using cached sets: $(length(cached_sets)) sets already loaded")
-        return cached_sets
-    end
-    
-    temp_sets = []
+    temp_sets = Vector{MmapImageSet}()
     _index_array = collect(1:_length)  # Sequential order for predictable UI mapping
+    original_dir = joinpath(base_path, "original")
     
-    if regenerate_images == false
-        println("Loading original sets from disk (first $((_length)) images)...")
-        for index in 1:_length
-            println("  Loading set $(index)/$(_length)")
-            @time begin
-                input, output = JLD2.load(joinpath(base_path, "original/$(index).jld2"), "set")
-            end
-            push!(temp_sets, (memory_map(input), memory_map(output), index))
-        end
-    else
+    if regenerate_images
         println("Generating original sets from source images (resize_ratio=$(resize_ratio))...")
-        println("  (Memory-efficient mode: save immediately after each image)")
+        println("  Storage: binary files + JLD2 metadata (no image data in JLD2)")
         for index in 1:_length
             println("  Loading and saving image $(index)/$(_length)")
             @time begin
@@ -87,31 +208,66 @@ function load_original_sets(_length::Int=306, regenerate_images::Bool=false; res
                     output_collection=true,
                     resize_ratio=resize_ratio
                 ))
-                # Save immediately to avoid accumulating all images in memory
-                JLD2.save(joinpath(base_path, "original/$(index).jld2"), "set", (input, output, _index_array[index]))
+                
+                # Save binary files for memory mapping
+                input_bin_path = joinpath(original_dir, "$(index)_input.bin")
+                output_bin_path = joinpath(original_dir, "$(index)_output.bin")
+                input_dims, input_elem_type = save_image_binary(input_bin_path, input)
+                output_dims, output_elem_type = save_image_binary(output_bin_path, output)
+                
+                # Save metadata only to JLD2 (no image data!)
+                meta_path = joinpath(original_dir, "$(index)_meta.jld2")
+                JLD2.save(meta_path, "metadata", (
+                    input_dims=input_dims,
+                    output_dims=output_dims,
+                    input_elem_type=input_elem_type,
+                    output_elem_type=output_elem_type,
+                    index=_index_array[index]
+                ))
             end
             # Force garbage collection periodically to release memory
             if index % 10 == 0
                 GC.gc()
             end
         end
+        println("Regeneration complete.")
+    end
+    
+    # Load sets from binary files + metadata
+    println("Creating file-backed memory maps for $(_length) images...")
+    for index in 1:_length
+        input_bin_path = joinpath(original_dir, "$(index)_input.bin")
+        output_bin_path = joinpath(original_dir, "$(index)_output.bin")
+        meta_path = joinpath(original_dir, "$(index)_meta.jld2")
         
-        # Now load them back with memory mapping for the return value
-        println("Loading saved sets with memory mapping...")
-        for index in 1:_length
-            input, output, idx = JLD2.load(joinpath(base_path, "original/$(index).jld2"), "set")
-            push!(temp_sets, (memory_map(input), memory_map(output), idx))
+        if !isfile(input_bin_path) || !isfile(output_bin_path) || !isfile(meta_path)
+            error("Missing files for image $(index). Run with regenerate=true to create them.")
+        end
+        
+        # Load metadata
+        metadata = JLD2.load(meta_path, "metadata")
+        
+        mset = MmapImageSet(
+            input_bin_path,
+            output_bin_path,
+            metadata.input_dims,
+            metadata.output_dims,
+            metadata.input_elem_type,
+            metadata.output_elem_type,
+            input_type,
+            raw_output_type,
+            metadata.index
+        )
+        push!(temp_sets, mset)
+        
+        if index == 1 || index % 50 == 0 || index == _length
+            println("  Prepared $(index)/$(_length) images")
         end
     end
     
-    println("Original sets loaded: $(length(temp_sets)) sets")
-    
-    # Store in cache
-    result = [temp_sets...]
-    _LOADED_SETS_CACHE[_length] = result
-    println("Cached $(length(result)) sets for future use")
-    
-    return result
+    println("File-backed memory maps ready (data loaded on-demand by OS)")
+    println("Original sets ready: $(length(temp_sets)) sets")
+    return temp_sets
 end
 
 # ============================================================================
