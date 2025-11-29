@@ -1064,7 +1064,19 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         local pca_angle = rad2deg(pca_angle_rad)  # Convert to degrees immediately
         
         # Get image data in original space
-        local img_data = data(img)  # H×W×3 (756×1008×3)
+        local img_data_raw = data(img)  # H×W×3 (756×1008×3) - may be VectorOfArray
+        # Convert to standard Array{Float32,3} if needed (VectorOfArray is not indexable with [r,c,ch])
+        local img_data = if img_data_raw isa Array{Float32,3}
+            img_data_raw
+        else
+            # Convert VectorOfArray or similar to standard 3D array
+            local h_tmp, w_tmp = Base.size(img_data_raw, 1), Base.size(img_data_raw, 2)
+            local arr = Array{Float32,3}(undef, h_tmp, w_tmp, 3)
+            for ch in 1:3
+                arr[:, :, ch] .= img_data_raw[:, :, ch]
+            end
+            arr
+        end
         local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
         
         println("[CLOSEUP-EXTRACT] Extracting from mask with size=$(size(mask)), image size=($h, $w)")
