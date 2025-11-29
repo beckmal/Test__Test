@@ -223,8 +223,11 @@ in the main pipeline. The original Load_Sets.jl focuses on original images only.
                 end
                 
                 # Apply post-processing
-                inputs[index] = augment(augmented_input, post_pipeline |> input_pipeline)
-                augmented_output = augment(augmented_output, post_pipeline)
+                # Apply elastic distortion to both input and output in a SINGLE call
+                # to ensure the same random displacement field is used for both
+                augmented_input, augmented_output = augment((augmented_input, augmented_output), post_pipeline)
+                # Apply color augmentation (brightness, saturation, blur) only to input
+                inputs[index] = augment(augmented_input, input_pipeline)
                 augmented_output = convert(raw_output_type, augmented_output)
                 outputs[index] = augmented_output
                 image_indices[index] = sample_index

@@ -68,8 +68,14 @@ include("Load_Sets__ThinPlateSpline.jl")
 println("  11/12 Loading MarkerCorrespondence...")
 include("Load_Sets__MarkerCorrespondence.jl")
 
-println("  12/12 Loading InteractiveUI...")
+println("  12/14 Loading InteractiveUI...")
 include("Load_Sets__InteractiveUI.jl")
+
+println("  13/14 Loading Augment_Config...")
+include("Load_Sets__Augment_Config.jl")
+
+println("  14/14 Loading Augment_Pipeline...")
+include("Load_Sets__Augment_Pipeline.jl")
 
 println("✅ Load_Sets core modules loaded successfully")
 
@@ -90,4 +96,11 @@ println("  - dewarp_image_with_markers(img; marker_detection_params, ...)")
 println("  - warp_image_tps(img, source_points, target_points)")
 println("  - whitebalance_bradford(color, src_white, ref_white)")
 println("  - apply_whitebalance_to_image(img, src_white, ref_white)")
+println("")
+println("📦 Augmentation pipeline available:")
+println("  - analyze_source_classes(sets)")
+println("  - generate_balanced_sets(...)")
+println("  - save_augmented_dataset(...)")
+println("  - load_augmented_metadata(metadata_dir)")
+println("  - load_augmented_sample(output_dir, index)")
 println("")
