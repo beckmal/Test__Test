@@ -51,6 +51,14 @@ function create_augment_summary_dashboard_figure(
     necrosis_pcts = [m.necrosis_percentage for m in all_metadata]
     background_pcts = [m.background_percentage for m in all_metadata]
     
+    # Extract growth metrics
+    size_multipliers = [m.size_multiplier for m in all_metadata]
+    growth_iterations = [m.growth_iterations for m in all_metadata]
+    actual_fg_percentages = [m.actual_fg_percentage for m in all_metadata]
+    max_size_reached_flags = [m.max_size_reached for m in all_metadata]
+    patch_heights = [m.patch_height for m in all_metadata]
+    patch_widths = [m.patch_width for m in all_metadata]
+    
     class_order = AUGMENT_CLASS_ORDER
     class_colors = AUGMENT_CLASS_COLORS
     
@@ -91,6 +99,15 @@ Redness: $(count(==(Symbol("redness")), target_classes)) samples ($(round(mean(r
 Hematoma: $(count(==(Symbol("hematoma")), target_classes)) samples ($(round(mean(hematoma_pcts), digits=2))% mean coverage)
 Necrosis: $(count(==(Symbol("necrosis")), target_classes)) samples ($(round(mean(necrosis_pcts), digits=2))% mean coverage)
 Background: $(count(==(Symbol("background")), target_classes)) samples ($(round(mean(background_pcts), digits=2))% mean coverage)
+
+Dynamic Patch Sizing:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Size Multiplier Range: $(minimum(size_multipliers))× - $(maximum(size_multipliers))×
+Mean Multiplier: $(round(mean(size_multipliers), digits=2))×
+Mean Growth Iterations: $(round(mean(growth_iterations), digits=2))
+Max Size Reached: $(count(max_size_reached_flags)) samples ($(round(100*count(max_size_reached_flags)/length(all_metadata), digits=1))%)
+Mean FG%: $(round(mean(actual_fg_percentages), digits=2))%
+Patch Size Range: $(minimum(patch_heights))×$(minimum(patch_widths)) to $(maximum(patch_heights))×$(maximum(patch_widths))
 """
     
     Bas3GLMakie.GLMakie.Label(

@@ -455,6 +455,56 @@ function calculate_sample_counts(total_length::Int, target_distribution::Dict{Sy
 end
 
 # ============================================================================
+# Foreground Percentage Computation
+# ============================================================================
+
+"""
+    compute_foreground_percentage(output) -> Float64
+
+Calculate percentage of foreground (non-background) pixels.
+
+# Arguments
+- `output` - Output segmentation mask
+
+# Returns
+Foreground percentage (0-100)
+"""
+function compute_foreground_percentage(output)
+    output_data = data(output)
+    total_pixels = size(output_data, 1) * size(output_data, 2)
+    
+    # Sum all non-background channels (channels 1-4: scar, redness, hematoma, necrosis)
+    fg_pixels = sum(output_data[:, :, 1:4])
+    
+    return (fg_pixels / total_pixels) * 100.0
+end
+
+"""
+    calculate_intermediate_size(base_size, max_multiplier) -> Tuple{Int,Int}
+
+Calculate required intermediate size to accommodate max final size with geometric transforms.
+
+# Arguments
+- `base_size::Tuple{Int,Int}` - Base patch size (height, width)
+- `max_multiplier::Int` - Maximum size multiplier
+
+# Returns
+Required intermediate size (height, width)
+"""
+function calculate_intermediate_size(base_size::Tuple{Int,Int}, max_multiplier::Int)
+    max_final_h = base_size[1] * max_multiplier
+    max_final_w = base_size[2] * max_multiplier
+    
+    # Multiply by 2 to handle rotation (diagonal case)
+    # Add extra margin (1.2×) for safety
+    margin = 1.2
+    intermediate_h = round(Int, max_final_h * 2 * margin)
+    intermediate_w = round(Int, max_final_w * 2 * margin)
+    
+    return (intermediate_h, intermediate_w)
+end
+
+# ============================================================================
 # Quality Threshold
 # ============================================================================
 
@@ -508,23 +558,24 @@ end
 """
     generate_balanced_sets(; kwargs...)
 
-Generate a balanced augmented dataset with explicit parameter tracking.
+Generate a balanced augmented dataset with explicit parameter tracking and dynamic sizing.
 
 # Keyword Arguments
 - `sets` - Source dataset (vector of (input, output) or (input, output, index) tuples)
 - `source_info::Vector{SourceClassInfo}` - Pre-computed source class analysis
 - `target_distribution::Dict{Symbol, Float64}` - Target class distribution
 - `total_length::Int` - Number of samples to generate
-- `target_size::Tuple{Int,Int}` - Output image size (height, width)
-- `intermediate_size::Tuple{Int,Int}` - Smart crop size (default: auto-computed)
+- `base_size::Tuple{Int,Int}` - Base patch size (height, width), default (50, 100)
+- `max_multiplier::Int` - Maximum size multiplier for growth (default: 4)
+- `fg_thresholds::Dict{Symbol, Float64}` - Per-class FG% thresholds (default: FG_THRESHOLDS)
 - `excluded_indices::Set{Int}` - Source indices to exclude (default: empty)
 - `input_type` - Type for input images
 - `raw_output_type` - Type for output masks
 
 # Returns
 Tuple (inputs, outputs, image_indices, metadata_list):
-- `inputs` - Vector of augmented input images
-- `outputs` - Vector of augmented output masks
+- `inputs` - Vector of augmented input images (variable sizes)
+- `outputs` - Vector of augmented output masks (variable sizes)
 - `image_indices` - Vector of source indices used
 - `metadata_list` - Vector of AugmentationMetadata
 """
@@ -533,15 +584,21 @@ function generate_balanced_sets(;
     source_info::Vector{SourceClassInfo},
     target_distribution::Dict{Symbol, Float64},
     total_length::Int,
-    target_size::Tuple{Int,Int},
-    intermediate_size::Tuple{Int,Int} = (max(150, maximum(target_size) * 2), max(150, maximum(target_size) * 2)),
+    base_size::Tuple{Int,Int} = (50, 100),
+    max_multiplier::Int = 4,
+    fg_thresholds::Dict{Symbol, Float64} = FG_THRESHOLDS,
     excluded_indices::Set{Int} = Set{Int}(),
     input_type,
     raw_output_type
 )
+    # Calculate intermediate size based on max final size
+    intermediate_size = calculate_intermediate_size(base_size, max_multiplier)
+    
     println("\n=== Configuring Balanced Augmentation ===")
-    println("  Smart crop size: $(intermediate_size)")
-    println("  Final size: $(target_size)")
+    println("  Base size: $(base_size)")
+    println("  Max multiplier: $(max_multiplier)× (max size: $(base_size[1]*max_multiplier)×$(base_size[2]*max_multiplier))")
+    println("  Intermediate size: $(intermediate_size)")
+    println("  FG thresholds: $(fg_thresholds)")
     println("  Total samples: $(total_length)")
     println("  Excluded sources: $(collect(excluded_indices))")
     
@@ -553,11 +610,11 @@ function generate_balanced_sets(;
         println("  $(class): $(count) samples ($(pct)%)")
     end
     
-    # Initialize output arrays
-    inputs = Vector{input_type}(undef, total_length)
-    outputs = Vector{raw_output_type}(undef, total_length)
-    image_indices = Vector{Int}(undef, total_length)
-    metadata_list = Vector{AugmentationMetadata}(undef, total_length)
+    # Initialize output arrays as empty - we'll collect them dynamically
+    inputs = []
+    outputs = []
+    image_indices = Int[]
+    metadata_list = AugmentationMetadata[]
     
     # Track counts
     sample_counts_by_target = Dict{Symbol, Int}(c => 0 for c in AUGMENT_CLASS_ORDER)
@@ -590,12 +647,12 @@ function generate_balanced_sets(;
                 # Step 1: Select source image
                 sample_index = select_source_for_class(source_info, target_class, excluded_indices)
                 
-                # Step 2: Sample parameters
+                # Step 2: Sample parameters (use base_size for initial crop)
                 aug_seed = rand(UInt64)
                 params = sample_augmentation_parameters(
                     seed = aug_seed,
                     intermediate_size = intermediate_size,
-                    target_size = target_size
+                    target_size = base_size  # Start with base size
                 )
                 
                 # Step 3: Build pipelines
@@ -605,20 +662,84 @@ function generate_balanced_sets(;
                 input_img = sets[sample_index][1]
                 output_img = sets[sample_index][2]
                 
-                # Step 4: Smart cropping
+                # Step 4: Smart cropping to LARGE intermediate
                 cropped_input, cropped_output, smart_crop_window = apply_smart_crop(
                     input_img, output_img, target_class, intermediate_size
                 )
                 
-                # Step 5: Apply main augmentation
-                augmented_input, augmented_output = augment((cropped_input, cropped_output), main_pipeline)
+                # Step 5: Apply geometric transformations to intermediate
+                augmented_input, augmented_output = augment(
+                    (cropped_input, cropped_output), 
+                    main_pipeline
+                )
                 
-                # Step 6: Final crop
-                final_input, final_output = augment((augmented_input, augmented_output), CropSize(target_size...))
+                # Step 6: Iterative Growth Loop
+                fg_threshold = get_fg_threshold(target_class)
+                multiplier = 1
+                growth_iterations = 0
+                actual_fg_pct = 100.0
+                final_input = nothing
+                final_output = nothing
+                max_size_reached = false
                 
-                # Step 7: Post-processing
-                final_input = augment(final_input, post_pipeline_explicit |> input_pipeline_explicit)
-                final_output = augment(final_output, post_pipeline_explicit)
+                # Get intermediate dimensions
+                output_dims = size(data(augmented_output))
+                intermediate_h, intermediate_w = output_dims[1], output_dims[2]
+                
+                while multiplier <= max_multiplier
+                    growth_iterations += 1
+                    
+                    # Calculate current crop size
+                    current_h = base_size[1] * multiplier
+                    current_w = base_size[2] * multiplier
+                    
+                    # Check if intermediate is large enough
+                    if current_h > intermediate_h || current_w > intermediate_w
+                        # Can't grow further, use previous multiplier
+                        multiplier -= 1
+                        if multiplier < 1
+                            multiplier = 1
+                        end
+                        break
+                    end
+                    
+                    # Extract crop from center of augmented intermediate using CropSize
+                    crop_pipeline = CropSize(current_h, current_w)
+                    
+                    # Apply crop to extract final size
+                    final_input, final_output = augment(
+                        (augmented_input, augmented_output),
+                        crop_pipeline
+                    )
+                    
+                    # Compute foreground percentage
+                    actual_fg_pct = compute_foreground_percentage(final_output)
+                    
+                    # Check threshold
+                    if actual_fg_pct <= fg_threshold
+                        # Threshold met, stop growing
+                        break
+                    end
+                    
+                    # Check if we've reached max multiplier
+                    if multiplier >= max_multiplier
+                        # Can't grow further, stay at max
+                        break
+                    end
+                    
+                    # Continue growing
+                    multiplier += 1
+                end
+                
+                # Check if we hit max size
+                max_size_reached = (multiplier >= max_multiplier && actual_fg_pct > fg_threshold)
+                
+                # Step 7: Post-processing (elastic applied to BOTH together, color only to input)
+                # Apply elastic distortion to both input and output in a SINGLE call
+                # to ensure the same random displacement field is used for both
+                final_input, final_output = augment((final_input, final_output), post_pipeline_explicit)
+                # Apply color augmentation (brightness, saturation, blur) only to input
+                final_input = augment(final_input, input_pipeline_explicit)
                 final_output = convert(raw_output_type, final_output)
                 
                 # Step 8: Quality check
@@ -649,12 +770,12 @@ function generate_balanced_sets(;
                 # Store result
                 successful_samples += 1
                 class_successful += 1
-                inputs[successful_samples] = final_input
-                outputs[successful_samples] = final_output
-                image_indices[successful_samples] = sample_index
+                push!(inputs, final_input)
+                push!(outputs, final_output)
+                push!(image_indices, sample_index)
                 
                 # Create metadata
-                metadata_list[successful_samples] = AugmentationMetadata(
+                push!(metadata_list, AugmentationMetadata(
                     successful_samples,
                     sample_index,
                     now(),
@@ -686,12 +807,26 @@ function generate_balanced_sets(;
                     redness_pct,
                     hematoma_pct,
                     necrosis_pct,
-                    background_pct
-                )
+                    background_pct,
+                    multiplier,                      # size_multiplier
+                    base_size[1] * multiplier,      # patch_height
+                    base_size[2] * multiplier,      # patch_width
+                    fg_threshold,                   # fg_threshold_used
+                    actual_fg_pct,                  # actual_fg_percentage
+                    growth_iterations,              # growth_iterations
+                    max_size_reached,               # max_size_reached
+                    intermediate_h,                 # intermediate_height
+                    intermediate_w                  # intermediate_width
+                ))
                 
             catch error
                 if class_attempts % 50 == 0
                     println("    Error (attempt $(class_attempts)): $(typeof(error))")
+                    println("    Message: $(error)")
+                    if isa(error, MethodError)
+                        println("    Method: $(error.f)")
+                        println("    Args: $(error.args)")
+                    end
                 end
             end
         end
@@ -705,7 +840,7 @@ function generate_balanced_sets(;
     
     # Shuffle samples
     println("\n=== Shuffling samples ===")
-    shuffle_indices = Random.randperm(total_length)
+    shuffle_indices = Random.randperm(successful_samples)
     inputs = inputs[shuffle_indices]
     outputs = outputs[shuffle_indices]
     image_indices = image_indices[shuffle_indices]

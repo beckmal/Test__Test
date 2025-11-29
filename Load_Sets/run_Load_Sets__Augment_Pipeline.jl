@@ -18,10 +18,22 @@ println("")
 # ============================================================================
 
 # Number of augmented samples to generate
-const TOTAL_LENGTH = 1000
+const TOTAL_LENGTH = 1000  # Full dataset
 
-# Output image size (height, width)
-const TARGET_SIZE = (100, 50)
+# Base patch size (height, width) - patches grow from this
+const BASE_SIZE = (50, 100)
+
+# Maximum size multiplier (max size = BASE_SIZE × MAX_MULTIPLIER)
+const MAX_MULTIPLIER = 4
+
+# Per-class foreground thresholds (%)
+const FG_THRESHOLDS = Dict{Symbol, Float64}(
+    :scar       => 50.0,
+    :redness    => 50.0,
+    :hematoma   => 50.0,
+    :necrosis   => 50.0,
+    :background => 100.0
+)
 
 # Source indices to exclude (e.g., bad quality images)
 const EXCLUDED_INDICES = Set([8, 16])
@@ -73,12 +85,14 @@ println("  Necrosis: $(round(mean([s.necrosis_percentage for s in source_info]),
 println("\n=== Generating Augmented Dataset ===")
 
 @time begin
-    inputs, outputs, image_indices, metadata_list = generate_balanced_sets(
+    aug_inputs, aug_outputs, aug_image_indices, aug_metadata_list = generate_balanced_sets(
         sets = sets,
         source_info = source_info,
         target_distribution = TARGET_DIST,
         total_length = TOTAL_LENGTH,
-        target_size = TARGET_SIZE,
+        base_size = BASE_SIZE,
+        max_multiplier = MAX_MULTIPLIER,
+        fg_thresholds = FG_THRESHOLDS,
         excluded_indices = EXCLUDED_INDICES,
         input_type = input_type,
         raw_output_type = raw_output_type
@@ -92,9 +106,9 @@ end
 println("\n=== Saving Dataset ===")
 
 augmented_sets = save_augmented_dataset(
-    inputs,
-    outputs,
-    metadata_list,
+    aug_inputs,
+    aug_outputs,
+    aug_metadata_list,
     output_dir,
     metadata_dir;
     target_distribution = TARGET_DIST,
@@ -112,4 +126,32 @@ println("="^70)
 println("Total samples generated: $(length(augmented_sets))")
 println("Output directory: $(output_dir)")
 println("Metadata directory: $(metadata_dir)")
+
+# Print growth statistics
+println("\n=== Growth Statistics ===")
+multiplier_counts = Dict{Int, Int}()
+growth_counts = Dict{Int, Int}()
+
+for m in aug_metadata_list
+    multiplier_counts[m.size_multiplier] = get(multiplier_counts, m.size_multiplier, 0) + 1
+    growth_counts[m.growth_iterations] = get(growth_counts, m.growth_iterations, 0) + 1
+end
+
+println("\nSize distribution:")
+for mult in sort(collect(keys(multiplier_counts)))
+    count = multiplier_counts[mult]
+    pct = round(100 * count / length(aug_metadata_list), digits=1)
+    println("  $(mult)× ($(BASE_SIZE[1]*mult)×$(BASE_SIZE[2]*mult)): $count samples ($pct%)")
+end
+
+println("\nGrowth iterations:")
+for iters in sort(collect(keys(growth_counts)))
+    count = growth_counts[iters]
+    pct = round(100 * count / length(aug_metadata_list), digits=1)
+    println("  $iters iterations: $count samples ($pct%)")
+end
+
+max_reached_count = count(m -> m.max_size_reached, aug_metadata_list)
+println("\nMax size reached: $max_reached_count samples")
+
 println("="^70)

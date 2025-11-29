@@ -21,10 +21,11 @@ Create a figure showing quality metrics analysis.
 - `all_metadata::Vector{AugmentationMetadata}` - Metadata for all augmented samples
 
 # Returns
-GLMakie Figure with 3 plots:
+GLMakie Figure with 4 plots:
 - Stacked area chart of class composition per sample
 - Mean pixel coverage by target class
 - Smart crop position scatter plot
+- FG% vs Size Multiplier scatter plot
 """
 function create_augment_quality_metrics_figure(all_metadata::Vector{AugmentationMetadata})
     # Extract data
@@ -37,8 +38,13 @@ function create_augment_quality_metrics_figure(all_metadata::Vector{Augmentation
     
     class_order = AUGMENT_CLASS_ORDER
     
-    # Create figure
-    fig = Bas3GLMakie.GLMakie.Figure(size=(1600, 1000))
+    # Extract growth metrics
+    size_multipliers = [m.size_multiplier for m in all_metadata]
+    actual_fg_percentages = [m.actual_fg_percentage for m in all_metadata]
+    fg_thresholds_used = [m.fg_threshold_used for m in all_metadata]
+    
+    # Create figure (taller to accommodate 4 plots)
+    fig = Bas3GLMakie.GLMakie.Figure(size=(1600, 1300))
     
     # Title
     Bas3GLMakie.GLMakie.Label(
@@ -133,6 +139,37 @@ function create_augment_quality_metrics_figure(all_metadata::Vector{Augmentation
         markersize=4, 
         alpha=0.5
     )
+    
+    # Plot 4: FG% vs Size Multiplier scatter plot
+    ax_growth = Bas3GLMakie.GLMakie.Axis(
+        fig[3, :], 
+        title="Actual FG% vs Size Multiplier (Growth Relationship)",
+        xlabel="Size Multiplier (×)", 
+        ylabel="Actual FG%"
+    )
+    
+    # Scatter plot colored by target class
+    Bas3GLMakie.GLMakie.scatter!(
+        ax_growth, 
+        size_multipliers, 
+        actual_fg_percentages, 
+        color=target_class_nums, 
+        colormap=:viridis, 
+        markersize=8, 
+        alpha=0.6
+    )
+    
+    # Add horizontal lines for typical thresholds
+    unique_thresholds = sort(unique(fg_thresholds_used))
+    for (i, thresh) in enumerate(unique_thresholds)
+        if thresh < 100.0  # Don't plot 100% threshold (background)
+            Bas3GLMakie.GLMakie.hlines!(ax_growth, [thresh], color=:red, linestyle=:dash, linewidth=1.5,
+                                        label=(i == 1 ? "FG Thresholds" : nothing))
+        end
+    end
+    
+    # Add legend
+    Bas3GLMakie.GLMakie.axislegend(ax_growth, position=:rt)
     
     return fig
 end

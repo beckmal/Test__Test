@@ -19,10 +19,11 @@ Create a figure showing distribution histograms of all augmentation parameters.
 - `all_metadata::Vector{AugmentationMetadata}` - Metadata for all augmented samples
 
 # Returns
-GLMakie Figure with 9 parameter distribution plots (3x3 grid):
+GLMakie Figure with 12 parameter distribution plots (4x3 grid):
 - Row 1: Scale factor, Rotation angle, Shear X angle
 - Row 2: Shear Y angle, Brightness factor, Saturation offset
 - Row 3: Blur kernel size, Blur sigma, Flip type
+- Row 4: Size multiplier, Growth iterations, Actual FG percentage
 """
 function create_augment_parameter_distributions_figure(all_metadata::Vector{AugmentationMetadata})
     # Extract parameter arrays
@@ -36,8 +37,13 @@ function create_augment_parameter_distributions_figure(all_metadata::Vector{Augm
     blur_sigmas = [m.blur_sigma for m in all_metadata]
     flip_types = [m.flip_type for m in all_metadata]
     
-    # Create figure
-    fig = Bas3GLMakie.GLMakie.Figure(size=(1800, 1200))
+    # Extract new growth metrics
+    size_multipliers = [m.size_multiplier for m in all_metadata]
+    growth_iterations = [m.growth_iterations for m in all_metadata]
+    actual_fg_percentages = [m.actual_fg_percentage for m in all_metadata]
+    
+    # Create figure (4 rows now)
+    fig = Bas3GLMakie.GLMakie.Figure(size=(1800, 1600))
     
     # Title
     Bas3GLMakie.GLMakie.Label(
@@ -79,6 +85,20 @@ function create_augment_parameter_distributions_figure(all_metadata::Vector{Augm
                xticks=(1:3, ["FlipX", "FlipY", "NoOp"]))
     flip_counts = [count(==(t), flip_types) for t in [:flipx, :flipy, :noop]]
     Bas3GLMakie.GLMakie.barplot!(ax9, 1:3, flip_counts, color=[:indianred, :cornflowerblue, :darkgray])
+    
+    # Row 4: Growth metrics
+    ax10 = Bas3GLMakie.GLMakie.Axis(fig[4, 1], title="Size Multiplier", xlabel="Multiplier", ylabel="Count")
+    unique_multipliers = sort(unique(size_multipliers))
+    multiplier_counts = [count(==(m), size_multipliers) for m in unique_multipliers]
+    Bas3GLMakie.GLMakie.barplot!(ax10, unique_multipliers, multiplier_counts, color=:darkviolet)
+    
+    ax11 = Bas3GLMakie.GLMakie.Axis(fig[4, 2], title="Growth Iterations", xlabel="Iterations", ylabel="Count")
+    unique_iters = sort(unique(growth_iterations))
+    iter_counts = [count(==(i), growth_iterations) for i in unique_iters]
+    Bas3GLMakie.GLMakie.barplot!(ax11, unique_iters, iter_counts, color=:darkcyan)
+    
+    ax12 = Bas3GLMakie.GLMakie.Axis(fig[4, 3], title="Actual FG Percentage", xlabel="FG %", ylabel="Count")
+    Bas3GLMakie.GLMakie.hist!(ax12, actual_fg_percentages, bins=20, color=:crimson)
     
     return fig
 end

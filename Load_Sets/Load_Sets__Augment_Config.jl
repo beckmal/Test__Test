@@ -117,6 +117,17 @@ struct AugmentationMetadata
     hematoma_percentage::Float64
     necrosis_percentage::Float64
     background_percentage::Float64
+    
+    # Dynamic sizing fields (added for growth algorithm)
+    size_multiplier::Int                   # Final multiplier used (1, 2, 3, or 4)
+    patch_height::Int                      # Actual height (= base_height × multiplier)
+    patch_width::Int                       # Actual width (= base_width × multiplier)
+    fg_threshold_used::Float64             # Threshold for target class
+    actual_fg_percentage::Float64          # Actual FG% in final patch
+    growth_iterations::Int                 # How many crops tried (1 = no growth)
+    max_size_reached::Bool                 # Hit max_multiplier limit?
+    intermediate_height::Int               # Height of intermediate image
+    intermediate_width::Int                # Width of intermediate image
 end
 
 """
@@ -177,6 +188,25 @@ Default number of augmented samples to generate.
 const DEFAULT_AUGMENTED_LENGTH = 1000
 
 """
+Per-class foreground thresholds.
+Each class can have different tolerance for foreground content.
+If FG% exceeds threshold, patch grows until threshold met.
+"""
+const FG_THRESHOLDS = Dict{Symbol, Float64}(
+    :scar       => 50.0,    # 50% maximum foreground
+    :redness    => 50.0,    # 50% maximum foreground
+    :hematoma   => 50.0,    # 50% maximum foreground
+    :necrosis   => 50.0,    # 50% maximum foreground
+    :background => 100.0    # No limit (background samples don't grow)
+)
+
+"""
+Maximum size multiplier for dynamic growth.
+Limits growth to prevent extremely large patches.
+"""
+const MAX_MULTIPLIER = 4  # Max size = 200×400 (for base 50×100)
+
+"""
 Class order for consistent iteration.
 """
 const AUGMENT_CLASS_ORDER = [:scar, :redness, :hematoma, :necrosis, :background]
@@ -234,6 +264,15 @@ Validate that target distribution sums to approximately 100%.
 function validate_target_distribution(dist::Dict{Symbol, Float64})
     total = sum(values(dist))
     return abs(total - 100.0) < 0.01
+end
+
+"""
+    get_fg_threshold(target_class::Symbol) -> Float64
+
+Get the foreground threshold for a specific target class.
+"""
+function get_fg_threshold(target_class::Symbol)
+    return get(FG_THRESHOLDS, target_class, 50.0)
 end
 
 println("  Load_Sets__Augment_Config loaded")

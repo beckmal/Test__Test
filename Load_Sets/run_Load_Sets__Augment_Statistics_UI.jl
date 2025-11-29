@@ -36,8 +36,8 @@ output_dir = joinpath(base_path, "augmented_balanced")
 println("Loading metadata from: $(metadata_dir)")
 all_metadata, target_dist = load_augmented_metadata(metadata_dir)
 
-# Configuration
-const AUGMENTED_SIZE = (100, 50)
+# Configuration (base size - actual sizes are now variable)
+const AUGMENTED_SIZE = (50, 100)  # Base size (height, width)
 
 # ============================================================================
 # Generate All Figures
@@ -49,27 +49,27 @@ println("\n=== Generating Visualizations ===")
 println("\n1. Parameter Distributions...")
 fig1 = create_augment_parameter_distributions_figure(all_metadata)
 save_augment_parameter_distributions_figure(fig1, joinpath(metadata_dir, "augmentation_parameter_distributions.png"))
-
+display(Bas3GLMakie.GLMakie.Screen(), fig1)  # Ensure figure is rendered before saving
 # Figure 2: Source/Class Distribution
 println("\n2. Source/Class Distribution...")
 fig2 = create_augment_source_class_distribution_figure(all_metadata, target_dist, length(sets))
 save_augment_source_class_distribution_figure(fig2, joinpath(metadata_dir, "augmentation_source_and_class_distribution.png"))
-
+display(Bas3GLMakie.GLMakie.Screen(), fig2)  # Ensure figure is rendered before saving
 # Figure 3: Quality Metrics
 println("\n3. Quality Metrics...")
 fig3 = create_augment_quality_metrics_figure(all_metadata)
 save_augment_quality_metrics_figure(fig3, joinpath(metadata_dir, "augmentation_quality_metrics.png"))
-
+display(Bas3GLMakie.GLMakie.Screen(), fig3)  # Ensure figure is rendered before saving
 # Figure 4: Sample Gallery (static version)
 println("\n4. Sample Gallery...")
 fig4 = create_augment_sample_gallery_figure(all_metadata, output_dir; interactive=false)
 save_augment_sample_gallery_figure(fig4, joinpath(metadata_dir, "augmentation_sample_gallery.png"))
-
+display(Bas3GLMakie.GLMakie.Screen(), fig4)  # Ensure figure is rendered before saving
 # Figure 5: Summary Dashboard
 println("\n5. Summary Dashboard...")
 fig5 = create_augment_summary_dashboard_figure(all_metadata, target_dist, length(sets), AUGMENTED_SIZE)
 save_augment_summary_dashboard_figure(fig5, joinpath(metadata_dir, "augmentation_summary_dashboard.png"))
-
+display(Bas3GLMakie.GLMakie.Screen(), fig5)  # Ensure figure is rendered before saving
 # ============================================================================
 # Summary
 # ============================================================================
