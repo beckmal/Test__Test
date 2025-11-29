@@ -72,8 +72,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_full_before = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 2];
         title="HSV Histogramm (Vollbild - Vorher)",
-        xlabel="Normalisiert (0-1)",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for full image "Before" state
@@ -90,8 +90,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_masked_before = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 4];
         title="HSV Histogramm (Maskierte Region - Vorher)",
-        xlabel="Normalisiert (0-1)",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for masked region "Before" state
@@ -126,8 +126,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_full_after = Bas3GLMakie.GLMakie.Axis(
         fgr[4, 2];
         title="HSV Histogramm (Vollbild - Nachher)",
-        xlabel="Normalisiert (0-1)",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for full image "After" state
@@ -144,8 +144,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_masked_after = Bas3GLMakie.GLMakie.Axis(
         fgr[4, 4];
         title="HSV Histogramm (Maskierte Region - Nachher)",
-        xlabel="Normalisiert (0-1)",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for masked region "After" state
@@ -389,7 +389,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
         local v_data = Bas3GLMakie.GLMakie.Observable(Float64[0.0])
         
         # Plot histograms using Observables
-        # All channels normalized to 0-1 range for unified x-axis
+        # All channels normalized to 0-1 range for unified axis
+        # direction=:x rotates histogram 90° (horizontal bars, values on y-axis)
         
         # Hue (normalized 0-1) - shown in orange
         Bas3GLMakie.GLMakie.hist!(
@@ -398,6 +399,7 @@ function create_balance_figure(sets, input_type, raw_output_type;
             bins=50,
             color=(:orange, 0.5),
             normalization=:pdf,
+            direction=:x,
             label="H (Farbton)"
         )
         
@@ -408,6 +410,7 @@ function create_balance_figure(sets, input_type, raw_output_type;
             bins=50,
             color=(:magenta, 0.5),
             normalization=:pdf,
+            direction=:x,
             label="S (Sättigung)"
         )
         
@@ -418,6 +421,7 @@ function create_balance_figure(sets, input_type, raw_output_type;
             bins=50,
             color=(:gray, 0.5),
             normalization=:pdf,
+            direction=:x,
             label="V (Helligkeit)"
         )
         
@@ -428,11 +432,12 @@ function create_balance_figure(sets, input_type, raw_output_type;
         axis.title[] = "HSV Histogramm $title_suffix"
         
         # DISABLE AUTOSCALING: Set fixed axis limits
-        # X-axis: 0-1 normalized scale for all channels
-        Bas3GLMakie.GLMakie.xlims!(axis, 0, 1)
-        Bas3GLMakie.GLMakie.ylims!(axis, 0, nothing)  # Auto for y, but min at 0
+        # Y-axis: 0-1 normalized scale for all channels (rotated 90°)
+        # X-axis: density (auto)
+        Bas3GLMakie.GLMakie.ylims!(axis, 0, 1)
+        Bas3GLMakie.GLMakie.xlims!(axis, 0, nothing)  # Auto for x (density), but min at 0
         
-        println("[HISTOGRAM] ✓ Observable-based histogram created (x-axis fixed 0-1, normalized)")
+        println("[HISTOGRAM] ✓ Observable-based histogram created (y-axis fixed 0-1, rotated 90°)")
         
         return (h_data=h_data, s_data=s_data, v_data=v_data)
     end
