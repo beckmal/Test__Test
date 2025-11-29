@@ -81,7 +81,7 @@ function load_input_and_output(base_path, data_index; input_shape=input_shape, o
     )
 end
 =#
-@__(function load_input_and_output(base_path, data_index; input_type, input_collection=false, output_type, output_collection=false)
+@__(function load_input_and_output(base_path, data_index; input_type, input_collection=false, output_type, output_collection=false, resize_ratio=1//4)
     #=
     input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="png")
     input_image_size = size(input_image)
@@ -94,9 +94,10 @@ end
     input_shape = shape(input_type)
     if input_collection == false
         input_image = img_loader(base_path, data_index; idtype="raw_adj", filetype="png")
-        #
-        input_image = imresize(input_image; ratio=1/4)
-        #
+        # Apply configurable resize (ratio=1 means no resize)
+        if resize_ratio != 1
+            input_image = imresize(input_image; ratio=resize_ratio)
+        end
         input_image_size = size(input_image)
         for index in 1:length(input_shape)
             input_images = (input_images..., decompose_image_to_values(input_shape[index], input_image))
@@ -115,9 +116,10 @@ end
     else
         for index in 1:length(output_shape)
             output_image = img_loader(base_path, data_index; idtype="seg_$(output_shape[index])", filetype="png")
-            #
-            output_image = imresize(output_image; ratio=1/4)
-            #
+            # Apply configurable resize (ratio=1 means no resize)
+            if resize_ratio != 1
+                output_image = imresize(output_image; ratio=resize_ratio)
+            end
             output_image_size = size(output_image)
             if output_image_size[1:2] != input_image_size[1:2]
                 error("Output image size $(output_image_size) does not match input image size $(input_image_size)")

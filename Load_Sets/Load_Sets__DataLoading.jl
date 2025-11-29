@@ -31,13 +31,14 @@ end
 # ============================================================================
 
 """
-    load_original_sets(length::Int=306, regenerate::Bool=false) -> Vector{Tuple}
+    load_original_sets(length::Int=306, regenerate::Bool=false; resize_ratio=1) -> Vector{Tuple}
 
 Load original wound image dataset from disk or generate from source.
 
 # Arguments
 - `length::Int`: Number of images to load (default: 306)
 - `regenerate::Bool`: If true, regenerate from source images; if false, load from disk (default: false)
+- `resize_ratio`: Ratio for image resizing (default: 1 = no resize, 1//4 = quarter size)
 
 # Returns
 - `Vector{Tuple}`: Vector of (input_image, output_mask, index) tuples
@@ -45,14 +46,14 @@ Load original wound image dataset from disk or generate from source.
 # Example
 ```julia
 sets = load_original_sets(306, false)  # Load first 306 images from disk
-println("Loaded ", length(sets), " image sets")
+sets = load_original_sets(306, true; resize_ratio=1)  # Regenerate at full resolution
 ```
 
 # File Structure
 - Loads from: `base_path/original/{index}.jld2`
 - Generates from: `base_path/../MuHa - Bilder/`  (source images)
 """
-function load_original_sets(_length::Int=306, regenerate_images::Bool=false)
+function load_original_sets(_length::Int=306, regenerate_images::Bool=false; resize_ratio=1)
     # Check cache first
     if haskey(_LOADED_SETS_CACHE, _length) && !regenerate_images
         cached_sets = _LOADED_SETS_CACHE[_length]
@@ -73,24 +74,33 @@ function load_original_sets(_length::Int=306, regenerate_images::Bool=false)
             push!(temp_sets, (memory_map(input), memory_map(output), index))
         end
     else
-        println("Generating original sets from source images...")
+        println("Generating original sets from source images (resize_ratio=$(resize_ratio))...")
+        println("  (Memory-efficient mode: save immediately after each image)")
         for index in 1:_length
-            println("  Loading image $(index)/$(_length)")
+            println("  Loading and saving image $(index)/$(_length)")
             @time begin
                 input, output = @__(Bas3ImageSegmentation.load_input_and_output(
                     resolve_path("C:/Syncthing/MuHa - Bilder"),
                     _index_array[index];
                     input_type=input_type,
                     output_type=raw_output_type,
-                    output_collection=true
+                    output_collection=true,
+                    resize_ratio=resize_ratio
                 ))
+                # Save immediately to avoid accumulating all images in memory
+                JLD2.save(joinpath(base_path, "original/$(index).jld2"), "set", (input, output, _index_array[index]))
             end
-            push!(temp_sets, (memory_map(input), memory_map(output), _index_array[index]))
+            # Force garbage collection periodically to release memory
+            if index % 10 == 0
+                GC.gc()
+            end
         end
         
-        println("Saving original sets to disk...")
+        # Now load them back with memory mapping for the return value
+        println("Loading saved sets with memory mapping...")
         for index in 1:_length
-            JLD2.save(joinpath(base_path, "original/$(index).jld2"), "set", temp_sets[index])
+            input, output, idx = JLD2.load(joinpath(base_path, "original/$(index).jld2"), "set")
+            push!(temp_sets, (memory_map(input), memory_map(output), idx))
         end
     end
     
