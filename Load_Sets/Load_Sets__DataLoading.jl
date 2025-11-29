@@ -130,7 +130,11 @@ Get the input image, memory-mapped from disk.
 function get_input(mset::MmapImageSet)
     mapped_data = load_image_mmap(mset.input_path, mset.input_dims, mset.input_elem_type)
     # Reconstruct the image type from mapped data
-    return mset.input_type(mapped_data)
+    # Pass each channel slice separately to the constructor
+    # Convert to Float32 for compatibility with image processing functions
+    h, w, c = mset.input_dims
+    channels = ntuple(i -> Float32.(@view(mapped_data[:, :, i])), c)
+    return mset.input_type(channels...)
 end
 
 """
@@ -140,7 +144,11 @@ Get the output image, memory-mapped from disk.
 """
 function get_output(mset::MmapImageSet)
     mapped_data = load_image_mmap(mset.output_path, mset.output_dims, mset.output_elem_type)
-    return mset.output_type(mapped_data)
+    # Pass each channel slice separately to the constructor
+    # Convert to Float32 for compatibility with image processing functions
+    h, w, c = mset.output_dims
+    channels = ntuple(i -> Float32.(@view(mapped_data[:, :, i])), c)
+    return mset.output_type(channels...)
 end
 
 # Make MmapImageSet indexable like a tuple: set[1]=input, set[2]=output, set[3]=index
