@@ -72,8 +72,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_full_before = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 2];
         title="HSV Histogramm (Vollbild - Vorher)",
-        xlabel="Intensität",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for full image "Before" state
@@ -90,8 +90,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_masked_before = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 4];
         title="HSV Histogramm (Maskierte Region - Vorher)",
-        xlabel="Intensität",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for masked region "Before" state
@@ -126,8 +126,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_full_after = Bas3GLMakie.GLMakie.Axis(
         fgr[4, 2];
         title="HSV Histogramm (Vollbild - Nachher)",
-        xlabel="Intensität",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for full image "After" state
@@ -144,8 +144,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_masked_after = Bas3GLMakie.GLMakie.Axis(
         fgr[4, 4];
         title="HSV Histogramm (Maskierte Region - Nachher)",
-        xlabel="Intensität",
-        ylabel="Dichte"
+        xlabel="Dichte",
+        ylabel="Normalisiert (0-1)"
     )
     
     # Median HSV values label for masked region "After" state
@@ -344,23 +344,33 @@ function create_balance_figure(sets, input_type, raw_output_type;
                 # Convert RGB to HSV using Colors.jl
                 local hsv_pixel = Colors.HSV(pixel)
                 
-                # Extract HSV components directly (avoid intermediate allocations)
-                h_values[idx] = hsv_pixel.h
-                s_values[idx] = hsv_pixel.s * 100.0  # Convert to 0-100%
-                v_values[idx] = hsv_pixel.v * 100.0  # Convert to 0-100%
+                # Extract HSV components normalized to 0-1 range:
+                # - H (Hue): 0-360° → 0-1 (divide by 360)
+                # - S (Saturation): already 0-1
+                # - V (Value): already 0-1
+                h_values[idx] = hsv_pixel.h / 360.0  # Normalize to 0-1
+                s_values[idx] = hsv_pixel.s          # Already 0-1
+                v_values[idx] = hsv_pixel.v          # Already 0-1
                 idx += 1
             end
         end
         
         # Compute median values (robust to outliers like dirt, glare, shadows)
+        # All values are in 0-1 range
         local median_h = n_pixels > 0 ? Statistics.median(h_values) : 0.0
         local median_s = n_pixels > 0 ? Statistics.median(s_values) : 0.0
         local median_v = n_pixels > 0 ? Statistics.median(v_values) : 0.0
         
-        local elapsed = time() - start_time
-        println("[HISTOGRAM] Extracted $(n_pixels) pixels → Median HSV: H=$(round(median_h, digits=1))°, S=$(round(median_s, digits=1))%, V=$(round(median_v, digits=1))% ($(round(elapsed*1000, digits=1))ms)")
+        # Convert to human-readable format for display
+        local median_h_deg = median_h * 360.0  # 0-1 → 0-360°
+        local median_s_pct = median_s * 100.0  # 0-1 → 0-100%
+        local median_v_pct = median_v * 100.0  # 0-1 → 0-100%
         
-        return (h_values, s_values, v_values, median_h, median_s, median_v)
+        local elapsed = time() - start_time
+        println("[HISTOGRAM] Extracted $(n_pixels) pixels → Median HSV: H=$(round(median_h_deg, digits=1))°, S=$(round(median_s_pct, digits=1))%, V=$(round(median_v_pct, digits=1))% ($(round(elapsed*1000, digits=1))ms)")
+        
+        # Return raw values (in 0-1 scale) plus human-readable values for labels
+        return (h_values, s_values, v_values, median_h_deg, median_s_pct, median_v_pct)
     end
     
     """
@@ -379,33 +389,39 @@ function create_balance_figure(sets, input_type, raw_output_type;
         local v_data = Bas3GLMakie.GLMakie.Observable(Float64[0.0])
         
         # Plot histograms using Observables
-        # Hue (0-360°) - shown in orange
+        # All channels normalized to 0-1 range for unified axis
+        # direction=:x rotates histogram 90° (horizontal bars, values on y-axis)
+        
+        # Hue (normalized 0-1) - shown in orange
         Bas3GLMakie.GLMakie.hist!(
             axis,
             h_data;
             bins=50,
             color=(:orange, 0.5),
             normalization=:pdf,
+            direction=:x,
             label="H (Farbton)"
         )
         
-        # Saturation (0-100%) - shown in magenta
+        # Saturation (0-1) - shown in magenta
         Bas3GLMakie.GLMakie.hist!(
             axis,
             s_data;
             bins=50,
             color=(:magenta, 0.5),
             normalization=:pdf,
+            direction=:x,
             label="S (Sättigung)"
         )
         
-        # Value (0-100%) - shown in gray
+        # Value (0-1) - shown in gray
         Bas3GLMakie.GLMakie.hist!(
             axis,
             v_data;
             bins=50,
             color=(:gray, 0.5),
             normalization=:pdf,
+            direction=:x,
             label="V (Helligkeit)"
         )
         
@@ -415,7 +431,13 @@ function create_balance_figure(sets, input_type, raw_output_type;
         # Set initial title
         axis.title[] = "HSV Histogramm $title_suffix"
         
-        println("[HISTOGRAM] ✓ Observable-based histogram created")
+        # DISABLE AUTOSCALING: Set fixed axis limits
+        # Y-axis: 0-1 normalized scale for all channels (rotated 90°)
+        # X-axis: density (auto)
+        Bas3GLMakie.GLMakie.ylims!(axis, 0, 1)
+        Bas3GLMakie.GLMakie.xlims!(axis, 0, nothing)  # Auto for x (density), but min at 0
+        
+        println("[HISTOGRAM] ✓ Observable-based histogram created (y-axis fixed 0-1, rotated 90°)")
         
         return (h_data=h_data, s_data=s_data, v_data=v_data)
     end
