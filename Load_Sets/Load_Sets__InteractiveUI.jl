@@ -3084,12 +3084,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             mask_img = zeros(Bas3ImageSegmentation.RGB{Float32}, h, w)
             mask_img[mask] .= Bas3ImageSegmentation.RGB{Float32}(1.0f0, 1.0f0, 1.0f0)  # White where mask is true
             
-            # Apply rotr90 to match UI display coordinate system
-            # This ensures saved mask aligns with how images are displayed in the UI
-            mask_img_rotated = rotr90(mask_img)
-            
-            # Save to MuHa folder
-            Bas3GLMakie.GLMakie.save(output_path, mask_img_rotated)
+            # Save mask in original image coordinates (no rotation)
+            # This ensures saved mask aligns with the original image files (MuHa_XXX_raw_adj.png)
+            Bas3GLMakie.GLMakie.save(output_path, mask_img)
             
             println("[SAVE] ✓ Mask saved to: $output_path")
             selection_status_label.text = "✓ Gespeichert: $folder_name"
