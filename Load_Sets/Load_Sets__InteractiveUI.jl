@@ -1929,8 +1929,23 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         # Spawn background task using @async (cooperative multitasking)
         println("[PRELOAD] Spawning async preload task for index $idx...")
         local task = @async begin
-            yield()  # Give other tasks a chance first
-            preload_image_data(idx)
+            try
+                yield()  # Give other tasks a chance first
+                preload_image_data(idx)
+            catch e
+                # Log error but don't crash - preload is optional, UI should continue
+                println("[PRELOAD-ERROR] Failed to preload index $idx: $(typeof(e))")
+                println("[PRELOAD-ERROR] Message: $(sprint(showerror, e))")
+                # Remove from cache in case of partial write
+                lock(preload_lock) do
+                    delete!(preload_cache, idx)
+                end
+            finally
+                # Clean up task tracking
+                lock(preload_lock) do
+                    delete!(preload_tasks, idx)
+                end
+            end
         end
         lock(preload_lock) do
             preload_tasks[idx] = task
@@ -1980,7 +1995,12 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             end
             local waited_ms = (time() - start_wait) * 1000
             if istaskdone(task_to_wait)
-                println("[CACHE] Preload completed after $(round(waited_ms, digits=0))ms wait")
+                # Check if task succeeded or failed
+                if istaskfailed(task_to_wait)
+                    println("[CACHE] Preload failed for index $idx after $(round(waited_ms, digits=0))ms, will compute synchronously")
+                else
+                    println("[CACHE] Preload completed after $(round(waited_ms, digits=0))ms wait")
+                end
             else
                 println("[CACHE] Preload still running after $(round(waited_ms, digits=0))ms, proceeding without it")
             end
