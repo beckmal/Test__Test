@@ -1696,10 +1696,18 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     end
     
     # Compute channel statistics for white regions only
-    function compute_white_region_channel_stats(image, white_mask)
-        # Extract RGB data - use data() to get raw array, then permute to (channels, height, width)
-        raw_data = data(image)  # Returns (height, width, 3)
-        rgb_data = permutedims(raw_data, (3, 1, 2))  # Convert to (3, height, width)
+    function compute_white_region_channel_stats(img, white_mask)
+        # Extract RGB data directly from RGB pixels
+        img_rgb = image(img)  # Get RGB image
+        height, width = size(img_rgb)
+        # Extract channels manually (faster than nested loops, uses broadcasting)
+        r_channel = [Float32(img_rgb[i, j].r) for i in 1:height, j in 1:width]
+        g_channel = [Float32(img_rgb[i, j].g) for i in 1:height, j in 1:width]
+        b_channel = [Float32(img_rgb[i, j].b) for i in 1:height, j in 1:width]
+        # Stack into (3, height, width)
+        rgb_data = cat(reshape(r_channel, 1, height, width),
+                      reshape(g_channel, 1, height, width),
+                      reshape(b_channel, 1, height, width), dims=1)
         
         # Initialize result dictionaries
         stats = Dict{Symbol, Dict{Symbol, Float64}}()
@@ -1784,6 +1792,267 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     # Flag to prevent recursive callback triggering
     local updating_from_button = Ref(false)
     local updating_textboxes = Ref(false)
+    
+    # ========================================================================
+    # PRELOAD CACHE - stores adjacent images for instant navigation
+    # ========================================================================
+    # Cache structure: idx => (markers, success, message, overlay, marker_viz, closeup, bboxes)
+    local preload_cache = Dict{Int, Tuple{Vector{MarkerInfo}, Bool, String, Any, Any, Any, Dict}}()
+    local preload_lock = ReentrantLock()
+    local preload_tasks = Dict{Int, Task}()  # Track running preload tasks
+    
+    # ========================================================================
+    # PRELOAD FUNCTIONS - background loading for adjacent images
+    # ========================================================================
+    
+    """
+        build_default_params()
+    
+    Build default detection parameters from current textbox values.
+    Used for preloading (full image, no region selection).
+    """
+    function build_default_params()
+        local threshold = tryparse(Float64, threshold_textbox.stored_string[])
+        local threshold_upper = tryparse(Float64, threshold_upper_textbox.stored_string[])
+        local min_area = tryparse(Int, min_area_textbox.stored_string[])
+        local aspect_ratio = tryparse(Float64, aspect_ratio_textbox.stored_string[])
+        local aspect_weight = tryparse(Float64, aspect_weight_textbox.stored_string[])
+        local kernel_size = tryparse(Int, kernel_size_textbox.stored_string[])
+        local adaptive = adaptive_toggle.active[]
+        local adaptive_window = tryparse(Int, adaptive_window_textbox.stored_string[])
+        local adaptive_offset = tryparse(Float64, adaptive_offset_textbox.stored_string[])
+        
+        # Use defaults if parsing fails
+        threshold = threshold === nothing ? 0.7 : threshold
+        threshold_upper = threshold_upper === nothing ? 1.0 : threshold_upper
+        min_area = min_area === nothing ? 8000 : min_area
+        aspect_ratio = aspect_ratio === nothing ? 5.0 : aspect_ratio
+        aspect_weight = aspect_weight === nothing ? 0.6 : aspect_weight
+        kernel_size = kernel_size === nothing ? 3 : kernel_size
+        adaptive_window = adaptive_window === nothing ? 25 : adaptive_window
+        adaptive_offset = adaptive_offset === nothing ? 0.1 : adaptive_offset
+        
+        return Dict(
+            :threshold => threshold,
+            :threshold_upper => threshold_upper,
+            :min_area => min_area,
+            :aspect_ratio => aspect_ratio,
+            :aspect_ratio_weight => aspect_weight,
+            :kernel_size => kernel_size,
+            :region => nothing,  # Full image for preload
+            :adaptive => adaptive,
+            :adaptive_window => adaptive_window,
+            :adaptive_offset => adaptive_offset
+        )
+    end
+    
+    """
+        preload_image_data(idx::Int)
+    
+    Preload processed image data at index idx into cache.
+    Called in background task. Computes marker detection, overlays, closeup, bboxes.
+    """
+    function preload_image_data(idx::Int)
+        # Bounds check
+        if idx < 1 || idx > length(sets)
+            return
+        end
+        
+        # Skip if already cached
+        local already_cached = lock(preload_lock) do
+            haskey(preload_cache, idx)
+        end
+        if already_cached
+            println("[PRELOAD] Index $idx already cached, skipping")
+            return
+        end
+        
+        println("[PRELOAD] Starting preload for index $idx...")
+        local start_time = time()
+        
+        # Get images from sets (already in memory)
+        local img_input = sets[idx][1]
+        local img_output = sets[idx][2]
+        
+        # Build params for detection
+        local params = build_default_params()
+        
+        # Detect markers (the expensive part)
+        local markers, success, message = detect_markers_only(img_input, params)
+        
+        # Create visualizations
+        local overlay = create_white_overlay(img_input, markers)
+        local marker_viz = create_marker_visualization(img_input, markers)
+        
+        # Create closeup at default rotation (0)
+        local closeup = extract_closeup_region(img_input, markers, 0.0)
+        
+        # Extract class bounding boxes
+        local bboxes = extract_class_bboxes(img_output)
+        
+        # Store in cache
+        lock(preload_lock) do
+            preload_cache[idx] = (markers, success, message, overlay, marker_viz, closeup, bboxes)
+        end
+        
+        local elapsed_ms = (time() - start_time) * 1000
+        println("[PRELOAD] ✓ Cached index $idx in $(round(elapsed_ms, digits=0))ms (cache size: $(length(preload_cache)))")
+    end
+    
+    """
+        trigger_preload(idx::Int)
+    
+    Spawn background task to preload image data at idx.
+    Non-blocking, safe to call multiple times.
+    """
+    function trigger_preload(idx::Int)
+        # Bounds check
+        if idx < 1 || idx > length(sets)
+            return
+        end
+        
+        # Skip if already cached or loading
+        local should_skip = lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                return true
+            end
+            if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                return true
+            end
+            return false
+        end
+        
+        if should_skip
+            return
+        end
+        
+        # Spawn background task using @async (cooperative multitasking)
+        println("[PRELOAD] Spawning async preload task for index $idx...")
+        local task = @async begin
+            yield()  # Give other tasks a chance first
+            preload_image_data(idx)
+        end
+        lock(preload_lock) do
+            preload_tasks[idx] = task
+        end
+        yield()  # Let the async task start
+    end
+    
+    """
+        get_from_cache_or_compute(idx::Int, use_cache::Bool=true)
+    
+    Get processed data from cache if available, otherwise compute synchronously.
+    Returns (markers, success, message, overlay, marker_viz, closeup, bboxes, was_cached).
+    """
+    function get_from_cache_or_compute(idx::Int, use_cache::Bool=true)
+        if !use_cache
+            # Skip cache entirely (e.g., when selection is active)
+            println("[CACHE] Cache bypassed for index $idx (use_cache=false)")
+            local img_input = sets[idx][1]
+            local img_output = sets[idx][2]
+            local params = build_default_params()
+            
+            local markers, success, message = detect_markers_only(img_input, params)
+            local overlay = create_white_overlay(img_input, markers)
+            local marker_viz = create_marker_visualization(img_input, markers)
+            local closeup = extract_closeup_region(img_input, markers, 0.0)
+            local bboxes = extract_class_bboxes(img_output)
+            
+            return (markers, success, message, overlay, marker_viz, closeup, bboxes, false)
+        end
+        
+        # Check for in-progress preload
+        local task_to_wait = nothing
+        lock(preload_lock) do
+            if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                task_to_wait = preload_tasks[idx]
+            end
+        end
+        
+        # Wait for preload if in progress (max 3 seconds)
+        if !isnothing(task_to_wait)
+            println("[CACHE] Preload in progress for index $idx, waiting...")
+            local start_wait = time()
+            local max_wait = 3.0  # seconds
+            while !istaskdone(task_to_wait) && (time() - start_wait) < max_wait
+                yield()
+                sleep(0.05)
+            end
+            local waited_ms = (time() - start_wait) * 1000
+            if istaskdone(task_to_wait)
+                println("[CACHE] Preload completed after $(round(waited_ms, digits=0))ms wait")
+            else
+                println("[CACHE] Preload still running after $(round(waited_ms, digits=0))ms, proceeding without it")
+            end
+        end
+        
+        # Try to get from cache
+        local cached = nothing
+        lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                cached = pop!(preload_cache, idx)
+                println("[CACHE] ✓ Hit for index $idx (remaining cache: $(length(preload_cache)))")
+            end
+        end
+        
+        if !isnothing(cached)
+            return (cached[1], cached[2], cached[3], cached[4], cached[5], cached[6], cached[7], true)
+        end
+        
+        # Cache miss - compute synchronously
+        println("[CACHE] Miss for index $idx, computing synchronously...")
+        local start_time = time()
+        local img_input = sets[idx][1]
+        local img_output = sets[idx][2]
+        local params = build_default_params()
+        
+        local markers, success, message = detect_markers_only(img_input, params)
+        local overlay = create_white_overlay(img_input, markers)
+        local marker_viz = create_marker_visualization(img_input, markers)
+        local closeup = extract_closeup_region(img_input, markers, 0.0)
+        local bboxes = extract_class_bboxes(img_output)
+        
+        local elapsed_ms = (time() - start_time) * 1000
+        println("[CACHE] Computed index $idx in $(round(elapsed_ms, digits=0))ms")
+        
+        return (markers, success, message, overlay, marker_viz, closeup, bboxes, false)
+    end
+    
+    """
+        cleanup_cache(current_idx::Int)
+    
+    Remove cache entries more than 1 index away from current.
+    Keeps memory usage bounded.
+    """
+    function cleanup_cache(current_idx::Int)
+        lock(preload_lock) do
+            local to_remove = Int[]
+            for cached_idx in keys(preload_cache)
+                if abs(cached_idx - current_idx) > 1
+                    push!(to_remove, cached_idx)
+                end
+            end
+            for idx in to_remove
+                delete!(preload_cache, idx)
+                println("[CACHE] Evicted index $idx (too far from current $current_idx)")
+            end
+        end
+    end
+    
+    """
+        invalidate_preload_cache()
+    
+    Clear entire cache. Called when detection parameters change.
+    """
+    function invalidate_preload_cache()
+        lock(preload_lock) do
+            local count = length(preload_cache)
+            empty!(preload_cache)
+            if count > 0
+                println("[CACHE] Invalidated $count cached entries (parameters changed)")
+            end
+        end
+    end
     
     # Helper function to update textbox (both stored and displayed strings)
     function set_textbox_value(textbox, value::String)
@@ -1911,6 +2180,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     function update_image_display_internal(idx, threshold=0.7, threshold_upper=1.0, min_component_area=8000, preferred_aspect_ratio=5.0, aspect_ratio_weight=0.6, kernel_size=3, adaptive=false, adaptive_window=25, adaptive_offset=0.1)
         println("[UPDATE] Updating to image $idx with params: threshold=$threshold-$threshold_upper, min_area=$min_component_area, aspect_ratio=$preferred_aspect_ratio, kernel_size=$kernel_size, adaptive=$adaptive")
         
+        local update_start_time = time()
+        
         # Validate the input
         if idx < 1 || idx > length(sets)
             println("[ERROR] Invalid image index: $idx (max: $(length(sets)))")
@@ -1933,9 +2204,14 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         output_img = rotr90(image(sets[idx][2]))
         current_output_image[] = output_img
         
-        # Apply region constraint if selection is complete
-        local region = nothing
+        # Check if selection is active - determines whether to use cache
+        local use_cache = !selection_complete[]
+        local markers, success, message, overlay, marker_viz, closeup, bboxes
+        
         if selection_complete[]
+            # Selection is active - can't use cache (region-specific parameters)
+            println("[UPDATE] Selection active - bypassing cache")
+            
             img = sets[idx][1]
             img_height = Base.size(data(img), 1)
             img_width = Base.size(data(img), 2)
@@ -1951,33 +2227,48 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             
             # Use shared helper function for consistent region calculation
             local row_range, col_range = calculate_selection_region(img, c1_px, c2_px, rotation_angle)
-            region = (first(row_range), last(row_range), first(col_range), last(col_range))
-        end
-        
-        # Extract class bounding boxes
-        current_class_bboxes[] = extract_class_bboxes(sets[idx][2])
-        
-        # Update marker visualization (detection only, no dewarping)
-        local params = Dict(:threshold => threshold, :threshold_upper => threshold_upper, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :aspect_ratio_weight => aspect_ratio_weight, :kernel_size => kernel_size, :region => region, :adaptive => adaptive, :adaptive_window => adaptive_window, :adaptive_offset => adaptive_offset)
-        if !isnothing(region)
+            local region = (first(row_range), last(row_range), first(col_range), last(col_range))
+            
+            # Update marker visualization with region constraint
+            local params = Dict(:threshold => threshold, :threshold_upper => threshold_upper, :min_area => min_component_area, :aspect_ratio => preferred_aspect_ratio, :aspect_ratio_weight => aspect_ratio_weight, :kernel_size => kernel_size, :region => region, :adaptive => adaptive, :adaptive_window => adaptive_window, :adaptive_offset => adaptive_offset)
             params[:c1] = c1_px
             params[:c2] = c2_px
             params[:angle] = rotation_angle
+            
+            markers, success, message = detect_markers_only(sets[idx][1], params)
+            overlay = create_white_overlay(sets[idx][1], markers)
+            marker_viz = create_marker_visualization(sets[idx][1], markers)
+            closeup = extract_closeup_region(sets[idx][1], markers, closeup_rotation[])
+            bboxes = extract_class_bboxes(sets[idx][2])
+        else
+            # No selection - use cache if available
+            local was_cached
+            markers, success, message, overlay, marker_viz, closeup, bboxes, was_cached = get_from_cache_or_compute(idx, true)
+            
+            # If closeup rotation is non-zero, we need to re-extract with correct rotation
+            # (cache stores closeup at rotation=0)
+            local user_rotation = closeup_rotation[]
+            if was_cached && user_rotation != 0.0 && !isempty(markers)
+                println("[CACHE] Re-extracting closeup with user rotation $(user_rotation)°")
+                closeup = extract_closeup_region(sets[idx][1], markers, user_rotation)
+            elseif !was_cached && user_rotation != 0.0 && !isempty(markers)
+                # Not cached but rotation needed - already computed with rotation=0, recompute
+                closeup = extract_closeup_region(sets[idx][1], markers, user_rotation)
+            end
         end
-        local markers, success, message = detect_markers_only(sets[idx][1], params)
         
-        println("[PARAM-UPDATE] Detection result: markers=$(length(markers)), success=$(success)")
+        println("[UPDATE] Detection result: markers=$(length(markers)), success=$(success)")
+        
+        # Update all observables with computed/cached data
+        current_class_bboxes[] = bboxes
         
         # STATE PRESERVATION: Only update visualization if markers were detected
         # This prevents UI corruption when detection fails
         if !isempty(markers)
-            current_marker_viz[] = create_marker_visualization(sets[idx][1], markers)
+            current_marker_viz[] = marker_viz
             current_markers[] = markers
-            current_white_overlay[] = create_white_overlay(sets[idx][1], markers)
-            
-            # Update closeup view using same markers as main detection
-            local closeup_img = extract_closeup_region(sets[idx][1], markers, closeup_rotation[])
-            current_closeup_image[] = closeup_img
+            current_white_overlay[] = overlay
+            current_closeup_image[] = closeup
             
             # Explicitly notify visualization observables to force UI refresh
             Bas3GLMakie.GLMakie.notify(current_marker_viz)
@@ -1986,7 +2277,7 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.notify(current_closeup_image)
         else
             # No markers found - clear detection visuals (both full image and region cases)
-            println("[PARAM-UPDATE] Clearing detection results: no markers found")
+            println("[UPDATE] Clearing detection results: no markers found")
             current_marker_viz[] = create_marker_visualization(sets[idx][1], MarkerInfo[])
             current_markers[] = MarkerInfo[]
             current_white_overlay[] = create_white_overlay(sets[idx][1], MarkerInfo[])
@@ -2001,14 +2292,31 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             Bas3GLMakie.GLMakie.notify(current_closeup_image)
         end
         
-        println("[PARAM-UPDATE] Setting marker_success=$(success), marker_message=$(message)")
+        println("[UPDATE] Setting marker_success=$(success), marker_message=$(message)")
+        
+        # Trigger preload for adjacent images (non-blocking)
+        # Only preload if no selection is active (selection makes cache invalid)
+        if !selection_complete[]
+            println("[UPDATE] Triggering preload for adjacent images...")
+            cleanup_cache(idx)
+            trigger_preload(idx - 1)
+            trigger_preload(idx + 1)
+        end
         marker_success[] = success
         marker_message[] = message
         
         # Compute full-image channel statistics
         local input_img_original = sets[idx][1]  # Original image (not rotated)
-        local raw_data = data(input_img_original)  # Returns (height, width, 3)
-        local rgb_data = permutedims(raw_data, (3, 1, 2))  # Convert to (3, height, width)
+        local img_rgb = image(input_img_original)  # Get RGB image
+        local height, width = size(img_rgb)
+        # Extract channels manually
+        local r_channel = [Float32(img_rgb[i, j].r) for i in 1:height, j in 1:width]
+        local g_channel = [Float32(img_rgb[i, j].g) for i in 1:height, j in 1:width]
+        local b_channel = [Float32(img_rgb[i, j].b) for i in 1:height, j in 1:width]
+        # Stack into (3, height, width)
+        local rgb_data = cat(reshape(r_channel, 1, height, width),
+                            reshape(g_channel, 1, height, width),
+                            reshape(b_channel, 1, height, width), dims=1)
         
         # Full image stats
         local full_r_mean = mean(rgb_data[1, :, :])
@@ -2149,8 +2457,14 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             local white_b_skew = white_stats[:blue][:skewness]
             
             # Extract pixel values for plotting
-            local raw_data_plot = data(input_img_original)  # Returns (height, width, 3)
-            local rgb_data_plot = permutedims(raw_data_plot, (3, 1, 2))  # Convert to (3, height, width)
+            local img_rgb_plot = image(input_img_original)  # Get RGB image
+            local height_plot, width_plot = size(img_rgb_plot)
+            local r_channel_plot = [Float32(img_rgb_plot[i, j].r) for i in 1:height_plot, j in 1:width_plot]
+            local g_channel_plot = [Float32(img_rgb_plot[i, j].g) for i in 1:height_plot, j in 1:width_plot]
+            local b_channel_plot = [Float32(img_rgb_plot[i, j].b) for i in 1:height_plot, j in 1:width_plot]
+            local rgb_data_plot = cat(reshape(r_channel_plot, 1, height_plot, width_plot),
+                                     reshape(g_channel_plot, 1, height_plot, width_plot),
+                                     reshape(b_channel_plot, 1, height_plot, width_plot), dims=1)
             local red_values = rgb_data_plot[1, :, :][marker_mask]
             local green_values = rgb_data_plot[2, :, :][marker_mask]
             local blue_values = rgb_data_plot[3, :, :][marker_mask]
@@ -2623,48 +2937,58 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     end
     
     # Auto-update when textboxes change
+    # Each parameter change invalidates the preload cache (cached data uses old params)
     Bas3GLMakie.GLMakie.on(threshold_textbox.stored_string) do val
         println("[PARAMETER] Lower threshold changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("lower threshold")
     end
     
     Bas3GLMakie.GLMakie.on(threshold_upper_textbox.stored_string) do val
         println("[PARAMETER] Upper threshold changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("upper threshold")
     end
     
     Bas3GLMakie.GLMakie.on(min_area_textbox.stored_string) do val
         println("[PARAMETER] Min area changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("min area")
     end
     
     Bas3GLMakie.GLMakie.on(aspect_ratio_textbox.stored_string) do val
         println("[PARAMETER] Aspect ratio changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("aspect ratio")
     end
     
     Bas3GLMakie.GLMakie.on(aspect_weight_textbox.stored_string) do val
         println("[PARAMETER] Aspect weight changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("aspect weight")
     end
     
     Bas3GLMakie.GLMakie.on(kernel_size_textbox.stored_string) do val
         println("[PARAMETER] Kernel size changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("kernel size")
     end
     
     Bas3GLMakie.GLMakie.on(adaptive_toggle.active) do val
         println("[PARAMETER] Adaptive threshold changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("adaptive mode")
     end
     
     Bas3GLMakie.GLMakie.on(adaptive_window_textbox.stored_string) do val
         println("[PARAMETER] Adaptive window changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("adaptive window")
     end
     
     Bas3GLMakie.GLMakie.on(adaptive_offset_textbox.stored_string) do val
         println("[PARAMETER] Adaptive offset changed to: $val")
+        invalidate_preload_cache()
         update_white_detection("adaptive offset")
     end
     
