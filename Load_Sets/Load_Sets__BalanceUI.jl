@@ -629,30 +629,51 @@ function create_balance_figure(sets, input_type, raw_output_type;
     Preload image at index idx into cache. Called in background task.
     """
     function preload_image(idx::Int)
-        # Bounds check
-        if idx < 1 || idx > length(sets)
-            return
-        end
-        
-        # Skip if already cached
-        lock(preload_lock) do
-            if haskey(preload_cache, idx)
-                println("[PRELOAD] Index $idx already cached, skipping")
-                return
+        try
+            # Bounds check
+            if idx < 1 || idx > length(sets)
+                @warn "[PRELOAD] Index $idx out of bounds (1-$(length(sets)))"
+                return (success = false, error = "Index out of bounds")
             end
-        end
-        
-        # Get dataset index
-        local dataset_idx = sets[idx][3]
-        println("[PRELOAD] Starting preload for index $idx (dataset $dataset_idx)...")
-        
-        # Load images (this is the slow part - disk I/O)
-        local original_img, masked_region, success, message = load_muha_images(dataset_idx)
-        
-        # Store in cache
-        lock(preload_lock) do
-            preload_cache[idx] = (original_img, masked_region, success, message)
-            println("[PRELOAD] ✓ Cached index $idx (cache size: $(length(preload_cache)))")
+            
+            # Skip if already cached (use flag to avoid return in lock)
+            local should_skip = false
+            lock(preload_lock) do
+                if haskey(preload_cache, idx)
+                    println("[PRELOAD] Index $idx already cached, skipping")
+                    should_skip = true
+                end
+            end
+            
+            if should_skip
+                return (success = true, error = nothing)
+            end
+            
+            # Get dataset index
+            local dataset_idx = sets[idx][3]
+            println("[PRELOAD] Starting preload for index $idx (dataset $dataset_idx)...")
+            
+            # Load images (this is the slow part - disk I/O)
+            local original_img, masked_region, success, message = nothing, nothing, false, ""
+            try
+                original_img, masked_region, success, message = load_muha_images(dataset_idx)
+            catch e
+                @warn "[PRELOAD] Error loading images for index $idx: $e"
+                success = false
+                message = "Load error: $(typeof(e))"
+            end
+            
+            # Store in cache (even if load failed, cache the failure)
+            lock(preload_lock) do
+                preload_cache[idx] = (original_img, masked_region, success, message)
+                println("[PRELOAD] ✓ Cached index $idx (success=$success, cache size: $(length(preload_cache)))")
+            end
+            
+            return (success = success, error = success ? nothing : message)
+            
+        catch e
+            @warn "[PRELOAD] Fatal error preloading index $idx: $e"
+            return (success = false, error = "Fatal preload error: $(typeof(e))")
         end
     end
     
@@ -663,38 +684,57 @@ function create_balance_figure(sets, input_type, raw_output_type;
     Non-blocking, safe to call multiple times.
     """
     function trigger_preload(idx::Int)
-        # Bounds check
-        if idx < 1 || idx > length(sets)
-            return
-        end
-        
-        # Skip if already cached or loading (must use explicit flag since return in lock() do doesn't exit function)
-        local should_skip = lock(preload_lock) do
-            if haskey(preload_cache, idx)
-                println("[PRELOAD] Index $idx already cached, skipping")
-                return true
+        try
+            # Bounds check
+            if idx < 1 || idx > length(sets)
+                @warn "[PRELOAD] Trigger called with invalid index $idx (bounds: 1-$(length(sets)))"
+                return
             end
-            if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
-                println("[PRELOAD] Index $idx already loading, skipping")
-                return true
+            
+            # Skip if already cached or loading (must use explicit flag since return in lock() do doesn't exit function)
+            local should_skip = lock(preload_lock) do
+                if haskey(preload_cache, idx)
+                    println("[PRELOAD] Index $idx already cached, skipping")
+                    return true
+                end
+                if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                    println("[PRELOAD] Index $idx already loading, skipping")
+                    return true
+                end
+                return false
             end
-            return false
+            
+            if should_skip
+                return
+            end
+            
+            # Spawn background task using @async (cooperative multitasking)
+            println("[PRELOAD] Spawning async preload task for index $idx...")
+            local task = @async begin
+                try
+                    yield()  # Give other tasks a chance first
+                    local result = preload_image(idx)
+                    if !result.success
+                        @warn "[PRELOAD] Async preload failed for index $idx: $(result.error)"
+                    end
+                catch e
+                    @warn "[PRELOAD] Async task error for index $idx: $e"
+                finally
+                    # Clean up task tracking
+                    lock(preload_lock) do
+                        delete!(preload_tasks, idx)
+                    end
+                end
+            end
+            
+            lock(preload_lock) do
+                preload_tasks[idx] = task
+            end
+            yield()  # Let the async task start
+            
+        catch e
+            @warn "[PRELOAD] Error in trigger_preload for index $idx: $e"
         end
-        
-        if should_skip
-            return
-        end
-        
-        # Spawn background task using @async (cooperative multitasking)
-        println("[PRELOAD] Spawning async preload task for index $idx...")
-        local task = @async begin
-            yield()  # Give other tasks a chance first
-            preload_image(idx)
-        end
-        lock(preload_lock) do
-            preload_tasks[idx] = task
-        end
-        yield()  # Let the async task start
     end
     
     """
@@ -705,48 +745,66 @@ function create_balance_figure(sets, input_type, raw_output_type;
     Returns (original_img, masked_region, success, message).
     """
     function get_from_cache_or_load(idx::Int)
-        # Check if there's a preload task in progress for this index
-        local task_to_wait = nothing
-        lock(preload_lock) do
-            if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
-                task_to_wait = preload_tasks[idx]
+        try
+            # Check if there's a preload task in progress for this index
+            local task_to_wait = nothing
+            lock(preload_lock) do
+                if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                    task_to_wait = preload_tasks[idx]
+                end
             end
-        end
-        
-        # If preload is in progress, wait for it (up to 3 seconds)
-        if !isnothing(task_to_wait)
-            println("[CACHE] Preload in progress for index $idx, waiting...")
-            local start_wait = time()
-            local max_wait = 3.0  # seconds
-            while !istaskdone(task_to_wait) && (time() - start_wait) < max_wait
-                yield()
-                sleep(0.05)
+            
+            # If preload is in progress, wait for it (up to 3 seconds)
+            if !isnothing(task_to_wait)
+                println("[CACHE] Preload in progress for index $idx, waiting...")
+                local start_wait = time()
+                local max_wait = 3.0  # seconds
+                while !istaskdone(task_to_wait) && (time() - start_wait) < max_wait
+                    yield()
+                    sleep(0.05)
+                end
+                local waited_ms = (time() - start_wait) * 1000
+                if istaskdone(task_to_wait)
+                    println("[CACHE] Preload completed after $(round(waited_ms, digits=0))ms wait")
+                else
+                    println("[CACHE] Preload still running after $(round(waited_ms, digits=0))ms, proceeding without it")
+                end
             end
-            local waited_ms = (time() - start_wait) * 1000
-            if istaskdone(task_to_wait)
-                println("[CACHE] Preload completed after $(round(waited_ms, digits=0))ms wait")
-            else
-                println("[CACHE] Preload still running after $(round(waited_ms, digits=0))ms, proceeding without it")
+            
+            # Try to get from cache
+            local cached = nothing
+            lock(preload_lock) do
+                if haskey(preload_cache, idx)
+                    cached = pop!(preload_cache, idx)
+                    println("[CACHE] ✓ Hit for index $idx (remaining cache: $(length(preload_cache)))")
+                end
             end
-        end
-        
-        # Try to get from cache
-        local cached = nothing
-        lock(preload_lock) do
-            if haskey(preload_cache, idx)
-                cached = pop!(preload_cache, idx)
-                println("[CACHE] ✓ Hit for index $idx (remaining cache: $(length(preload_cache)))")
+            
+            if !isnothing(cached)
+                return cached
             end
+            
+            # Cache miss - load synchronously
+            println("[CACHE] Miss for index $idx, loading synchronously...")
+            local dataset_idx = sets[idx][3]
+            
+            # Load with error handling
+            local original_img, masked_region, success, message = nothing, nothing, false, ""
+            try
+                original_img, masked_region, success, message = load_muha_images(dataset_idx)
+            catch e
+                @warn "[CACHE] Error loading image for index $idx: $e"
+                success = false
+                message = "Load error: $(typeof(e))"
+            end
+            
+            return (original_img, masked_region, success, message)
+            
+        catch e
+            @warn "[CACHE] Fatal error in get_from_cache_or_load for index $idx: $e"
+            # Return error tuple
+            return (nothing, nothing, false, "Cache error: $(typeof(e))")
         end
-        
-        if !isnothing(cached)
-            return cached
-        end
-        
-        # Cache miss - load synchronously
-        println("[CACHE] Miss for index $idx, loading synchronously...")
-        local dataset_idx = sets[idx][3]
-        return load_muha_images(dataset_idx)
     end
     
     """
@@ -777,15 +835,16 @@ function create_balance_figure(sets, input_type, raw_output_type;
     Uses preload cache if available, triggers preload for adjacent images.
     """
     function update_display(idx::Int)
-        println("[UPDATE] ========================================")
-        println("[UPDATE] Updating display for index $idx")
-        
-        # Bounds check
-        if idx < 1 || idx > length(sets)
-            println("[ERROR] Invalid image index: $idx (valid range: 1-$(length(sets)))")
-            status_label.text[] = "Ungültiger Index: $idx (gültig: 1-$(length(sets)))"
-            return
-        end
+        try
+            println("[UPDATE] ========================================")
+            println("[UPDATE] Updating display for index $idx")
+            
+            # Bounds check
+            if idx < 1 || idx > length(sets)
+                println("[ERROR] Invalid image index: $idx (valid range: 1-$(length(sets)))")
+                status_label.text[] = "Ungültiger Index: $idx (gültig: 1-$(length(sets)))"
+                return
+            end
         
         # Get dataset index from tuple
         local dataset_idx = sets[idx][3]
@@ -848,15 +907,35 @@ function create_balance_figure(sets, input_type, raw_output_type;
         # Reset white balance status
         status_label.text[] = ""
         
-        println("[UPDATE] ✓ Display updated successfully for $muha_id")
-        
-        # Trigger preload for adjacent images (non-blocking)
-        println("[UPDATE] Triggering preload for adjacent images...")
-        cleanup_cache(idx)
-        trigger_preload(idx - 1)
-        trigger_preload(idx + 1)
-        
-        println("[UPDATE] ========================================")
+            println("[UPDATE] ✓ Display updated successfully for $muha_id")
+            
+            # Trigger preload for adjacent images (non-blocking)
+            println("[UPDATE] Triggering preload for adjacent images...")
+            try
+                cleanup_cache(idx)
+                trigger_preload(idx - 1)
+                trigger_preload(idx + 1)
+            catch e
+                @warn "[UPDATE] Error triggering preload: $e"
+                # Non-fatal - continue
+            end
+            
+            println("[UPDATE] ========================================")
+            
+        catch e
+            @warn "[UPDATE] Error updating display for index $idx: $e"
+            status_label.text[] = "Fehler beim Anzeigen von Bild $idx: $(typeof(e))"
+            
+            # Try to show error state
+            try
+                textbox_label.text[] = "Fehler bei Bild $idx"
+                axs_before.title[] = "Fehler"
+                axs_after.title[] = "Fehler"
+                axs_masked.title[] = "Fehler"
+            catch
+                # Even error display failed - nothing we can do
+            end
+        end
     end
     
     # Navigation button handlers
