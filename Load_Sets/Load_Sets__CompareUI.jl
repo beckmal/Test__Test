@@ -559,17 +559,17 @@ function create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
         if length(class_data.h_values) > 0
             # Hue (0-360) - normalize to percentage for consistent scale
             local h_normalized = class_data.h_values ./ 3.6
-            Bas3GLMakie.GLMakie.hist!(ax, h_normalized, bins=12, color=(:orange, 0.5), normalization=:pdf)
+            Bas3GLMakie.GLMakie.hist!(ax, h_normalized, bins=12, color=(:orange, 0.5), normalization=:pdf, direction=:x)
             
             # Saturation (0-100)
-            Bas3GLMakie.GLMakie.hist!(ax, class_data.s_values, bins=12, color=(:magenta, 0.4), normalization=:pdf)
+            Bas3GLMakie.GLMakie.hist!(ax, class_data.s_values, bins=12, color=(:magenta, 0.4), normalization=:pdf, direction=:x)
             
             # Value (0-100)
-            Bas3GLMakie.GLMakie.hist!(ax, class_data.v_values, bins=12, color=(:gray, 0.4), normalization=:pdf)
+            Bas3GLMakie.GLMakie.hist!(ax, class_data.v_values, bins=12, color=(:gray, 0.4), normalization=:pdf, direction=:x)
         end
         
-        # Set axis limits
-        Bas3GLMakie.GLMakie.xlims!(ax, 0, 100)
+        # Set axis limits (y-axis for values since rotated 90°)
+        Bas3GLMakie.GLMakie.ylims!(ax, 0, 100)
     end
     
     # Set tight row spacing for vertical stack

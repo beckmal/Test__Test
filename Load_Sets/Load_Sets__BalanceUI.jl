@@ -72,8 +72,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_full_before = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 2];
         title="HSV Histogramm (Vollbild - Vorher)",
-        xlabel="Dichte",
-        ylabel="Normalisiert (0-1)"
+        xlabel="Normalisiert (0-1)",
+        ylabel="Dichte"
     )
     
     # Median HSV values label for full image "Before" state
@@ -90,8 +90,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_masked_before = Bas3GLMakie.GLMakie.Axis(
         fgr[2, 4];
         title="HSV Histogramm (Maskierte Region - Vorher)",
-        xlabel="Dichte",
-        ylabel="Normalisiert (0-1)"
+        xlabel="Normalisiert (0-1)",
+        ylabel="Dichte"
     )
     
     # Median HSV values label for masked region "Before" state
@@ -126,8 +126,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_full_after = Bas3GLMakie.GLMakie.Axis(
         fgr[4, 2];
         title="HSV Histogramm (Vollbild - Nachher)",
-        xlabel="Dichte",
-        ylabel="Normalisiert (0-1)"
+        xlabel="Normalisiert (0-1)",
+        ylabel="Dichte"
     )
     
     # Median HSV values label for full image "After" state
@@ -144,8 +144,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local axs_hist_masked_after = Bas3GLMakie.GLMakie.Axis(
         fgr[4, 4];
         title="HSV Histogramm (Maskierte Region - Nachher)",
-        xlabel="Dichte",
-        ylabel="Normalisiert (0-1)"
+        xlabel="Normalisiert (0-1)",
+        ylabel="Dichte"
     )
     
     # Median HSV values label for masked region "After" state
@@ -390,7 +390,6 @@ function create_balance_figure(sets, input_type, raw_output_type;
         
         # Plot histograms using Observables
         # All channels normalized to 0-1 range for unified axis
-        # direction=:x rotates histogram 90° (horizontal bars, values on y-axis)
         
         # Hue (normalized 0-1) - shown in orange
         Bas3GLMakie.GLMakie.hist!(
@@ -399,7 +398,6 @@ function create_balance_figure(sets, input_type, raw_output_type;
             bins=50,
             color=(:orange, 0.5),
             normalization=:pdf,
-            direction=:x,
             label="H (Farbton)"
         )
         
@@ -410,7 +408,6 @@ function create_balance_figure(sets, input_type, raw_output_type;
             bins=50,
             color=(:magenta, 0.5),
             normalization=:pdf,
-            direction=:x,
             label="S (Sättigung)"
         )
         
@@ -421,7 +418,6 @@ function create_balance_figure(sets, input_type, raw_output_type;
             bins=50,
             color=(:gray, 0.5),
             normalization=:pdf,
-            direction=:x,
             label="V (Helligkeit)"
         )
         
@@ -431,13 +427,13 @@ function create_balance_figure(sets, input_type, raw_output_type;
         # Set initial title
         axis.title[] = "HSV Histogramm $title_suffix"
         
-        # DISABLE AUTOSCALING: Set fixed axis limits
-        # Y-axis: 0-1 normalized scale for all channels (rotated 90°)
-        # X-axis: density (auto)
-        Bas3GLMakie.GLMakie.ylims!(axis, 0, 1)
-        Bas3GLMakie.GLMakie.xlims!(axis, 0, nothing)  # Auto for x (density), but min at 0
+        # Set fixed axis limits
+        # X-axis: 0-1 normalized scale for all channels
+        # Y-axis: density (auto)
+        Bas3GLMakie.GLMakie.xlims!(axis, 0, 1)
+        Bas3GLMakie.GLMakie.ylims!(axis, 0, nothing)
         
-        println("[HISTOGRAM] ✓ Observable-based histogram created (y-axis fixed 0-1, rotated 90°)")
+        println("[HISTOGRAM] ✓ Observable-based histogram created (x-axis fixed 0-1)")
         
         return (h_data=h_data, s_data=s_data, v_data=v_data)
     end
@@ -574,33 +570,15 @@ function create_balance_figure(sets, input_type, raw_output_type;
         
         if isnothing(extracted_img)
             extracted_img = zeros(Bas3GLMakie.GLMakie.RGB{Bas3GLMakie.GLMakie.N0f8}, 100, 100)
-            scaled_mask = extracted_img
             extracted_region = extracted_img
         else
-            # Scale mask by 4x using nearest neighbor interpolation
-            local h, w = size(extracted_img)
-            local new_h, new_w = h * 4, w * 4
-            println("[SCALE] Scaling mask from $(h)x$(w) to $(new_h)x$(new_w)")
-            flush(stdout)
-            
-            local scaled_mask = similar(extracted_img, new_h, new_w)
-            for i in 1:new_h
-                for j in 1:new_w
-                    local orig_i = ceil(Int, i / 4)
-                    local orig_j = ceil(Int, j / 4)
-                    scaled_mask[i, j] = extracted_img[orig_i, orig_j]
-                end
-            end
-            println("[SCALE] ✓ Mask scaled to $(size(scaled_mask))")
-            flush(stdout)
-            
             # Extract the masked region from the original image
             # Create a binary mask (white pixels in the mask)
             println("[EXTRACT] Extracting masked region from original image")
             flush(stdout)
             
             local extracted_region = similar(original_img)
-            local mask_height, mask_width = size(scaled_mask)
+            local mask_height, mask_width = size(extracted_img)
             local orig_height, orig_width = size(original_img)
             
             # Ensure dimensions match
@@ -612,7 +590,7 @@ function create_balance_figure(sets, input_type, raw_output_type;
                 # Apply mask: keep pixels where mask is white (R+G+B > 1.5), otherwise black
                 for i in 1:mask_height
                     for j in 1:mask_width
-                        local mask_pixel = scaled_mask[i, j]
+                        local mask_pixel = extracted_img[i, j]
                         local intensity = Float64(mask_pixel.r) + Float64(mask_pixel.g) + Float64(mask_pixel.b)
                         
                         if intensity > 1.5  # White pixel in mask
