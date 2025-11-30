@@ -286,6 +286,14 @@ function create_balance_figure(sets, input_type, raw_output_type;
     local original_wb_obs = Bas3GLMakie.GLMakie.Observable(zeros(Bas3GLMakie.GLMakie.RGB{Bas3GLMakie.GLMakie.N0f8}, 100, 100))
     local masked_region_obs = Bas3GLMakie.GLMakie.Observable(zeros(Bas3GLMakie.GLMakie.RGB{Bas3GLMakie.GLMakie.N0f8}, 100, 100))
     
+    # ========================================================================
+    # PRELOAD CACHE - stores adjacent images for instant navigation
+    # ========================================================================
+    # Cache structure: idx => (original_img, masked_region, success, message)
+    local preload_cache = Dict{Int, Tuple{Any, Any, Bool, String}}()
+    local preload_lock = ReentrantLock()
+    local preload_tasks = Dict{Int, Task}()  # Track running preload tasks
+    
     # Display images
     # Before white balance (left - full original)
     Bas3GLMakie.GLMakie.image!(
@@ -611,10 +619,162 @@ function create_balance_figure(sets, input_type, raw_output_type;
         return (original_img, extracted_region, success, message)
     end
     
+    # ========================================================================
+    # PRELOAD FUNCTIONS - background loading for adjacent images
+    # ========================================================================
+    
+    """
+        preload_image(idx::Int)
+    
+    Preload image at index idx into cache. Called in background task.
+    """
+    function preload_image(idx::Int)
+        # Bounds check
+        if idx < 1 || idx > length(sets)
+            return
+        end
+        
+        # Skip if already cached
+        lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                println("[PRELOAD] Index $idx already cached, skipping")
+                return
+            end
+        end
+        
+        # Get dataset index
+        local dataset_idx = sets[idx][3]
+        println("[PRELOAD] Starting preload for index $idx (dataset $dataset_idx)...")
+        
+        # Load images (this is the slow part - disk I/O)
+        local original_img, masked_region, success, message = load_muha_images(dataset_idx)
+        
+        # Store in cache
+        lock(preload_lock) do
+            preload_cache[idx] = (original_img, masked_region, success, message)
+            println("[PRELOAD] ✓ Cached index $idx (cache size: $(length(preload_cache)))")
+        end
+    end
+    
+    """
+        trigger_preload(idx::Int)
+    
+    Spawn background task to preload image at idx.
+    Non-blocking, safe to call multiple times.
+    """
+    function trigger_preload(idx::Int)
+        # Bounds check
+        if idx < 1 || idx > length(sets)
+            return
+        end
+        
+        # Skip if already cached or loading (must use explicit flag since return in lock() do doesn't exit function)
+        local should_skip = lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                println("[PRELOAD] Index $idx already cached, skipping")
+                return true
+            end
+            if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                println("[PRELOAD] Index $idx already loading, skipping")
+                return true
+            end
+            return false
+        end
+        
+        if should_skip
+            return
+        end
+        
+        # Spawn background task using @async (cooperative multitasking)
+        println("[PRELOAD] Spawning async preload task for index $idx...")
+        local task = @async begin
+            yield()  # Give other tasks a chance first
+            preload_image(idx)
+        end
+        lock(preload_lock) do
+            preload_tasks[idx] = task
+        end
+        yield()  # Let the async task start
+    end
+    
+    """
+        get_from_cache_or_load(idx::Int)
+    
+    Get image data from cache if available, otherwise load synchronously.
+    If a preload task is in progress for this index, wait for it briefly.
+    Returns (original_img, masked_region, success, message).
+    """
+    function get_from_cache_or_load(idx::Int)
+        # Check if there's a preload task in progress for this index
+        local task_to_wait = nothing
+        lock(preload_lock) do
+            if haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                task_to_wait = preload_tasks[idx]
+            end
+        end
+        
+        # If preload is in progress, wait for it (up to 3 seconds)
+        if !isnothing(task_to_wait)
+            println("[CACHE] Preload in progress for index $idx, waiting...")
+            local start_wait = time()
+            local max_wait = 3.0  # seconds
+            while !istaskdone(task_to_wait) && (time() - start_wait) < max_wait
+                yield()
+                sleep(0.05)
+            end
+            local waited_ms = (time() - start_wait) * 1000
+            if istaskdone(task_to_wait)
+                println("[CACHE] Preload completed after $(round(waited_ms, digits=0))ms wait")
+            else
+                println("[CACHE] Preload still running after $(round(waited_ms, digits=0))ms, proceeding without it")
+            end
+        end
+        
+        # Try to get from cache
+        local cached = nothing
+        lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                cached = pop!(preload_cache, idx)
+                println("[CACHE] ✓ Hit for index $idx (remaining cache: $(length(preload_cache)))")
+            end
+        end
+        
+        if !isnothing(cached)
+            return cached
+        end
+        
+        # Cache miss - load synchronously
+        println("[CACHE] Miss for index $idx, loading synchronously...")
+        local dataset_idx = sets[idx][3]
+        return load_muha_images(dataset_idx)
+    end
+    
+    """
+        cleanup_cache(current_idx::Int)
+    
+    Remove cache entries that are no longer adjacent to current index.
+    Keeps memory usage bounded.
+    """
+    function cleanup_cache(current_idx::Int)
+        lock(preload_lock) do
+            local to_remove = Int[]
+            for cached_idx in keys(preload_cache)
+                if abs(cached_idx - current_idx) > 1
+                    push!(to_remove, cached_idx)
+                end
+            end
+            for idx in to_remove
+                delete!(preload_cache, idx)
+                println("[CACHE] Evicted index $idx (too far from current $current_idx)")
+            end
+        end
+    end
+    
     """
         update_display(idx::Int)
     
     Update display to show images and histograms for the given index.
+    Uses preload cache if available, triggers preload for adjacent images.
     """
     function update_display(idx::Int)
         println("[UPDATE] ========================================")
@@ -631,9 +791,9 @@ function create_balance_figure(sets, input_type, raw_output_type;
         local dataset_idx = sets[idx][3]
         println("[UPDATE] UI index: $idx -> Dataset index: $dataset_idx")
         
-        # Load images
+        # Load images (from cache or disk)
         println("[UPDATE] Loading images for dataset $dataset_idx...")
-        local original_img, masked_region, success, message = load_muha_images(dataset_idx)
+        local original_img, masked_region, success, message = get_from_cache_or_load(idx)
         
         println("[UPDATE] Load result: success=$success, message='$message'")
         println("[UPDATE] Original image size: $(size(original_img))")
@@ -689,6 +849,13 @@ function create_balance_figure(sets, input_type, raw_output_type;
         status_label.text[] = ""
         
         println("[UPDATE] ✓ Display updated successfully for $muha_id")
+        
+        # Trigger preload for adjacent images (non-blocking)
+        println("[UPDATE] Triggering preload for adjacent images...")
+        cleanup_cache(idx)
+        trigger_preload(idx - 1)
+        trigger_preload(idx + 1)
+        
         println("[UPDATE] ========================================")
     end
     
