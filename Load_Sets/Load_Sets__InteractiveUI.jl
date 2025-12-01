@@ -1796,8 +1796,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
     # ========================================================================
     # PRELOAD CACHE - stores adjacent images for instant navigation
     # ========================================================================
-    # Cache structure: idx => (markers, success, message, overlay, marker_viz, closeup, bboxes)
-    local preload_cache = Dict{Int, Tuple{Vector{MarkerInfo}, Bool, String, Any, Any, Any, Dict}}()
+    # Cache structure: idx => (markers, success, message, overlay, marker_viz, closeup)
+    # NOTE: bboxes computed on-demand from sets[idx][2] for performance
+    local preload_cache = Dict{Int, Tuple{Vector{MarkerInfo}, Bool, String, Any, Any, Any}}()
     local preload_lock = ReentrantLock()
     local preload_tasks = Dict{Int, Task}()  # Track running preload tasks
     
@@ -1850,7 +1851,8 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         preload_image_data(idx::Int)
     
     Preload processed image data at index idx into cache.
-    Called in background task. Computes marker detection, overlays, closeup, bboxes.
+    Called in background task. Computes marker detection, overlays, closeup.
+    NOTE: Bboxes computed on-demand for performance (not cached).
     """
     function preload_image_data(idx::Int)
         # Bounds check
@@ -1887,12 +1889,9 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         # Create closeup at default rotation (0)
         local closeup = extract_closeup_region(img_input, markers, 0.0)
         
-        # Extract class bounding boxes
-        local bboxes = extract_class_bboxes(img_output)
-        
-        # Store in cache
+        # Store in cache (bboxes computed on-demand when needed)
         lock(preload_lock) do
-            preload_cache[idx] = (markers, success, message, overlay, marker_viz, closeup, bboxes)
+            preload_cache[idx] = (markers, success, message, overlay, marker_viz, closeup)
         end
         
         local elapsed_ms = (time() - start_time) * 1000
@@ -1926,11 +1925,10 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             return
         end
         
-        # Spawn background task using @async (cooperative multitasking)
+        # Spawn background task using @async (main thread compatible for Windows)
         println("[PRELOAD] Spawning async preload task for index $idx...")
         local task = @async begin
             try
-                yield()  # Give other tasks a chance first
                 preload_image_data(idx)
             catch e
                 # Log error but don't crash - preload is optional, UI should continue
@@ -1951,6 +1949,76 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             preload_tasks[idx] = task
         end
         yield()  # Let the async task start
+    end
+    
+    """
+        trigger_preload_adjacent(current_idx::Int)
+    
+    Trigger parallel preload of adjacent images (current_idx ± 1).
+    Uses Threads.@spawn for true parallel marker detection across CPU cores.
+    Non-blocking, safe to call multiple times.
+    """
+    function trigger_preload_adjacent(current_idx::Int)
+        # Calculate adjacent indices
+        local prev_idx = current_idx - 1
+        local next_idx = current_idx + 1
+        
+        # Determine which indices need preloading
+        local indices_to_load = Int[]
+        
+        lock(preload_lock) do
+            # Check prev_idx
+            if prev_idx >= 1 && !haskey(preload_cache, prev_idx) && 
+               (!haskey(preload_tasks, prev_idx) || istaskdone(preload_tasks[prev_idx]))
+                push!(indices_to_load, prev_idx)
+            end
+            
+            # Check next_idx
+            if next_idx <= length(sets) && !haskey(preload_cache, next_idx) && 
+               (!haskey(preload_tasks, next_idx) || istaskdone(preload_tasks[next_idx]))
+                push!(indices_to_load, next_idx)
+            end
+        end
+        
+        if isempty(indices_to_load)
+            return
+        end
+        
+        println("[PRELOAD] Triggering parallel preload for indices: $(indices_to_load)")
+        
+        # Spawn parallel preload - @async wrapper for main thread compatibility,
+        # Threads.@spawn inside for true parallelism
+        @async begin
+            # Spawn one Threads.@spawn per adjacent image
+            local load_tasks = map(indices_to_load) do idx
+                Threads.@spawn begin
+                    try
+                        println("[PRELOAD] Starting parallel compute for index $idx...")
+                        local start_time = time()
+                        preload_image_data(idx)
+                        local elapsed_ms = (time() - start_time) * 1000
+                        (idx=idx, success=true, time_ms=elapsed_ms)
+                    catch e
+                        @warn "[PRELOAD] Error in parallel compute for index $idx: $e"
+                        # Remove from cache in case of partial write
+                        lock(preload_lock) do
+                            delete!(preload_cache, idx)
+                        end
+                        (idx=idx, success=false, time_ms=0.0)
+                    end
+                end
+            end
+            
+            # Wait for all parallel computations to complete
+            for task in load_tasks
+                local result = fetch(task)
+                if result.success
+                    println("[PRELOAD] ✓ Parallel compute complete for index $(result.idx) in $(round(result.time_ms, digits=0))ms")
+                else
+                    @warn "[PRELOAD] ✗ Parallel compute failed for index $(result.idx)"
+                end
+            end
+        end
     end
     
     """
@@ -2016,7 +2084,10 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         end
         
         if !isnothing(cached)
-            return (cached[1], cached[2], cached[3], cached[4], cached[5], cached[6], cached[7], true)
+            # Compute bboxes on-demand from raw image data
+            local img_output = sets[idx][2]
+            local bboxes = extract_class_bboxes(img_output)
+            return (cached[1], cached[2], cached[3], cached[4], cached[5], cached[6], bboxes, true)
         end
         
         # Cache miss - compute synchronously
@@ -2036,6 +2107,92 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         println("[CACHE] Computed index $idx in $(round(elapsed_ms, digits=0))ms")
         
         return (markers, success, message, overlay, marker_viz, closeup, bboxes, false)
+    end
+    
+    """
+        get_from_cache(idx::Int)
+    
+    Get data from cache if available (non-blocking).
+    Returns cached data or nothing if not in cache.
+    """
+    function get_from_cache(idx::Int)
+        local cached = nothing
+        lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                cached = pop!(preload_cache, idx)
+                println("[CACHE] ✓ Hit for index $idx (remaining cache: $(length(preload_cache)))")
+            end
+        end
+        return cached
+    end
+    
+    """
+        trigger_preload_with_callback(callback::Function, idx::Int)
+    
+    Trigger multi-threaded preload with callback executed when preload completes.
+    Callback is executed to rebuild UI with loaded data.
+    Uses Threads.@spawn for true parallel execution.
+    """
+    function trigger_preload_with_callback(callback::Function, idx::Int)
+        try
+            local should_start = false
+            local already_cached = false
+            
+            lock(preload_lock) do
+                # Check if already cached
+                if haskey(preload_cache, idx)
+                    already_cached = true
+                # Check if already in progress
+                elseif haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                    println("[PRELOAD] Index $idx already loading, skipping")
+                else
+                    # Need to start new preload
+                    should_start = true
+                end
+            end
+            
+            # If already cached, execute callback immediately
+            if already_cached
+                println("[PRELOAD] Index $idx already cached, executing callback immediately")
+                try
+                    callback()
+                catch e
+                    @warn "[PRELOAD] Error executing callback for cached index $idx: $e"
+                end
+                return
+            end
+            
+            # Start async preload if needed (main thread compatible for Windows)
+            if should_start
+                local task = @async begin
+                    try
+                        preload_image_data(idx)
+                        
+                        # Execute callback on completion (already on main thread via @async)
+                        try
+                            println("[PRELOAD] Preload complete for index $idx, executing callback")
+                            callback()
+                        catch e
+                            @warn "[PRELOAD] Error executing callback for index $idx: $e"
+                        end
+                    catch e
+                        @warn "[PRELOAD] Async task error for index $idx: $e"
+                        # Clean up task tracking
+                        lock(preload_lock) do
+                            delete!(preload_tasks, idx)
+                        end
+                    end
+                end
+                
+                lock(preload_lock) do
+                    preload_tasks[idx] = task
+                end
+                
+                println("[PRELOAD] Triggered async preload for index $idx with callback")
+            end
+        catch e
+            @warn "[PRELOAD] Error in trigger_preload_with_callback for index $idx: $e"
+        end
     end
     
     """
@@ -2261,9 +2418,35 @@ function create_interactive_figure(sets, input_type, raw_output_type;
             closeup = extract_closeup_region(sets[idx][1], markers, closeup_rotation[])
             bboxes = extract_class_bboxes(sets[idx][2])
         else
-            # No selection - use cache if available
-            local was_cached
-            markers, success, message, overlay, marker_viz, closeup, bboxes, was_cached = get_from_cache_or_compute(idx, true)
+            # No selection - use cache if available (async on miss)
+            local cached = get_from_cache(idx)
+            
+            # Handle cache MISS - trigger async computation
+            if isnothing(cached)
+                println("[CACHE] MISS for index $idx - computing asynchronously...")
+                
+                # Show loading message in param status label
+                param_status_label.text = "Lade Marker für Bild $idx..."
+                param_status_label.color = :orange
+                
+                # Trigger async preload with callback
+                trigger_preload_with_callback(idx) do
+                    println("[UPDATE] Async computation complete for index $idx, updating display")
+                    # Trigger re-navigation to rebuild UI
+                    current_image_index[] = idx
+                end
+                
+                return false  # Don't update observables yet - wait for async load
+            end
+            
+            # Cache HIT - unpack cached data and compute bboxes on-demand
+            println("[CACHE] HIT for index $idx")
+            markers, success, message, overlay, marker_viz, closeup = cached
+            bboxes = extract_class_bboxes(sets[idx][2])
+            local was_cached = true
+            
+            # Clear loading message if it was showing
+            param_status_label.text = ""
             
             # If closeup rotation is non-zero, we need to re-extract with correct rotation
             # (cache stores closeup at rotation=0)
@@ -2314,13 +2497,12 @@ function create_interactive_figure(sets, input_type, raw_output_type;
         
         println("[UPDATE] Setting marker_success=$(success), marker_message=$(message)")
         
-        # Trigger preload for adjacent images (non-blocking)
+        # Trigger preload for adjacent images (non-blocking, parallel)
         # Only preload if no selection is active (selection makes cache invalid)
         if !selection_complete[]
-            println("[UPDATE] Triggering preload for adjacent images...")
+            println("[UPDATE] Triggering parallel preload for adjacent images...")
             cleanup_cache(idx)
-            trigger_preload(idx - 1)
-            trigger_preload(idx + 1)
+            trigger_preload_adjacent(idx)
         end
         marker_success[] = success
         marker_message[] = message

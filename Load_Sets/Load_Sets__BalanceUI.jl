@@ -258,10 +258,18 @@ function create_balance_figure(sets, input_type, raw_output_type;
         default="D50 (Horizont 5000K)"
     )
     
-    # Column 5: Apply button
+    # Column 5: Apply and Save buttons in a grid
+    local btn_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[3, 5])
+    
     local apply_wb_button = Bas3GLMakie.GLMakie.Button(
-        fgr[3, 5],
+        btn_grid[1, 1],
         label="Weißabgleich\nAnwenden",
+        fontsize=12
+    )
+    
+    local save_wb_button = Bas3GLMakie.GLMakie.Button(
+        btn_grid[1, 2],
+        label="Speichern\n(Überschreiben)",
         fontsize=12
     )
     
@@ -708,11 +716,11 @@ function create_balance_figure(sets, input_type, raw_output_type;
                 return
             end
             
-            # Spawn background task using @async (cooperative multitasking)
+            # Spawn background task using @async (main thread compatible)
+            # Note: BalanceUI doesn't have parallel .bin loading inside, so this is simple async
             println("[PRELOAD] Spawning async preload task for index $idx...")
             local task = @async begin
                 try
-                    yield()  # Give other tasks a chance first
                     local result = preload_image(idx)
                     if !result.success
                         @warn "[PRELOAD] Async preload failed for index $idx: $(result.error)"
@@ -730,10 +738,75 @@ function create_balance_figure(sets, input_type, raw_output_type;
             lock(preload_lock) do
                 preload_tasks[idx] = task
             end
-            yield()  # Let the async task start
             
         catch e
             @warn "[PRELOAD] Error in trigger_preload for index $idx: $e"
+        end
+    end
+    
+    """
+        trigger_preload_adjacent(current_idx::Int)
+    
+    Trigger parallel preload of adjacent images (current_idx ± 1).
+    Uses Threads.@spawn for true parallel loading across CPU cores.
+    Non-blocking, safe to call multiple times.
+    """
+    function trigger_preload_adjacent(current_idx::Int)
+        # Calculate adjacent indices
+        local prev_idx = current_idx - 1
+        local next_idx = current_idx + 1
+        
+        # Determine which indices need preloading
+        local indices_to_load = Int[]
+        
+        lock(preload_lock) do
+            # Check prev_idx
+            if prev_idx >= 1 && !haskey(preload_cache, prev_idx) && 
+               (!haskey(preload_tasks, prev_idx) || istaskdone(preload_tasks[prev_idx]))
+                push!(indices_to_load, prev_idx)
+            end
+            
+            # Check next_idx
+            if next_idx <= length(sets) && !haskey(preload_cache, next_idx) && 
+               (!haskey(preload_tasks, next_idx) || istaskdone(preload_tasks[next_idx]))
+                push!(indices_to_load, next_idx)
+            end
+        end
+        
+        if isempty(indices_to_load)
+            return
+        end
+        
+        println("[PRELOAD] Triggering parallel preload for indices: $(indices_to_load)")
+        
+        # Spawn parallel preload - @async wrapper for main thread compatibility,
+        # Threads.@spawn inside for true parallelism
+        @async begin
+            # Spawn one Threads.@spawn per adjacent image
+            local load_tasks = map(indices_to_load) do idx
+                Threads.@spawn begin
+                    try
+                        println("[PRELOAD] Starting parallel load for index $idx...")
+                        local start_time = time()
+                        local result = preload_image(idx)
+                        local elapsed_ms = (time() - start_time) * 1000
+                        (idx=idx, success=result.success, error=result.error, time_ms=elapsed_ms)
+                    catch e
+                        @warn "[PRELOAD] Error in parallel load for index $idx: $e"
+                        (idx=idx, success=false, error=e, time_ms=0.0)
+                    end
+                end
+            end
+            
+            # Wait for all parallel loads to complete
+            for task in load_tasks
+                local result = fetch(task)
+                if result.success
+                    println("[PRELOAD] ✓ Parallel load complete for index $(result.idx) in $(round(result.time_ms, digits=0))ms")
+                else
+                    @warn "[PRELOAD] ✗ Parallel load failed for index $(result.idx): $(result.error)"
+                end
+            end
         end
     end
     
@@ -808,6 +881,103 @@ function create_balance_figure(sets, input_type, raw_output_type;
     end
     
     """
+        get_from_cache(idx::Int)
+    
+    Get image data from cache if available (non-blocking).
+    Returns cached data or nothing if not in cache.
+    """
+    function get_from_cache(idx::Int)
+        local cached = nothing
+        lock(preload_lock) do
+            if haskey(preload_cache, idx)
+                cached = pop!(preload_cache, idx)
+                println("[CACHE] ✓ Hit for index $idx (remaining cache: $(length(preload_cache)))")
+            end
+        end
+        return cached
+    end
+    
+    """
+        trigger_preload_with_callback(callback::Function, idx::Int)
+    
+    Trigger async preload with callback executed when preload completes.
+    Callback is executed to rebuild UI with loaded data.
+    """
+    function trigger_preload_with_callback(callback::Function, idx::Int)
+        try
+            local should_start = false
+            local already_cached = false
+            
+            lock(preload_lock) do
+                # Check if already cached
+                if haskey(preload_cache, idx)
+                    already_cached = true
+                # Check if already in progress
+                elseif haskey(preload_tasks, idx) && !istaskdone(preload_tasks[idx])
+                    println("[PRELOAD] Index $idx already loading, skipping")
+                else
+                    # Need to start new preload
+                    should_start = true
+                end
+            end
+            
+            # If already cached, execute callback immediately
+            if already_cached
+                println("[PRELOAD] Index $idx already cached, executing callback immediately")
+                try
+                    callback()
+                catch e
+                    @warn "[PRELOAD] Error executing callback for cached index $idx: $e"
+                    status_label.text[] = "Fehler beim Laden von Bild $idx"
+                end
+                return
+            end
+            
+            # Start async preload if needed (main thread compatible for Windows)
+            if should_start
+                local task = @async begin
+                    try
+                        local result = preload_image(idx)
+                        
+                        # Execute callback on completion (already on main thread via @async)
+                        try
+                            if result.success
+                                println("[PRELOAD] Preload complete for index $idx, executing callback")
+                                callback()
+                            else
+                                # Preload failed - show error in UI
+                                @warn "[PRELOAD] Preload failed for index $idx: $(result.error)"
+                                status_label.text[] = "Fehler beim Laden: $(result.error)"
+                            end
+                        catch e
+                            @warn "[PRELOAD] Error executing callback for index $idx: $e"
+                            status_label.text[] = "Fehler nach dem Laden: $(typeof(e))"
+                        end
+                    catch e
+                        @warn "[PRELOAD] Async task error for index $idx: $e"
+                        # Clean up task tracking
+                        lock(preload_lock) do
+                            delete!(preload_tasks, idx)
+                        end
+                        
+                        # Show error in UI (already on main thread)
+                        status_label.text[] = "Fehler beim asynchronen Laden: $(typeof(e))"
+                    end
+                end
+                
+                lock(preload_lock) do
+                    preload_tasks[idx] = task
+                end
+                
+                println("[PRELOAD] Triggered async preload for index $idx with callback")
+            end
+        catch e
+            @warn "[PRELOAD] Error in trigger_preload_with_callback for index $idx: $e"
+            status_label.text[] = "Fehler beim Starten des Ladevorgangs: $(typeof(e))"
+        end
+    end
+    
+    """
         cleanup_cache(current_idx::Int)
     
     Remove cache entries that are no longer adjacent to current index.
@@ -846,13 +1016,36 @@ function create_balance_figure(sets, input_type, raw_output_type;
                 return
             end
         
-        # Get dataset index from tuple
-        local dataset_idx = sets[idx][3]
-        println("[UPDATE] UI index: $idx -> Dataset index: $dataset_idx")
-        
-        # Load images (from cache or disk)
-        println("[UPDATE] Loading images for dataset $dataset_idx...")
-        local original_img, masked_region, success, message = get_from_cache_or_load(idx)
+            # Get dataset index from tuple
+            local dataset_idx = sets[idx][3]
+            println("[UPDATE] UI index: $idx -> Dataset index: $dataset_idx")
+            
+            # Check cache (non-blocking)
+            local cached = get_from_cache(idx)
+            
+            # Handle cache MISS - trigger async load
+            if isnothing(cached)
+                println("[CACHE] MISS for index $idx - loading asynchronously...")
+                
+                # Show loading placeholder
+                status_label.text[] = "Lade Bild $idx..."
+                textbox_label.text[] = "Lade Bild $idx von $(length(sets))..."
+                axs_before.title[] = "Lädt..."
+                axs_after.title[] = "Lädt..."
+                axs_masked.title[] = "Lädt..."
+                
+                # Trigger async preload with callback to rebuild display when done
+                trigger_preload_with_callback(idx) do
+                    println("[UPDATE] Async load complete for index $idx, rebuilding display")
+                    update_display(idx)  # Recursive call will hit cache
+                end
+                
+                return  # Don't update observables yet - wait for async load
+            end
+            
+            # Cache HIT - unpack cached data
+            println("[CACHE] HIT for index $idx")
+            local original_img, masked_region, success, message = cached
         
         println("[UPDATE] Load result: success=$success, message='$message'")
         println("[UPDATE] Original image size: $(size(original_img))")
@@ -909,12 +1102,11 @@ function create_balance_figure(sets, input_type, raw_output_type;
         
             println("[UPDATE] ✓ Display updated successfully for $muha_id")
             
-            # Trigger preload for adjacent images (non-blocking)
-            println("[UPDATE] Triggering preload for adjacent images...")
+            # Trigger parallel preload for adjacent images (non-blocking)
+            println("[UPDATE] Triggering parallel preload for adjacent images...")
             try
                 cleanup_cache(idx)
-                trigger_preload(idx - 1)
-                trigger_preload(idx + 1)
+                trigger_preload_adjacent(idx)
             catch e
                 @warn "[UPDATE] Error triggering preload: $e"
                 # Non-fatal - continue
@@ -1106,6 +1298,85 @@ function create_balance_figure(sets, input_type, raw_output_type;
         end
     end
     
+    # Save white balance button handler - SAVES TO SOURCE FILE
+    Bas3GLMakie.GLMakie.on(save_wb_button.clicks) do _
+        println("[SAVE] ========================================")
+        println("[SAVE] SAVING WHITE-BALANCED IMAGE")
+        println("[SAVE] ========================================")
+        flush(stdout)
+        
+        try
+            # Get current image index and dataset index
+            local idx = current_index[]
+            local dataset_idx = sets[idx][3]
+            local muha_id = "MuHa_" * lpad(dataset_idx, 3, '0')
+            
+            # Construct file path
+            local folder_path = joinpath(BASE_PATH, muha_id)
+            local save_path = joinpath(folder_path, muha_id * "_raw_adj.png")
+            
+            println("[SAVE] Current index: $idx (dataset: $dataset_idx)")
+            println("[SAVE] MuHa ID: $muha_id")
+            println("[SAVE] Save path: $save_path")
+            flush(stdout)
+            
+            # Get the white-balanced image
+            local wb_image = original_wb_obs[]
+            
+            # Check if WB has been applied (compare with original)
+            local original_image = original_image_obs[]
+            if wb_image === original_image
+                status_label.text[] = "⚠ Kein Weißabgleich angewendet - erst 'Anwenden' klicken!"
+                println("[SAVE] ⚠ No white balance applied yet - image not saved")
+                println("[SAVE] ========================================")
+                flush(stdout)
+                return
+            end
+            
+            println("[SAVE] Image size: $(size(wb_image))")
+            println("[SAVE] Image type: $(typeof(wb_image))")
+            flush(stdout)
+            
+            # Check if folder exists
+            if !isdir(folder_path)
+                status_label.text[] = "❌ Ordner nicht gefunden: $muha_id"
+                println("[SAVE] ❌ Folder not found: $folder_path")
+                println("[SAVE] ========================================")
+                flush(stdout)
+                return
+            end
+            
+            # Save the image (overwrite existing file)
+            status_label.text[] = "Speichere $muha_id..."
+            println("[SAVE] Saving to: $save_path")
+            flush(stdout)
+            
+            local start_time = time()
+            Bas3ImageSegmentation.Bas3.FileIO.save(save_path, wb_image)
+            local save_time = time() - start_time
+            
+            status_label.text[] = "✓ Gespeichert: $(muha_id)_raw_adj.png ($(round(save_time, digits=2))s)"
+            println("[SAVE] ✓✓✓ SAVE COMPLETE ✓✓✓")
+            println("[SAVE] File: $save_path")
+            println("[SAVE] Time: $(round(save_time, digits=2))s")
+            println("[SAVE] ========================================")
+            flush(stdout)
+            
+        catch e
+            local error_msg = "❌ Speicherfehler: $e"
+            status_label.text[] = error_msg
+            println("[SAVE] ❌❌❌ SAVE ERROR ❌❌❌")
+            println("[SAVE] Error: $e")
+            println("[SAVE] Stacktrace:")
+            for (exc, bt) in Base.catch_stack()
+                showerror(stdout, exc, bt)
+                println()
+            end
+            println("[SAVE] ========================================")
+            flush(stdout)
+        end
+    end
+    
     # Initialize with first image
     println("[INIT] Initializing Balance UI with first image...")
     update_display(1)
@@ -1127,7 +1398,8 @@ function create_balance_figure(sets, input_type, raw_output_type;
             :textbox_label => textbox_label,
             :status_label => status_label,
             :ref_white_menu => ref_white_menu,
-            :apply_wb_button => apply_wb_button
+            :apply_wb_button => apply_wb_button,
+            :save_wb_button => save_wb_button
         )
         
         return (figure=fgr, observables=observables, widgets=widgets)

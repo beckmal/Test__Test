@@ -7,9 +7,13 @@
 # - Cache hit/miss count
 # - Load time for each navigation (with/without cache)
 # - Preload completion timing
+# - Direct preload performance measurement
 #
 # Usage:
 #   julia --script=./Bas3ImageSegmentation/Load_Sets/Load_Sets__BalanceUI__test_caching.jl --interactive
+#
+# Consolidated from:
+#   - test_performance_BalanceUI.jl
 # ============================================================================
 
 println("="^80)
@@ -181,6 +185,88 @@ println("="^80)
 println("Check console output above for [CACHE] Hit/Miss messages")
 println("="^80)
 println()
+
+# ============================================================================
+# TEST: Direct Preload Performance (from test_performance_BalanceUI.jl)
+# ============================================================================
+
+println()
+println("="^80)
+println("TEST: Direct Preload Performance Measurement")
+println("="^80)
+println()
+
+# Clear cache before direct preload testing
+println("[SETUP] Clearing cache for direct preload test...")
+lock(result.cache[:preload_lock]) do
+    empty!(result.cache[:preload_cache])
+    empty!(result.cache[:preload_tasks])
+end
+
+# Force garbage collection
+GC.gc()
+sleep(1)
+
+# Test direct preload for specific indices
+direct_test_indices = [1, 2, 3]
+println("[INFO] Testing direct preload for indices: $(direct_test_indices)")
+println()
+
+direct_total_time = 0.0
+for idx in direct_test_indices
+    println("[PERF] Testing index $idx...")
+    
+    # Measure time
+    start_time = time()
+    result.funcs[:preload_image](idx)
+    end_time = time()
+    
+    elapsed = end_time - start_time
+    direct_total_time += elapsed
+    
+    println("[PERF]   Time: $(round(elapsed * 1000, digits=1)) ms")
+    
+    # Verify cached
+    local cached = false
+    lock(result.cache[:preload_lock]) do
+        cached = haskey(result.cache[:preload_cache], idx)
+    end
+    
+    if cached
+        println("[VERIFY]   Cached successfully")
+    else
+        println("[VERIFY]   WARNING: Not cached!")
+    end
+    println()
+end
+
+println("-"^60)
+println("DIRECT PRELOAD RESULTS")
+println("-"^60)
+println("[RESULT] Total time for $(length(direct_test_indices)) images: $(round(direct_total_time, digits=3)) seconds")
+println("[RESULT] Average per image: $(round(direct_total_time / length(direct_test_indices) * 1000, digits=1)) ms")
+println()
+
+direct_avg_time_ms = (direct_total_time / length(direct_test_indices)) * 1000
+
+if direct_avg_time_ms < 100
+    println("[ASSESSMENT] EXCELLENT: Very fast preload")
+elseif direct_avg_time_ms < 500
+    println("[ASSESSMENT] GOOD: Acceptable performance")
+elseif direct_avg_time_ms < 2000
+    println("[ASSESSMENT] FAIR: Room for improvement")
+else
+    println("[ASSESSMENT] SLOW: May need optimization")
+end
+println()
+
+println("Multi-threading benefit:")
+println("  - Background thread prevents UI blocking")
+println("  - Main thread stays responsive")
+println()
+
+println("="^80)
 println("Manual test: Click navigation buttons and observe timing.")
 println("Close window when done.")
+println("="^80)
 println()

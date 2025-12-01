@@ -35,6 +35,13 @@ catch
     Dict{String, IOStream}()
 end
 
+# Lock for thread-safe access to _MMAP_FILE_HANDLES
+const _MMAP_LOCK = try
+    _MMAP_LOCK
+catch
+    ReentrantLock()
+end
+
 # ============================================================================
 # File-Backed Memory Mapping
 # ============================================================================
@@ -92,15 +99,18 @@ end
 
 Load image data using file-backed memory mapping.
 This maps the file directly into virtual memory without loading into RAM.
+Thread-safe: uses lock to protect _MMAP_FILE_HANDLES dictionary.
 """
 function load_image_mmap(file_path::String, dims::Tuple, element_type::Type)
-    # Keep file handle open to maintain mmap validity
-    if !haskey(_MMAP_FILE_HANDLES, file_path)
-        _MMAP_FILE_HANDLES[file_path] = open(file_path, "r")
+    lock(_MMAP_LOCK) do
+        # Keep file handle open to maintain mmap validity
+        if !haskey(_MMAP_FILE_HANDLES, file_path)
+            _MMAP_FILE_HANDLES[file_path] = open(file_path, "r")
+        end
+        io = _MMAP_FILE_HANDLES[file_path]
+        seekstart(io)
+        return Mmap.mmap(io, Array{element_type, length(dims)}, dims)
     end
-    io = _MMAP_FILE_HANDLES[file_path]
-    seekstart(io)
-    return Mmap.mmap(io, Array{element_type, length(dims)}, dims)
 end
 
 """
@@ -180,7 +190,7 @@ end
 # ============================================================================
 
 """
-    load_original_sets(length::Int=306, regenerate::Bool=false; resize_ratio=1) -> Vector{MmapImageSet}
+    load_original_sets(length::Int=306, regenerate::Bool=false; resize_ratio=1, dataset_folder="original") -> Vector{MmapImageSet}
 
 Load original wound image dataset from disk or generate from source.
 
@@ -188,19 +198,20 @@ Load original wound image dataset from disk or generate from source.
 - `length::Int`: Number of images to load (default: 306)
 - `regenerate::Bool`: If true, regenerate from source images; if false, load from disk (default: false)
 - `resize_ratio`: Ratio for image resizing (default: 1 = no resize, 1//4 = quarter size)
+- `dataset_folder`: Folder name within base_path (default: "original", can be "original_quarter_res" etc.)
 
 # Returns
 - `Vector{MmapImageSet}`: Vector of memory-mapped image set wrappers
 
 # File Structure (binary-only with JLD2 metadata)
-- Binary input data: `base_path/original/{index}_input.bin`
-- Binary output data: `base_path/original/{index}_output.bin`
-- JLD2 metadata: `base_path/original/{index}_meta.jld2` (dims, elem_types, index only)
+- Binary input data: `base_path/{dataset_folder}/{index}_input.bin`
+- Binary output data: `base_path/{dataset_folder}/{index}_output.bin`
+- JLD2 metadata: `base_path/{dataset_folder}/{index}_meta.jld2` (dims, elem_types, index only)
 """
-function load_original_sets(_length::Int=306, regenerate_images::Bool=false; resize_ratio=1)
+function load_original_sets(_length::Int=306, regenerate_images::Bool=false; resize_ratio=1, dataset_folder="original_quarter_res")
     temp_sets = Vector{MmapImageSet}()
     _index_array = collect(1:_length)  # Sequential order for predictable UI mapping
-    original_dir = joinpath(base_path, "original")
+    original_dir = joinpath(base_path, dataset_folder)
     
     if regenerate_images
         println("Generating original sets from source images (resize_ratio=$(resize_ratio))...")

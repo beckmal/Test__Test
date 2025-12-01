@@ -7,7 +7,11 @@
 # Test Categories:
 #   1. Unit Tests: Database functions, validation functions
 #   2. Integration Tests: Figure creation, widget interaction
-#   3. Interactive Tests: Full UI workflow simulation (optional)
+#   3. Static Analysis: Code structure verification (cache structure)
+#   4. Interactive Tests: Full UI workflow simulation (optional)
+#
+# Consolidated from:
+#   - test_cache_structure.jl
 
 println("=" ^ 80)
 println("Load_Sets__CompareUI__test.jl - Comprehensive Test Suite")
@@ -440,6 +444,62 @@ run_test("get_image_by_index returns valid image") do
     
     @assert img !== nothing "Image should not be nothing"
     @assert size(img, 1) > 0 && size(img, 2) > 0 "Image should have positive dimensions"
+end
+
+# ============================================================================
+# STATIC ANALYSIS: CODE STRUCTURE VERIFICATION
+# ============================================================================
+
+println("\n" * "=" ^ 80)
+println("STATIC ANALYSIS: Cache Structure Verification")
+println("=" ^ 80)
+println()
+println("(from test_cache_structure.jl)")
+println()
+
+# Read CompareUI source code
+compare_ui_path = joinpath(@__DIR__, "Load_Sets__CompareUI.jl")
+code = read(compare_ui_path, String)
+
+# Test: Preload returns only raw data (no bbox/HSV computation)
+run_test("Preload comment indicates raw data only (no bbox/HSV)") do
+    @assert occursin("# (bbox/HSV will be computed on-demand when UI displays them)", code) "Preload comment should indicate on-demand bbox/HSV"
+end
+
+# Test: Cache data structure does not include bboxes/hsv_data
+run_test("Cache data structure excludes bboxes/hsv_data") do
+    # Find the data tuple in preload section
+    data_section = match(r"data = \(\s*image_index.*?height.*?\)"s, code)
+    if isnothing(data_section)
+        error("Could not find data tuple in preload section")
+    end
+    cached_struct = data_section.match
+    @assert !occursin("bboxes", cached_struct) "Cache should NOT include bboxes"
+    @assert !occursin("hsv_data", cached_struct) "Cache should NOT include hsv_data"
+end
+
+# Test: Bboxes computed on-demand in UI
+run_test("Bboxes computed on-demand in UI") do
+    @assert occursin("# Layer 3: Draw bounding boxes (computed on-demand from cached raw data)", code) "Comment for on-demand bbox computation should exist"
+end
+
+# Test: HSV computed on-demand in UI
+run_test("HSV computed on-demand in UI") do
+    @assert occursin("# Row 3: HSV mini histograms (computed on-demand from cached raw data)", code) "Comment for on-demand HSV computation should exist"
+end
+
+# Test: extract_class_bboxes called from cached img_data
+run_test("extract_class_bboxes called from cached data") do
+    @assert occursin("extract_class_bboxes(img_data.output_raw", code) "Should call extract_class_bboxes from cached img_data"
+end
+
+# Read InteractiveUI source code
+interactive_ui_path = joinpath(@__DIR__, "Load_Sets__InteractiveUI.jl")
+code_interactive = read(interactive_ui_path, String)
+
+# Test: InteractiveUI cache type updated (no bboxes)
+run_test("InteractiveUI cache excludes bboxes") do
+    @assert occursin("# NOTE: bboxes computed on-demand", code_interactive) "InteractiveUI should have on-demand bboxes comment"
 end
 
 # ============================================================================
