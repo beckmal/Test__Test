@@ -537,8 +537,11 @@ function create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
             continue
         end
         
-        # Create compact title with class name and stats on one line
-        local title_text = "$class_name n=$(class_data.count) H=$(round(Int, class_data.median_h))° S=$(round(Int, class_data.median_s))% V=$(round(Int, class_data.median_v))%"
+        # Create compact title with class name and stats on one line (normalized 0-1)
+        local h_norm = round(class_data.median_h / 360.0, digits=2)
+        local s_norm = round(class_data.median_s / 100.0, digits=2)
+        local v_norm = round(class_data.median_v / 100.0, digits=2)
+        local title_text = "$class_name n=$(class_data.count) H=$(h_norm) S=$(s_norm) V=$(v_norm)"
         
         local ax = Bas3GLMakie.GLMakie.Axis(
             hsv_grid[row_idx, 1],
@@ -555,27 +558,200 @@ function create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
         Bas3GLMakie.GLMakie.hideydecorations!(ax)
         Bas3GLMakie.GLMakie.hidexdecorations!(ax)
         
-        # Plot H, S, V histograms with transparency
+        # Plot H, S, V histograms with transparency (all normalized to 0-1)
         if length(class_data.h_values) > 0
-            # Hue (0-360) - normalize to percentage for consistent scale
-            local h_normalized = class_data.h_values ./ 3.6
+            # Hue (0-360) - normalize to 0-1
+            local h_normalized = class_data.h_values ./ 360.0
             Bas3GLMakie.GLMakie.hist!(ax, h_normalized, bins=12, color=(:orange, 0.5), normalization=:pdf, direction=:x)
             
-            # Saturation (0-100)
-            Bas3GLMakie.GLMakie.hist!(ax, class_data.s_values, bins=12, color=(:magenta, 0.4), normalization=:pdf, direction=:x)
+            # Saturation (0-100) - normalize to 0-1
+            local s_normalized = class_data.s_values ./ 100.0
+            Bas3GLMakie.GLMakie.hist!(ax, s_normalized, bins=12, color=(:magenta, 0.4), normalization=:pdf, direction=:x)
             
-            # Value (0-100)
-            Bas3GLMakie.GLMakie.hist!(ax, class_data.v_values, bins=12, color=(:gray, 0.4), normalization=:pdf, direction=:x)
+            # Value (0-100) - normalize to 0-1
+            local v_normalized = class_data.v_values ./ 100.0
+            Bas3GLMakie.GLMakie.hist!(ax, v_normalized, bins=12, color=(:gray, 0.4), normalization=:pdf, direction=:x)
         end
         
-        # Set axis limits (y-axis for values since rotated 90°)
-        Bas3GLMakie.GLMakie.ylims!(ax, 0, 100)
+        # Set axis limits (y-axis for values since rotated 90°, normalized 0-1)
+        Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
     end
     
     # Set tight row spacing for vertical stack
     Bas3GLMakie.GLMakie.rowgap!(hsv_grid, 2)
     
     return hsv_grid
+end
+
+# ============================================================================
+# H/S TIMELINE PLOT (Narrow left-column axis showing H/S medians over time)
+# ============================================================================
+
+"""
+    create_hs_timeline!(timeline_grid, entries, hsv_data_list, classes)
+
+Create a timeline plot showing H and S median values over time for each class.
+Optimized for narrow left-column layout (280px width) with legend below axis.
+
+# Arguments
+- `timeline_grid`: Parent GridLayout for the timeline
+- `entries`: Vector of NamedTuples with :date field (YYYY-MM-DD format)
+- `hsv_data_list`: Vector of Dict{Symbol, NamedTuple} with HSV data per image
+- `classes`: Tuple of class symbols (e.g., (:scar, :redness, :hematoma, :necrosis, :background))
+
+# Plot Design
+- X-axis: Date (parsed from entries) - abbreviated format "dd.mm"
+- Y-axis: Normalized value (0-1)
+  - H (Hue): normalized from 0-360° to 0-1
+  - S (Saturation): normalized from 0-100% to 0-1
+- Lines: Solid + markers for H, dashed + markers for S
+- Colors: Match BBOX_COLORS per class
+- Legend: Below axis in 2-column layout
+
+# Returns
+- The created Axis object
+"""
+function create_hs_timeline!(timeline_grid, entries, hsv_data_list, classes)
+    # Skip if no data
+    if isempty(entries) || isempty(hsv_data_list)
+        Bas3GLMakie.GLMakie.Label(
+            timeline_grid[1, 1],
+            "Keine Zeitdaten",
+            fontsize=10,
+            color=:gray,
+            halign=:center
+        )
+        return nothing
+    end
+    
+    # Parse dates and convert to numeric values for plotting
+    local dates = Dates.Date[]
+    local date_values = Float64[]
+    
+    for entry in entries
+        try
+            local parsed_date = Dates.Date(entry.date, "yyyy-mm-dd")
+            push!(dates, parsed_date)
+            push!(date_values, Float64(Dates.value(parsed_date)))
+        catch e
+            @warn "[TIMELINE] Failed to parse date: $(entry.date)"
+            # Use index-based fallback (should not happen per requirements)
+            push!(dates, Dates.Date(2000, 1, 1))
+            push!(date_values, Float64(length(dates)))
+        end
+    end
+    
+    # Create axis (optimized for narrow width)
+    local ax = Bas3GLMakie.GLMakie.Axis(
+        timeline_grid[1, 1],
+        title = "H/S Verlauf",
+        titlesize = 10,
+        xlabel = "",  # Remove xlabel to save space
+        ylabel = "Wert (0-1)",
+        xlabelsize = 8,
+        ylabelsize = 8,
+        xticklabelsize = 6,
+        yticklabelsize = 6,
+        xticklabelrotation = π/4  # Rotate labels 45° to fit
+    )
+    
+    # Set Y limits (normalized 0-1)
+    Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
+    
+    # Custom X-axis tick formatting (abbreviated dates for narrow width)
+    local unique_dates = unique(dates)
+    local tick_positions = [Float64(Dates.value(d)) for d in unique_dates]
+    local tick_labels = [Dates.format(d, "dd.mm") for d in unique_dates]  # Abbreviated
+    ax.xticks = (tick_positions, tick_labels)
+    
+    # Class order for plotting
+    local class_order = [:scar, :redness, :hematoma, :necrosis]
+    
+    # Collect plot elements for legend
+    local legend_elements = []
+    local legend_labels = String[]
+    
+    for class in class_order
+        local base_color = BBOX_COLORS[class][1]
+        local class_name = get(CLASS_NAMES_DE_HSV, class, string(class))
+        
+        # Extract H and S values for this class across all images
+        local h_values = Float64[]
+        local s_values = Float64[]
+        local valid_date_values = Float64[]
+        
+        for (i, hsv_data) in enumerate(hsv_data_list)
+            local class_data = get(hsv_data, class, nothing)
+            if !isnothing(class_data) && class_data.count > 0 && !isnan(class_data.median_h)
+                # Normalize H from 0-360 to 0-1
+                push!(h_values, class_data.median_h / 360.0)
+                # Normalize S from 0-100 to 0-1
+                push!(s_values, class_data.median_s / 100.0)
+                push!(valid_date_values, date_values[i])
+            end
+        end
+        
+        # Skip if no valid data for this class
+        if isempty(h_values)
+            continue
+        end
+        
+        # Sort by date for proper line connection
+        local sort_idx = sortperm(valid_date_values)
+        local sorted_dates = valid_date_values[sort_idx]
+        local sorted_h = h_values[sort_idx]
+        local sorted_s = s_values[sort_idx]
+        
+        # Plot H line (solid + circle markers, smaller for narrow width)
+        local h_line = Bas3GLMakie.GLMakie.scatterlines!(
+            ax, 
+            sorted_dates, 
+            sorted_h;
+            color = base_color,
+            linewidth = 1.5,
+            linestyle = :solid,
+            marker = :circle,
+            markersize = 6
+        )
+        push!(legend_elements, h_line)
+        push!(legend_labels, "$class_name H")
+        
+        # Plot S line (dashed + diamond markers, slightly transparent)
+        local s_line = Bas3GLMakie.GLMakie.scatterlines!(
+            ax,
+            sorted_dates,
+            sorted_s;
+            color = (base_color, 0.7),
+            linewidth = 1.5,
+            linestyle = :dash,
+            marker = :diamond,
+            markersize = 6
+        )
+        push!(legend_elements, s_line)
+        push!(legend_labels, "$class_name S")
+    end
+    
+    # Add legend BELOW axis (2-column layout for compact display)
+    if !isempty(legend_elements)
+        Bas3GLMakie.GLMakie.Legend(
+            timeline_grid[2, 1],  # Below axis
+            legend_elements,
+            legend_labels,
+            labelsize = 6,
+            framevisible = false,
+            padding = (2, 2, 2, 2),
+            rowgap = 1,
+            colgap = 5,
+            nbanks = 2,  # 2-column layout
+            orientation = :horizontal
+        )
+        
+        # Set row sizes: axis takes most space, legend is compact below
+        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, Bas3GLMakie.GLMakie.Relative(0.75))
+        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, Bas3GLMakie.GLMakie.Relative(0.25))
+    end
+    
+    return ax
 end
 
 # ============================================================================
@@ -617,73 +793,100 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     end
     
     # Create figure with dynamic width based on max images
-    fig_width = min(400 * max_images_per_row + 200, 2400)
+    # Add 300px for left control column
+    fig_width = min(350 * max_images_per_row + 300, 2400)
     local fgr = Bas3GLMakie.GLMakie.Figure(size=(fig_width, 800))
     
     # ========================================================================
-    # ROW 1: Title and Patient Selector
+    # TWO-COLUMN MAIN LAYOUT
     # ========================================================================
-    local title_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 1])
+    # Column 1: Controls + H/S Timeline (fixed 280px)
+    # Column 2: Images Grid (expandable)
     
+    local left_column = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 1])
+    local right_column = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 2])
+    
+    # Set column widths
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Fixed(280))
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 2, Bas3GLMakie.GLMakie.Auto())
+    
+    # ========================================================================
+    # LEFT COLUMN: Controls (rows 1-5) + Spacer (row 6) + Timeline (row 7)
+    # ========================================================================
+    
+    # Row 1: Title
     Bas3GLMakie.GLMakie.Label(
-        title_grid[1, 1],
-        "Patientenbilder Vergleich",
-        fontsize=24,
+        left_column[1, 1],
+        "Patientenbilder\nVergleich",
+        fontsize=18,
         font=:bold,
-        halign=:left
+        halign=:center
     )
     
-    # Patient ID selector
+    # Row 2: Patient ID selector (label + menu)
+    local patient_selector_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[2, 1])
     Bas3GLMakie.GLMakie.Label(
-        title_grid[1, 2],
+        patient_selector_grid[1, 1],
         "Patient-ID:",
-        fontsize=14,
+        fontsize=12,
         halign=:right
     )
-    
-    # Menu for patient selection
     local patient_menu = Bas3GLMakie.GLMakie.Menu(
-        title_grid[1, 3],
+        patient_selector_grid[1, 2],
         options = [string(pid) for pid in all_patient_ids],
         default = isempty(all_patient_ids) ? nothing : string(all_patient_ids[1]),
         width = 100
     )
     
-    # Navigation buttons for patient traversal
+    # Row 3: Navigation buttons
+    local nav_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[3, 1])
     local prev_button = Bas3GLMakie.GLMakie.Button(
-        title_grid[1, 4],
+        nav_grid[1, 1],
         label = "← Zurück",
-        fontsize = 12
+        fontsize = 11
     )
-    
     local next_button = Bas3GLMakie.GLMakie.Button(
-        title_grid[1, 5],
+        nav_grid[1, 2],
         label = "Weiter →",
-        fontsize = 12
+        fontsize = 11
     )
     
-    # Refresh button to reload patient list
+    # Row 4: Refresh button
     local refresh_button = Bas3GLMakie.GLMakie.Button(
-        title_grid[1, 6],
+        left_column[4, 1],
         label = "Aktualisieren",
-        fontsize = 12
+        fontsize = 11
     )
     
-    # Status label
+    # Row 5: Status label
     local status_label = Bas3GLMakie.GLMakie.Label(
-        title_grid[1, 7],
+        left_column[5, 1],
         "",
-        fontsize=12,
-        halign=:left,
+        fontsize=10,
+        halign=:center,
         color=:gray
     )
     
-    Bas3GLMakie.GLMakie.rowsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Fixed(60))
+    # Row 6: Spacer (expands to fill space)
+    Bas3GLMakie.GLMakie.Box(left_column[6, 1], color=:transparent)
+    
+    # Row 7: H/S Timeline Plot
+    local timeline_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[7, 1])
+    local timeline_axis = Ref{Any}(nothing)  # Will hold axis reference for clearing
+    
+    # Set left column row sizes
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 1, Bas3GLMakie.GLMakie.Fixed(50))   # Title
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 2, Bas3GLMakie.GLMakie.Fixed(35))   # Patient selector
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 3, Bas3GLMakie.GLMakie.Fixed(35))   # Nav buttons
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Refresh
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Status
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Auto())      # Spacer (flexible)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Fixed(300))  # Timeline
     
     # ========================================================================
-    # ROW 2: Images Container (scrollable grid)
+    # RIGHT COLUMN: Images Container (scrollable grid)
     # ========================================================================
-    local images_grid = Bas3GLMakie.GLMakie.GridLayout(fgr[2, 1])
+    local images_grid = Bas3GLMakie.GLMakie.GridLayout(right_column[1, 1])
     
     # Store references to dynamically created widgets
     local image_axes = Bas3GLMakie.GLMakie.Axis[]
@@ -782,51 +985,44 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 return (success = true, error = nothing)
             end
             
-            # Precompute all image data
-            cached_images = NamedTuple[]
+            # Load .bin files in parallel using multi-threading
+            # Spawn one task per image to load in parallel across CPU cores
+            println("[PRELOAD] Loading $(length(entries)) images using $(Threads.nthreads()) threads")
             
-            for (idx, entry) in enumerate(entries)
-                try
-                    # Get raw images
-                    images = get_images_by_index(entry.image_index)
-                    
-                    # Compute bounding boxes
-                    local bboxes = Dict{Symbol, Vector{Vector{Float64}}}()
+            # Spawn parallel tasks to load each image
+            load_tasks = map(entries) do entry
+                Threads.@spawn begin
                     try
-                        if !isnothing(images.output_raw)
-                            bboxes = extract_class_bboxes(images.output_raw, classes)
-                        end
+                        # Get raw images (loads .bin files into RAM)
+                        images = get_images_by_index(entry.image_index)
+                        
+                        # Return ONLY the raw data - no bbox/HSV computation
+                        # (bbox/HSV will be computed on-demand when UI displays them)
+                        (
+                            success = true,
+                            data = (
+                                image_index = entry.image_index,
+                                input_rotated = images.input,
+                                output_rotated = images.output,
+                                input_raw = images.input_raw,
+                                output_raw = images.output_raw,
+                                height = images.height,
+                            ),
+                            error = nothing
+                        )
                     catch e
-                        @warn "[PRELOAD] Error computing bboxes for image $(entry.image_index): $e"
-                        # Continue with empty bboxes
+                        @warn "[PRELOAD] Error loading image $(entry.image_index): $e"
+                        (success = false, data = nothing, error = e)
                     end
-                    
-                    # Compute HSV data
-                    local hsv_data = Dict{Symbol, NamedTuple}()
-                    try
-                        if !isnothing(images.output_raw) && !isnothing(images.input_raw)
-                            hsv_data = extract_class_hsv_values(images.input_raw, images.output_raw, classes)
-                        end
-                    catch e
-                        @warn "[PRELOAD] Error computing HSV for image $(entry.image_index): $e"
-                        # Continue with empty HSV data
-                    end
-                    
-                    push!(cached_images, (
-                        image_index = entry.image_index,
-                        input_rotated = images.input,
-                        output_rotated = images.output,
-                        input_raw = images.input_raw,
-                        output_raw = images.output_raw,
-                        height = images.height,
-                        bboxes = bboxes,
-                        hsv_data = hsv_data
-                    ))
-                    
-                catch e
-                    @warn "[PRELOAD] Error processing image $(entry.image_index): $e"
-                    # Skip this image and continue with others
-                    continue
+                end
+            end
+            
+            # Wait for all parallel loads to complete and collect results
+            cached_images = NamedTuple[]
+            for task in load_tasks
+                result = fetch(task)
+                if result.success
+                    push!(cached_images, result.data)
                 end
             end
             
@@ -850,8 +1046,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     end
     
     """
-    Trigger async preload for a patient (non-blocking).
-    Uses @async for cooperative multitasking with GLMakie.
+    Trigger multi-threaded preload for a patient (non-blocking).
+    Uses Threads.@spawn for true parallel execution across CPU cores.
     """
     function trigger_preload(patient_id::Int)
         lock(cache_lock) do
@@ -863,13 +1059,13 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 return
             end
             
-            # Start async preload
+            # Start async preload (parallel loading happens inside preload_patient_images)
+            # Use @async for main thread compatibility - parallel .bin loading is inside
             task = @async begin
-                yield()  # Allow UI to continue
                 preload_patient_images(patient_id)
             end
             preload_tasks[patient_id] = task
-            println("[PRELOAD] Triggered preload for patient $patient_id")
+            println("[PRELOAD] Triggered async preload for patient $patient_id (parallel .bin loading inside)")
         end
     end
     
@@ -886,8 +1082,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     end
     
     """
-    Trigger async preload with callback executed when preload completes.
+    Trigger multi-threaded preload with callback executed when preload completes.
     Callback is executed to rebuild UI with loaded data.
+    Uses Threads.@spawn for parallel .bin file loading.
     """
     function trigger_preload_with_callback(callback::Function, patient_id::Int)
         try
@@ -921,42 +1118,38 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 return
             end
             
-            # Start async preload if needed
+            # Start async preload if needed (parallel .bin loading happens inside preload_patient_images)
+            # Use @async for main thread compatibility on Windows - callbacks run on main thread
             if should_start
                 local task = @async begin
                     try
-                        yield()  # Allow UI to continue
                         local result = preload_patient_images(patient_id)
                         
-                        # Execute callback on completion
-                        # Note: GLMakie UI updates should happen on main thread
-                        # We use @async to defer to event loop
-                        @async begin
-                            try
-                                if result.success
-                                    println("[PRELOAD] Preload complete for patient $patient_id, executing callback")
-                                    callback()
-                                else
-                                    # Preload failed - show error in UI
-                                    @warn "[PRELOAD] Preload failed for patient $patient_id: $(result.error)"
-                                    status_label.text = "Fehler beim Laden: $(result.error)"
-                                    status_label.color = :red
-                                    
-                                    # Clear loading message
-                                    clear_images_grid!()
-                                    Bas3GLMakie.GLMakie.Label(
-                                        images_grid[1, 1],
-                                        "Fehler beim Laden von Patient $patient_id\n\n$(result.error)\n\nBitte versuchen Sie einen anderen Patienten.",
-                                        fontsize=16,
-                                        halign=:center,
-                                        color=:red
-                                    )
-                                end
-                            catch e
-                                @warn "[PRELOAD] Error executing callback for patient $patient_id: $e"
-                                status_label.text = "Fehler nach dem Laden: $(typeof(e))"
+                        # Execute callback on completion (already on main thread via @async)
+                        try
+                            if result.success
+                                println("[PRELOAD] Preload complete for patient $patient_id, executing callback")
+                                callback()
+                            else
+                                # Preload failed - show error in UI
+                                @warn "[PRELOAD] Preload failed for patient $patient_id: $(result.error)"
+                                status_label.text = "Fehler beim Laden: $(result.error)"
                                 status_label.color = :red
+                                
+                                # Clear loading message
+                                clear_images_grid!()
+                                Bas3GLMakie.GLMakie.Label(
+                                    images_grid[1, 1],
+                                    "Fehler beim Laden von Patient $patient_id\n\n$(result.error)\n\nBitte versuchen Sie einen anderen Patienten.",
+                                    fontsize=16,
+                                    halign=:center,
+                                    color=:red
+                                )
                             end
+                        catch e
+                            @warn "[PRELOAD] Error executing callback for patient $patient_id: $e"
+                            status_label.text = "Fehler nach dem Laden: $(typeof(e))"
+                            status_label.color = :red
                         end
                     catch e
                         @warn "[PRELOAD] Async task error for patient $patient_id: $e"
@@ -965,11 +1158,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                             delete!(preload_tasks, patient_id)
                         end
                         
-                        # Show error in UI
-                        @async begin
-                            status_label.text = "Fehler beim asynchronen Laden: $(typeof(e))"
-                            status_label.color = :red
-                        end
+                        # Show error in UI (already on main thread)
+                        status_label.text = "Fehler beim asynchronen Laden: $(typeof(e))"
+                        status_label.color = :red
                     end
                 end
                 
@@ -977,7 +1168,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     preload_tasks[patient_id] = task
                 end
                 
-                println("[PRELOAD] Triggered async preload for patient $patient_id with callback")
+                println("[PRELOAD] Triggered async preload for patient $patient_id with callback (parallel .bin loading inside)")
             end
         catch e
             @warn "[PRELOAD] Error in trigger_preload_with_callback for patient $patient_id: $e"
@@ -1019,7 +1210,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     
     # Clear all image widgets - RECURSIVE deletion for nested GridLayouts
     function clear_images_grid!()
-        println("[COMPARE-UI] Clearing images grid ($(length(images_grid.content)) items)...")
+        println("[COMPARE-UI] Clearing images grid ($(length(images_grid.content)) items) and timeline...")
         
         # Helper to recursively delete GridLayout contents
         function delete_gridlayout_contents!(gl)
@@ -1048,6 +1239,10 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         
         # Clear the main images_grid recursively
         delete_gridlayout_contents!(images_grid)
+        
+        # Clear the timeline_grid as well
+        delete_gridlayout_contents!(timeline_grid)
+        timeline_axis[] = nothing
         
         # Clear widget arrays
         empty!(image_axes)
@@ -1175,16 +1370,19 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 local output_obs = Bas3GLMakie.GLMakie.Observable(img_data.output_rotated)
                 Bas3GLMakie.GLMakie.image!(ax, output_obs; alpha=0.5)
                 
-                # Layer 3: Draw bounding boxes (from cache)
-                if !isempty(img_data.bboxes)
-                    draw_bboxes_on_axis!(ax, img_data.bboxes, img_data.height)
-                    println("[COMPARE-UI] Drew cached bboxes for image $(entry.image_index)")
+                # Layer 3: Draw bounding boxes (computed on-demand from cached raw data)
+                if !isnothing(img_data.output_raw)
+                    local bboxes = extract_class_bboxes(img_data.output_raw, classes)
+                    draw_bboxes_on_axis!(ax, bboxes, img_data.height)
+                    println("[COMPARE-UI] Drew on-demand bboxes for image $(entry.image_index)")
                 end
                 
-                # Row 3: HSV mini histograms (from cache)
-                if !isempty(img_data.hsv_data)
-                    push!(hsv_class_data, img_data.hsv_data)
-                    local hsv_grid = create_hsv_mini_histograms!(images_grid[3, col], img_data.hsv_data, classes)
+                # Row 3: HSV mini histograms (computed on-demand from cached raw data)
+                if !isnothing(img_data.output_raw) && !isnothing(img_data.input_raw)
+                    local class_hsv = extract_class_hsv_values(img_data.input_raw, img_data.output_raw, classes)
+                    push!(hsv_class_data, class_hsv)
+                    
+                    local hsv_grid = create_hsv_mini_histograms!(images_grid[3, col], class_hsv, classes)
                     push!(hsv_grids, hsv_grid)
                 else
                     push!(hsv_class_data, Dict())
@@ -1352,6 +1550,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     status_label.color = :red
                 end
             end
+        end
+        
+        # ====================================================================
+        # CREATE H/S TIMELINE PLOT (after all HSV data is collected)
+        # ====================================================================
+        if !isempty(hsv_class_data)
+            println("[COMPARE-UI] Creating H/S timeline with $(length(hsv_class_data)) data points")
+            timeline_axis[] = create_hs_timeline!(timeline_grid, entries[1:num_images], hsv_class_data, classes)
         end
         
         # Show message if more images exist
