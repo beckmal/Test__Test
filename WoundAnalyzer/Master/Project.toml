@@ -18,4 +18,19 @@ Bas3_EnvironmentTools = "ef8c486a-83de-4ef9-b2e3-bb6b307e1ff0"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 
 [sources]
+Bas3 = {path = "../../../Bas3"}
+Bas3GLMakie = {path = "../../../Bas3GLMakie"}
+Bas3GaussianProcess = {path = "../../../Bas3GaussianProcess"}
+Bas3GradientOptimization = {path = "../../../Bas3GradientOptimization"}
+Bas3IGABOptimization = {path = "../../../Bas3IGABOptimization"}
 Bas3ImageSegmentation = {path = "../.."}
+Bas3Lux = {path = "../../../Bas3Lux"}
+Bas3MultivariateStats = {path = "../../../Bas3MultivariateStats"}
+Bas3Observables = {path = "../../../Bas3Observables"}
+Bas3Plots = {path = "../../../Bas3Plots"}
+Bas3QuasiMonteCarlo = {path = "../../../Bas3QuasiMonteCarlo"}
+Bas3Random = {path = "../../../Bas3Random"}
+Bas3SciML_Core = {path = "../../../Bas3SciML_Core"}
+Bas3Surrogates_Core = {path = "../../../Bas3Surrogates_Core"}
+Bas3_Core = {path = "../../../Bas3_Core"}
+Bas3_EnvironmentTools = {path = "../../../Bas3_EnvironmentTools"}

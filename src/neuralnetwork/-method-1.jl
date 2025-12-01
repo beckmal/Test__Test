@@ -387,7 +387,12 @@ function neuralnetwork_training__spawn_training_set_thread(
                 )
                 put!(to_consumer_channel, (to_producer_channels_length, fetch(Task)))
                 =#
-                put!(to_consumer_channel, (to_producer_channels_length, training_sets()))
+                try
+                    put!(to_consumer_channel, (to_producer_channels_length, training_sets()))
+                catch e
+                    @error "Spawned task failed" exception=(e, catch_backtrace())
+                    rethrow()
+                end
             else
                 println("KILL TASK ", to_producer_channels_length)
                 break

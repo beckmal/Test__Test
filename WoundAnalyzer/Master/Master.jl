@@ -51,7 +51,7 @@ function Bas3.convert(
     ::t__convert__Image_Data_Foreground_Background, image_type,
     ::t__convert__Image_Data_Scar_Redness_Hematoma_Necrosis_Background, image
     )
-    println("CALL: convert")
+    @info "CALL: convert"
     scar_image = image[:scar]
     redness_image = image[:redness]
     hematoma_image = image[:hematoma]
@@ -89,7 +89,7 @@ function Bas3.t__convert(
             }
         } where {size_type, channels_type}
     }) where {type}
-    println("CALL: t__convert")
+    @info "CALL: t__convert"
     return t__convert__Image_Data_Foreground_Background()
 end
 =#
@@ -135,6 +135,7 @@ catch
         =#
         
         
+        #=
         "Worker" => (;
             address="Julia_Worker@143.93.52.28",
             shell=:wincmd,
@@ -159,17 +160,14 @@ catch
             )
             #dir="@.",
         ),
+        =#
         
-        
+        # Local worker only (for running on this Linux machine)
         "Worker" => (;
-            #machine=1,
-            environment_path="C:/Users/OsW-x/Julia_Worker/.julia", #TODO: make this optional somehow homedir() ?
             environment_variables=(
                 "JULIA_NUM_THREADS" => "24",
-                #"JULIA_CUDA_HARD_MEMORY_LIMIT" => "none",
-                "JULIA_CUDA_SOFT_MEMORY_LIMIT" => "40%"
+                "JULIA_CUDA_SOFT_MEMORY_LIMIT" => "80%"
             )
-            #dir="=@."
         ),
         
         ; update=true #TODO: also resolve the environments
@@ -221,20 +219,18 @@ catch
         
 
         for index in 1:_length
-            @time begin
-                input, output = JLD2.load(joinpath("C:/Users/OsW-x/Desktop/Datasets", "augmented/$(index).jld2"), "set")
-                output = convert(output_type, output)
-                @everywhere begin
-                    push!(temp_sets, (memory_map($(input)), memory_map($(output))))
-                end
+            input, output = JLD2.load(joinpath("/mnt/c/Users/OsW-x/Desktop/Datasets", "augmented/$(index).jld2"), "set")
+            output = convert(output_type, output)
+            @everywhere begin
+                push!(temp_sets, (memory_map($(input)), memory_map($(output))))
             end
         end
         _index_array = shuffle(1:_length)
         @everywhere begin
             const training_sets = [temp_sets...]
             const validation_sets = [temp_sets[$(_index_array)]...]
-            println(typeof(training_sets), " ", size(training_sets))
-            println(typeof(validation_sets), " ", size(validation_sets))
+            @info "training_sets" typeof(training_sets) size(training_sets)
+            @info "validation_sets" typeof(validation_sets) size(validation_sets)
         end
     end
     true
@@ -242,7 +238,7 @@ end
 
 @everywhere begin
 
-    const _size = (128, 64)
+    const _size = (100, 50)
     @__(function neuralnetwork_definition(;
         #input,
         #output,
@@ -363,7 +359,7 @@ end
             output=output,
         )
             =#
-        println(show_layer(chain))
+        @info "chain" show_layer(chain)
         return structural_simplify(chain)
     end)
     @__(function neuralnetwork_setup(;
@@ -393,7 +389,7 @@ end
             validation_sets,
             keywords...
         )
-        println("CALL: neuralnetwork_validation")
+        @info "CALL: neuralnetwork_validation"
         GC.gc()
         Bas3Lux.CUDA.reclaim()
         model = neuralnetwork_definition(;
@@ -408,7 +404,6 @@ end
         _length = 0
 
         index = 1
-        @time begin
         for (input, output) in validation_sets
             #println(size(data(input)), " ", size(data(output)))
             
@@ -425,7 +420,6 @@ end
             
             index += 1
         end
-        end
         #=
         loss = loss / _length
         println("LOSS: ", loss)
@@ -434,8 +428,8 @@ end
 
         loss_1 = loss_1 / _length
         loss_2 = loss_2 / _length
-        println("LOSS 1: ", loss_1)
-        println("LOSS 2: ", loss_2)
+        @info "LOSS 1: " loss_1
+        @info "LOSS 2: " loss_2
         return loss_1 + loss_2
     end)
 
@@ -642,7 +636,7 @@ optimizer_keywords = Ref{Any}()
                     if isa(error, Bas3ImageSegmentation.Bas3Lux.CUDA.OutOfGPUMemoryError) == false
                         throw(error)  # Propagate unknown errors
                     else
-                        println("Caught OutOfGPUMemoryError")
+                        @warn "Caught OutOfGPUMemoryError"
                     end
                 end
                 
