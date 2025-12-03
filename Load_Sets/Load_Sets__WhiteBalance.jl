@@ -420,8 +420,64 @@ function extract_white_point_from_masked_region(masked_region::AbstractMatrix{<:
     return white_xyz
 end
 
+"""
+    normalize_white_point_luminance(white_xyz::Colors.XYZ) -> Colors.XYZ
+
+Normalize a white point to Y=1.0, preserving chromaticity (x, y coordinates).
+
+This enables **chromaticity-only** white balance correction, where color temperature
+is corrected but overall image brightness is preserved.
+
+# Why This Matters
+Standard illuminant white points (D50, D65, A, etc.) are luminance-normalized (Y=1.0).
+But extracted white points from images often have Y≠1.0 due to:
+- Ruler in shadow (Y < 1.0) → Full Bradford would brighten image
+- Specular reflection on ruler (Y > 1.0) → Full Bradford would darken image
+- Varying exposure across dataset
+
+# Algorithm
+Scales XYZ uniformly so Y becomes 1.0:
+    scale = 1.0 / Y
+    XYZ_normalized = (X * scale, 1.0, Z * scale)
+
+This preserves the chromaticity coordinates:
+    x = X / (X + Y + Z)  → unchanged
+    y = Y / (X + Y + Z)  → unchanged
+
+# Example
+```julia
+# Dim warm white extracted from shadowed ruler
+extracted = Colors.XYZ(0.70, 0.75, 0.50)
+
+# Normalize to Y=1.0 for chromaticity-only correction
+normalized = normalize_white_point_luminance(extracted)
+# => Colors.XYZ(0.933, 1.0, 0.667)
+
+# Now Bradford adaptation only corrects color, not brightness
+corrected = apply_whitebalance_to_image(img, normalized, Colors.WP_D50)
+```
+
+# See Also
+- `extract_white_point_from_masked_region`: Extracts raw white point (may have Y≠1.0)
+- `whitebalance_bradford`: Applies chromatic adaptation
+"""
+function normalize_white_point_luminance(white_xyz::Colors.XYZ)
+    if white_xyz.y <= 0
+        println("[WB_NORMALIZE] ⚠ Y≤0, returning unchanged")
+        return white_xyz
+    end
+    
+    local scale = 1.0 / white_xyz.y
+    local normalized = Colors.XYZ(white_xyz.x * scale, 1.0, white_xyz.z * scale)
+    
+    println("[WB_NORMALIZE] Normalized Y: $(round(white_xyz.y, digits=3)) → 1.0 (scale=$(round(scale, digits=3)))")
+    println("[WB_NORMALIZE] XYZ: ($(round(white_xyz.x, digits=3)), $(round(white_xyz.y, digits=3)), $(round(white_xyz.z, digits=3))) → ($(round(normalized.x, digits=3)), 1.0, $(round(normalized.z, digits=3)))")
+    
+    return normalized
+end
+
 # Export public functions
 export whitebalance_bradford, apply_whitebalance_to_image, apply_whitebalance_with_clamping, clamp_color
-export extract_white_point_from_masked_region, srgb_to_linear
+export extract_white_point_from_masked_region, srgb_to_linear, normalize_white_point_luminance
 
 println("✓ Load_Sets__WhiteBalance loaded (with automatic white extraction)")
