@@ -252,6 +252,7 @@ end)
     validation_sets,
     keywords...
 )
+    @info "[WORKLOAD] Starting neural network workload" validation_sets_length=length(validation_sets)
     println(keywords)
     #=
     (training_sets = Serialization.__deserialized_types__.var"#_training_sets#18"{Serialization.__deserialized_types__.var"#_training_sets#12#19"}(Serialization.__deserialized_types__.var"#_training_sets#12#19"()),
@@ -343,6 +344,7 @@ end)
             keywords...
         )
         
+        @info "[WORKLOAD] Training phase complete, starting validation..."
         error = neuralnetwork_validation(;
             model,
             parameters,
@@ -353,8 +355,10 @@ end)
             keywords...
         )
         if isnan(error) == false
+            @info "[WORKLOAD] ✓ Workload complete!" final_error=round(error; digits=6)
             return error
         end
+        @warn "[WORKLOAD] NaN error detected, retrying training..."
     end
 end)
 function neuralnetwork_training__spawn_training_set_thread(
@@ -623,11 +627,12 @@ function neuralnetwork_training(;
     end
     =#
     limit = Bas3Lux.CUDA.memory_limits()
+    @info "[MEMORY] Starting memory factor optimization" batch_observations_length soft_limit_gb=round(limit.soft/1024^3; digits=2)
     low = 1
     high = 1
     best = 1
     while high <= batch_observations_length
-        println("Trying overload memory_factor = ", high)
+        @info "[MEMORY] Testing overload" memory_factor=high
         flag = false
         GC.gc()
         Bas3Lux.CUDA.reclaim()
@@ -666,10 +671,10 @@ function neuralnetwork_training(;
     end
     low = best
     #high = best
-    println("Start ", low, " ", high)
+    @info "[MEMORY] Binary search phase" low high
     while low <= high
         mid = (low + high) ÷ 2
-        println("Trying memory_factor = ", mid)
+        @info "[MEMORY] Testing" memory_factor=mid
         flag = false
         GC.gc()
         Bas3Lux.CUDA.reclaim()
@@ -717,10 +722,11 @@ function neuralnetwork_training(;
             =#
     accelerator_memory = nothing
     memory_factor = best
-    println("found ", memory_factor)
+    @info "[MEMORY] ✓ Optimization complete" memory_factor gpu_mem_used_gb=round(Bas3Lux.CUDA.memory_stats().live/1024^3; digits=2)
+    flush(stdout); flush(stderr)
     GC.gc()
     Bas3Lux.CUDA.reclaim()
-    println(Bas3Lux.CUDA.pool_status())
+    @info "[MEMORY] After reclaim" gpu_pool_status=Bas3Lux.CUDA.pool_status()
     #println(Bas3Lux.CUDA.pool_status())
     test_optimizer = test_optimizer |> _cpu_device
     test_parameters = test_parameters |> _cpu_device
@@ -755,14 +761,32 @@ function neuralnetwork_training(;
     gpu_semaphore = Base.Semaphore(1)
 
     time_start = time_previous = time()
+    last_log_time = time_start
+    log_interval = 5.0  # Log every 5 seconds
+    batch_count = 0
+    iteration_count = 0
+    last_error = 0.0
+    micro_batch_count = 0
+    set_count = 0
 
     local absolute_performance = 0.0
+    @info "[TRAINING] ═══════════════════════════════════════════════════════════════"
+    @info "[TRAINING] Starting training loop" target_observations=observation_total batch_size=batch_observations_length iterations_per_set=set_observations_iterations memory_factor
+    @info "[TRAINING] ═══════════════════════════════════════════════════════════════"
+    flush(stdout); flush(stderr)
     while true
+        set_count += 1
+        println("[SET] Starting set $set_count with $(length(set[1])) samples")
+        flush(stdout)
 
         macro_dataloader = DataLoader(set, batchsize=batch_observations_length)
 
         for _2 = 1:set_observations_iterations
+            iteration_count += 1
+            println("[ITER] Starting iteration $iteration_count (set $set_count, iter $_2/$(round(Int, set_observations_iterations)))")
+            flush(stdout)
             for (temp_input_model_array, temp_output_model_array) in macro_dataloader
+                batch_count += 1
                 current_set_observations_length = length(temp_input_model_array)
 
                 if current_set_observations_length != previous_set_observations_length
@@ -785,7 +809,10 @@ function neuralnetwork_training(;
                 for _3 in 1:Micro_Iterations
                     observations += current_set_observations_length
                     observation_delta += current_set_observations_length
+                    micro_batch_in_iter = 0
                     for (temp_input_model_array, temp_output_model_array) in Micro_Dataloader
+                        micro_batch_count += 1
+                        micro_batch_in_iter += 1
                         #Bas3Lux.CUDA.@time begin
                         gpu_temp_input_model_array = cat(data.(temp_input_model_array)...; dims=4) |> _gpu_device
                         gpu_temp_output_model_array = cat(data.(temp_output_model_array)...; dims=4) |> _gpu_device
@@ -826,6 +853,13 @@ function neuralnetwork_training(;
                                 optimizer;
                                 keywords...
                             )
+                            last_error = error
+                            
+                            # Log every 10 micro-batches or on first batch
+                            if micro_batch_count == 1 || micro_batch_count % 10 == 0
+                                println("[BATCH] #$micro_batch_count | iter=$iteration_count | obs=$observations | err=$(round(error; digits=4)) | batch_size=$array_size")
+                                flush(stdout)
+                            end
                             
                             callback(;
                                 error,
@@ -849,6 +883,21 @@ function neuralnetwork_training(;
                                 GC.gc()
                                 Bas3Lux.CUDA.reclaim()
                             end
+                            
+                            # Periodic logging
+                            current_time = time()
+                            if current_time - last_log_time > log_interval
+                                elapsed = current_time - time_start
+                                obs_per_sec = observations / elapsed
+                                progress_pct = 100.0 * observations / observation_total
+                                eta_seconds = (observation_total - observations) / max(obs_per_sec, 1.0)
+                                gpu_mem_gb = round(stats.live / 1024^3; digits=2)
+                                progress_bar = repeat("█", round(Int, progress_pct / 5)) * repeat("░", 20 - round(Int, progress_pct / 5))
+                                println("[TRAINING] $(progress_bar) $(round(progress_pct; digits=1))% | obs: $observations/$observation_total | err: $(round(last_error; digits=4)) | $(round(obs_per_sec; digits=0)) obs/s | ETA: $(round(eta_seconds/60; digits=1))min | GPU: $(gpu_mem_gb)GB | perf: $(round(absolute_performance; digits=0))")
+                                flush(stdout)
+                                last_log_time = current_time
+                            end
+                            
                             Base.release(gpu_semaphore)
                             #Bas3Lux.CUDA.unsafe_free!(gpu_temp_input_model_array)
                             #Bas3Lux.CUDA.unsafe_free!(gpu_temp_output_model_array)
@@ -864,9 +913,12 @@ function neuralnetwork_training(;
                         end
                         fetch.(tasks)
                         Base.acquire(gpu_semaphore)
-                        println("time_current: ", time() - time_start)
+                        total_time = time() - time_start
+                        final_obs_per_sec = observations / total_time
+                        @info "[TRAINING] ✓ Training complete!" total_observations=observations total_batches=batch_count total_iterations=iteration_count total_time_min=round(total_time/60; digits=2) final_obs_per_sec=round(final_obs_per_sec; digits=1) final_performance=round(absolute_performance; digits=1)
+                        println("time_current: ", total_time)
                         println("observations: ", observations)
-                        println("observations/time_current: ", observations / (time() - time_start))
+                        println("observations/time_current: ", final_obs_per_sec)
                         return parameters, state, optimizer
                     end
                 end

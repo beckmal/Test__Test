@@ -453,10 +453,13 @@ end
 
 optimizer_keywords = Ref{Any}()
 @__(function main(workers, reporters)
-
+    @info "[MASTER] Starting main function" num_workers=length(workers)
+    
+    @info "[MASTER] Creating Figure..."
     figure = Figure()
+    @info "[MASTER] Displaying Figure..."
     display(figure)
-
+    @info "[MASTER] Figure displayed, setting up plots..."
     
     offset = 5
     for worker in workers
@@ -676,12 +679,13 @@ optimizer_keywords = Ref{Any}()
 
 
     #throw("")
+    @info "[MASTER] Creating optimizer plot..."
     optimizer_plot = c__Plot(
         figure[1:4, 1:4],
         optimizer,
         optimization_problem
     )
-
+    @info "[MASTER] Optimizer plot created, starting solve()..."
 
     update_index = 0
 
@@ -707,6 +711,7 @@ optimizer_keywords = Ref{Any}()
     )
 
 end)
+@info "[MASTER] Calling main() with workers" workers
 main(workers, reporters)
 #"C:\Users\OsW-x\Desktop\Optimierung_1.xlsx"
 #"C:/Users/OsW-x/Desktop/Optimierung_1.xlsx"
