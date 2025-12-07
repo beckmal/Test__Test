@@ -60,6 +60,20 @@ function create_compare_statistics_figure(sets, db_path;
     println("[COHORT-UI] Creating Compare Statistics UI...")
     
     # ========================================================================
+    # PERFORMANCE OPTIMIZATION: Initialize caches
+    # ========================================================================
+    
+    # Build image index map for O(1) lookups (replaces O(n) linear search)
+    if isempty(IMAGE_INDEX_MAP)
+        initialize_image_index!(sets)
+    end
+    
+    # Build patient database cache (avoids repeated file reads)
+    if isempty(PATIENT_DB_CACHE)
+        initialize_patient_db_cache!(db_path)
+    end
+    
+    # ========================================================================
     # INITIALIZE DATA
     # ========================================================================
     
@@ -315,33 +329,41 @@ function create_compare_statistics_figure(sets, db_path;
         # Clear existing content (using same approach as CompareUI)
         function delete_gridlayout_contents!(gl)
             while !isempty(gl.content)
-                local obj = gl.content[1]
+                local content_item = gl.content[1]
+                local obj = content_item.content
+                
+                # If this is a nested GridLayout, recursively clear it first
                 if obj isa Bas3GLMakie.GLMakie.GridLayout
-                    # Recursively delete nested GridLayouts
                     delete_gridlayout_contents!(obj)
                 end
+                
+                # Delete the object from the figure
                 try
                     Bas3GLMakie.GLMakie.delete!(obj)
                 catch e
-                    # If delete! fails, just remove from array
-                    deleteat!(gl.content, 1)
-                end
-            end
-        end
-        
-        # Clear axis and legend from row 1
-        for col in [1, 2]
-            if length(right_panel.content) >= col
-                local content_at_pos = [c for c in right_panel.content if c.span.rows == 1:1 && c.span.cols == col:col]
-                for c in content_at_pos
+                    # Fallback: remove from content array
                     try
-                        Bas3GLMakie.GLMakie.delete!(c)
-                    catch e
-                        # ignore
+                        deleteat!(gl.content, 1)
+                    catch
+                        # Skip if already removed
                     end
                 end
             end
         end
+        
+        # Clear ONLY row 1 of right_panel (axis and legend) - keep patient_grid intact
+        # Filter content items that are in row 1
+        local row1_items = filter(c -> c.span.rows == 1:1, right_panel.content)
+        for content_item in row1_items
+            local obj = content_item.content
+            try
+                Bas3GLMakie.GLMakie.delete!(obj)
+            catch e
+                # Ignore deletion errors
+            end
+        end
+        
+        # Clear patient_grid contents (but keep the GridLayout itself)
         delete_gridlayout_contents!(patient_grid)
         
         # Create new axis (directly in right_panel)
