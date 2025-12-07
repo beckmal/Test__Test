@@ -217,6 +217,76 @@ function get_images_for_patient(db_path::String, patient_id::Int)
 end
 
 """
+    get_patient_image_counts(db_path::String) -> Dict{Int, Int}
+
+Returns a dictionary mapping patient_id => image_count.
+Only includes patients that have at least one image.
+
+# Example
+```julia
+counts = get_patient_image_counts(db_path)
+# => Dict(1 => 3, 2 => 5, 3 => 2)  # Patient 1 has 3 images, etc.
+```
+"""
+function get_patient_image_counts(db_path::String)
+    counts = Dict{Int, Int}()
+    
+    if !isfile(db_path)
+        return counts
+    end
+    
+    try
+        xf = XLSX.readxlsx(db_path)
+        sheet = xf["Metadata"]
+        dims = XLSX.get_dimension(sheet)
+        last_row = dims.stop.row_number
+        
+        for row in 2:last_row
+            patient_id = sheet[row, 4]  # Column D = Patient_ID
+            if !isnothing(patient_id) && patient_id isa Number
+                pid = Int(patient_id)
+                counts[pid] = get(counts, pid, 0) + 1
+            end
+        end
+    catch e
+        @warn "Error reading patient image counts: $e"
+    end
+    
+    return counts
+end
+
+"""
+    filter_patients_by_exact_count(patient_ids::Vector{Int}, 
+                                    image_counts::Dict{Int, Int}, 
+                                    target_count::Int) -> Vector{Int}
+
+Filters patient IDs to only include those with exactly target_count images.
+If target_count ≤ 0, returns all patients (no filter).
+
+# Arguments
+- `patient_ids`: List of all patient IDs to filter
+- `image_counts`: Dictionary mapping patient_id => count (from get_patient_image_counts)
+- `target_count`: Exact number of images required (0 = no filter)
+
+# Example
+```julia
+all_patients = [1, 2, 3, 4]
+counts = Dict(1 => 3, 2 => 1, 3 => 2, 4 => 5)
+filtered = filter_patients_by_exact_count(all_patients, counts, 2)
+# => [3]  # Only patients with exactly 2 images
+```
+"""
+function filter_patients_by_exact_count(patient_ids::Vector{Int}, 
+                                        image_counts::Dict{Int, Int}, 
+                                        target_count::Int)
+    if target_count <= 0
+        return patient_ids  # No filter
+    end
+    
+    return filter(pid -> get(image_counts, pid, 0) == target_count, patient_ids)
+end
+
+"""
     update_entry_compare(db_path::String, row::Int, date::String, info::String)
 
 Updates date and info fields for an entry at given row.
@@ -538,8 +608,8 @@ end
 # HSV HISTOGRAM EXTRACTION FOR CLASS REGIONS
 # ============================================================================
 
-# Import Colors for HSV conversion (available via Bas3ImageSegmentation)
-using Colors: HSV, RGB
+# Import Colors for HSV and LCh conversion (available via Bas3ImageSegmentation)
+using Colors: HSV, RGB, LCHab
 
 # German class names for display
 const CLASS_NAMES_DE_HSV = Dict(
@@ -620,6 +690,93 @@ function extract_class_hsv_values(input_img, output_img, classes)
             median_h = median_h,
             median_s = median_s,
             median_v = median_v,
+            count = n_pixels
+        )
+    end
+    
+    return results
+end
+
+"""
+    extract_class_lch_values(input_img, output_img, classes)
+
+Extract L*C*h (LCHab) values for each class based on segmentation mask.
+L*C*h is a perceptually uniform color space based on L*a*b*.
+
+Returns Dict mapping class symbol to NamedTuple with:
+- l_values, c_values, h_values: Arrays for histogram/analysis
+- median_l, median_c, median_h: Median values
+- count: Number of pixels
+
+Color components:
+- L* (Lightness): 0-100, perceptual lightness
+- C* (Chroma): 0-100+, color intensity/saturation
+- h° (Hue): 0-360°, color angle (0°=red, 90°=yellow, 180°=green, 270°=blue)
+"""
+function extract_class_lch_values(input_img, output_img, classes)
+    local input_data = data(input_img)
+    local output_data = data(output_img)
+    local results = Dict{Symbol, NamedTuple}()
+    
+    for (class_idx, class) in enumerate(classes)
+        if class == :background
+            continue
+        end
+        
+        # Get class mask (pixels belonging to this class)
+        local class_mask = output_data[:, :, class_idx] .> 0.5
+        
+        if !any(class_mask)
+            results[class] = (
+                l_values = Float64[],
+                c_values = Float64[],
+                h_values = Float64[],
+                median_l = NaN,
+                median_c = NaN,
+                median_h = NaN,
+                count = 0
+            )
+            continue
+        end
+        
+        # Count pixels for pre-allocation
+        local pixel_indices = findall(class_mask)
+        local n_pixels = length(pixel_indices)
+        
+        # Pre-allocate arrays
+        local l_values = Vector{Float64}(undef, n_pixels)
+        local c_values = Vector{Float64}(undef, n_pixels)
+        local h_values = Vector{Float64}(undef, n_pixels)
+        
+        # Extract LCh values from input image at masked locations
+        @inbounds for (i, idx) in enumerate(pixel_indices)
+            local r, c = idx[1], idx[2]
+            # Get RGB values from input data array (row, col, channel)
+            local red = input_data[r, c, 1]
+            local green = input_data[r, c, 2]
+            local blue = input_data[r, c, 3]
+            local rgb_pixel = RGB(red, green, blue)
+            
+            # Convert RGB → LCHab using Colors.jl
+            local lch_pixel = LCHab(rgb_pixel)
+            
+            l_values[i] = lch_pixel.l   # 0-100
+            c_values[i] = lch_pixel.c   # 0-100+ (unbounded, typically < 150)
+            h_values[i] = lch_pixel.h   # 0-360°
+        end
+        
+        # Compute medians
+        local median_l = n_pixels > 0 ? median(l_values) : NaN
+        local median_c = n_pixels > 0 ? median(c_values) : NaN
+        local median_h = n_pixels > 0 ? median(h_values) : NaN
+        
+        results[class] = (
+            l_values = l_values,
+            c_values = c_values,
+            h_values = h_values,
+            median_l = median_l,
+            median_c = median_c,
+            median_h = median_h,
             count = n_pixels
         )
     end
@@ -874,6 +1031,186 @@ function create_hs_timeline!(timeline_grid, entries, hsv_data_list, classes)
     return ax
 end
 
+"""
+    create_lch_timeline!(timeline_grid, entries, lch_data_list, classes)
+
+Create L*C*h timeline plot showing color evolution over time.
+
+L*C*h is a perceptually uniform color space based on L*a*b*.
+- L* (Lightness): 0-100, whether wound becomes paler
+- C* (Chroma): 0-100+, intensity of color
+- h° (Hue): 0-360°, actual color tone
+
+# Arguments
+- `timeline_grid`: GridLayout to place the plot
+- `entries`: Vector of entry dictionaries with date field
+- `lch_data_list`: Vector of Dict{Symbol, NamedTuple} with LCh data per image
+- `classes`: Vector of class symbols
+
+# Returns
+- The created Axis object
+"""
+function create_lch_timeline!(timeline_grid, entries, lch_data_list, classes)
+    # Skip if no data
+    if isempty(entries) || isempty(lch_data_list)
+        Bas3GLMakie.GLMakie.Label(
+            timeline_grid[1, 1],
+            "Keine L*C*h-Zeitdaten",
+            fontsize=10,
+            color=:gray,
+            halign=:center
+        )
+        return nothing
+    end
+    
+    # Parse dates and convert to numeric values for plotting
+    local dates = Dates.Date[]
+    local date_values = Float64[]
+    
+    for entry in entries
+        try
+            local parsed_date = Dates.Date(entry.date, "yyyy-mm-dd")
+            push!(dates, parsed_date)
+            push!(date_values, Float64(Dates.value(parsed_date)))
+        catch e
+            @warn "[LCH-TIMELINE] Failed to parse date: $(entry.date)"
+            # Use index-based fallback (should not happen per requirements)
+            push!(dates, Dates.Date(2000, 1, 1))
+            push!(date_values, Float64(length(dates)))
+        end
+    end
+    
+    # Create axis (optimized for narrow width)
+    local ax = Bas3GLMakie.GLMakie.Axis(
+        timeline_grid[1, 1],
+        title = "L*C*h Verlauf",
+        titlesize = 10,
+        xlabel = "",  # Remove xlabel to save space
+        ylabel = "Wert (norm. 0-1)",
+        xlabelsize = 8,
+        ylabelsize = 8,
+        xticklabelsize = 6,
+        yticklabelsize = 6,
+        xticklabelrotation = π/4  # Rotate labels 45° to fit
+    )
+    
+    # Set Y limits (normalized 0-1)
+    Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
+    
+    # Custom X-axis tick formatting (abbreviated dates for narrow width)
+    local unique_dates = unique(dates)
+    local tick_positions = [Float64(Dates.value(d)) for d in unique_dates]
+    local tick_labels = [Dates.format(d, "dd.mm") for d in unique_dates]  # Abbreviated
+    ax.xticks = (tick_positions, tick_labels)
+    
+    # Class order for plotting
+    local class_order = [:scar, :redness, :hematoma, :necrosis]
+    
+    # Collect plot elements for legend
+    local legend_elements = []
+    local legend_labels = String[]
+    
+    for class in class_order
+        local base_color = BBOX_COLORS[class][1]
+        local class_name = get(CLASS_NAMES_DE_HSV, class, string(class))
+        
+        # Extract L, C, h values for this class across all images
+        local l_values = Float64[]
+        local c_values = Float64[]
+        local h_values = Float64[]
+        local valid_date_values = Float64[]
+        
+        for (i, lch_data) in enumerate(lch_data_list)
+            local class_data = get(lch_data, class, nothing)
+            if !isnothing(class_data) && class_data.count > 0 && !isnan(class_data.median_l)
+                # Normalize L from 0-100 to 0-1
+                push!(l_values, class_data.median_l / 100.0)
+                # Normalize C from 0-150 to 0-1 (assume max chroma ~150)
+                push!(c_values, class_data.median_c / 150.0)
+                # Normalize h from 0-360 to 0-1
+                push!(h_values, class_data.median_h / 360.0)
+                push!(valid_date_values, date_values[i])
+            end
+        end
+        
+        # Skip if no valid data for this class
+        if isempty(l_values)
+            continue
+        end
+        
+        # Sort by date for proper line connection
+        local sort_idx = sortperm(valid_date_values)
+        local sorted_dates = valid_date_values[sort_idx]
+        local sorted_l = l_values[sort_idx]
+        local sorted_c = c_values[sort_idx]
+        local sorted_h = h_values[sort_idx]
+        
+        # Plot L* line (solid + circle markers)
+        local l_line = Bas3GLMakie.GLMakie.scatterlines!(
+            ax, 
+            sorted_dates, 
+            sorted_l;
+            color = base_color,
+            linewidth = 1.5,
+            linestyle = :solid,
+            marker = :circle,
+            markersize = 6
+        )
+        push!(legend_elements, l_line)
+        push!(legend_labels, "$class_name L*")
+        
+        # Plot C* line (dashed + diamond markers, slightly transparent)
+        local c_line = Bas3GLMakie.GLMakie.scatterlines!(
+            ax,
+            sorted_dates,
+            sorted_c;
+            color = (base_color, 0.7),
+            linewidth = 1.5,
+            linestyle = :dash,
+            marker = :diamond,
+            markersize = 6
+        )
+        push!(legend_elements, c_line)
+        push!(legend_labels, "$class_name C*")
+        
+        # Plot h° line (dotted + square markers, more transparent)
+        local h_line = Bas3GLMakie.GLMakie.scatterlines!(
+            ax,
+            sorted_dates,
+            sorted_h;
+            color = (base_color, 0.5),
+            linewidth = 1.5,
+            linestyle = :dot,
+            marker = :rect,
+            markersize = 5
+        )
+        push!(legend_elements, h_line)
+        push!(legend_labels, "$class_name h°")
+    end
+    
+    # Add legend BELOW axis (2-column layout for compact display)
+    if !isempty(legend_elements)
+        Bas3GLMakie.GLMakie.Legend(
+            timeline_grid[2, 1],  # Below axis
+            legend_elements,
+            legend_labels,
+            labelsize = 6,
+            framevisible = false,
+            padding = (2, 2, 2, 2),
+            rowgap = 1,
+            colgap = 5,
+            nbanks = 2,  # 2-column layout
+            orientation = :horizontal
+        )
+        
+        # Set row sizes: axis takes most space, legend is compact below
+        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, Bas3GLMakie.GLMakie.Relative(0.75))
+        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, Bas3GLMakie.GLMakie.Relative(0.25))
+    end
+    
+    return ax
+end
+
 # ============================================================================
 # COMPARE UI FIGURE CREATION
 # ============================================================================
@@ -912,6 +1249,20 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         all_patient_ids = [0]  # Placeholder
     end
     
+    # ========================================================================
+    # FILTER STATE OBSERVABLES
+    # ========================================================================
+    # Cache patient image counts (computed once, updated on refresh)
+    local patient_image_counts = Bas3GLMakie.GLMakie.Observable(
+        get_patient_image_counts(db_path)
+    )
+    
+    # Current filter setting (0 = no filter, 1+ = exact image count)
+    local exact_image_filter = Bas3GLMakie.GLMakie.Observable(0)
+    
+    # Filtered patient IDs (reactive to filter changes)
+    local filtered_patient_ids = Bas3GLMakie.GLMakie.Observable(all_patient_ids)
+    
     # Create figure with dynamic width based on max images
     # Add 300px for left control column
     fig_width = min(350 * max_images_per_row + 300, 2400)
@@ -943,18 +1294,34 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         halign=:center
     )
     
-    # Row 2: Patient ID selector (label + menu)
-    local patient_selector_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[2, 1])
+    # Row 2: Patient ID selector and filter (label + menus)
+    local selector_filter_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[2, 1])
+    
+    # Row 2.1: Patient ID selector
     Bas3GLMakie.GLMakie.Label(
-        patient_selector_grid[1, 1],
+        selector_filter_grid[1, 1],
         "Patient-ID:",
         fontsize=12,
         halign=:right
     )
     local patient_menu = Bas3GLMakie.GLMakie.Menu(
-        patient_selector_grid[1, 2],
+        selector_filter_grid[1, 2],
         options = [string(pid) for pid in all_patient_ids],
         default = isempty(all_patient_ids) ? nothing : string(all_patient_ids[1]),
+        width = 100
+    )
+    
+    # Row 2.2: Image count filter
+    Bas3GLMakie.GLMakie.Label(
+        selector_filter_grid[2, 1],
+        "Bilderanzahl:",
+        fontsize=12,
+        halign=:right
+    )
+    local filter_menu = Bas3GLMakie.GLMakie.Menu(
+        selector_filter_grid[2, 2],
+        options = ["Alle", "1 Bild", "2 Bilder", "3 Bilder", "4 Bilder", "5 Bilder"],
+        default = "Alle",
         width = 100
     )
     
@@ -1001,15 +1368,20 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local timeline_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[8, 1])
     local timeline_axis = Ref{Any}(nothing)  # Will hold axis reference for clearing
     
+    # Row 9: L*C*h Timeline Plot (NEW)
+    local timeline_grid_lch = Bas3GLMakie.GLMakie.GridLayout(left_column[9, 1])
+    local timeline_axis_lch = Ref{Any}(nothing)  # Will hold LCh axis reference for clearing
+    
     # Set left column row sizes
     Bas3GLMakie.GLMakie.rowsize!(left_column, 1, Bas3GLMakie.GLMakie.Fixed(50))   # Title
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 2, Bas3GLMakie.GLMakie.Fixed(35))   # Patient selector
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 2, Bas3GLMakie.GLMakie.Fixed(70))   # Patient selector + filter (2 rows)
     Bas3GLMakie.GLMakie.rowsize!(left_column, 3, Bas3GLMakie.GLMakie.Fixed(35))   # Nav buttons
     Bas3GLMakie.GLMakie.rowsize!(left_column, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Refresh
     Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Fixed(35))   # Clear polygons
     Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Status
     Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Auto())      # Spacer (flexible)
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Fixed(300))  # Timeline
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Fixed(280))  # H/S Timeline
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 9, Bas3GLMakie.GLMakie.Fixed(280))  # L*C*h Timeline (NEW)
     
     # ========================================================================
     # RIGHT COLUMN: Images Container (scrollable grid)
@@ -1026,6 +1398,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local image_observables = []
     local hsv_grids = []        # NEW: HSV histogram 2x2 grids
     local hsv_class_data = []   # NEW: HSV data per image
+    local lch_class_data = []   # NEW: LCh data per image
     
     # POLYGON SELECTION: Per-image polygon state arrays
     local polygon_vertices_per_image = []     # Vector of Observable{Vector{Point2f}}
@@ -1375,9 +1748,13 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         # Clear the main images_grid recursively
         delete_gridlayout_contents!(images_grid)
         
-        # Clear the timeline_grid as well
+        # Clear the timeline_grid as well (HSV)
         delete_gridlayout_contents!(timeline_grid)
         timeline_axis[] = nothing
+        
+        # Clear the LCh timeline_grid as well (NEW)
+        delete_gridlayout_contents!(timeline_grid_lch)
+        timeline_axis_lch[] = nothing
         
         # Clear widget arrays
         empty!(image_axes)
@@ -1389,6 +1766,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         empty!(image_observables)
         empty!(hsv_grids)       # NEW
         empty!(hsv_class_data)  # NEW
+        empty!(lch_class_data)  # NEW: Clear LCh data to prevent accumulation
         
         # Clear polygon state arrays
         empty!(polygon_vertices_per_image)
@@ -1548,17 +1926,19 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 println("[POLYGON] Initialized polygon state for column $col")
                 
-                # Row 3: HSV mini histograms (computed on-demand from cached raw data)
+                # Row 3: HSV mini histograms (REMOVED - not needed in CompareUI)
+                # Histograms removed to simplify UI layout
+                # But we still need HSV and LCh data for the timeline plots!
                 if !isnothing(img_data.output_raw) && !isnothing(img_data.input_raw)
                     local class_hsv = extract_class_hsv_values(img_data.input_raw, img_data.output_raw, classes)
+                    local class_lch = extract_class_lch_values(img_data.input_raw, img_data.output_raw, classes)
                     push!(hsv_class_data, class_hsv)
-                    
-                    local hsv_grid = create_hsv_mini_histograms!(images_grid[3, col], class_hsv, classes)
-                    push!(hsv_grids, hsv_grid)
+                    push!(lch_class_data, class_lch)
                 else
                     push!(hsv_class_data, Dict())
-                    push!(hsv_grids, nothing)
+                    push!(lch_class_data, Dict())
                 end
+                push!(hsv_grids, nothing)
             else
                 # FALLBACK: Compute fresh (should rarely happen)
                 println("[COMPARE-UI] WARNING: Image $(entry.image_index) not in cache, computing fresh")
@@ -1613,21 +1993,23 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 println("[POLYGON] Initialized polygon state for column $col (fallback)")
                 
-                # Row 3: HSV mini histograms
-                if !isnothing(images.output_raw) && !isnothing(images.input_raw)
-                    local class_hsv = extract_class_hsv_values(images.input_raw, images.output_raw, classes)
+                # Row 3: HSV mini histograms (REMOVED - not needed in CompareUI)
+                # Histograms removed to simplify UI layout
+                # But we still need HSV and LCh data for the timeline plots!
+                if !isnothing(output_obs[]) && !isnothing(img_obs[])
+                    local class_hsv = extract_class_hsv_values(img_obs[], output_obs[], classes)
+                    local class_lch = extract_class_lch_values(img_obs[], output_obs[], classes)
                     push!(hsv_class_data, class_hsv)
-                    
-                    local hsv_grid = create_hsv_mini_histograms!(images_grid[3, col], class_hsv, classes)
-                    push!(hsv_grids, hsv_grid)
+                    push!(lch_class_data, class_lch)
                 else
                     push!(hsv_class_data, Dict())
-                    push!(hsv_grids, nothing)
+                    push!(lch_class_data, Dict())
                 end
+                push!(hsv_grids, nothing)
             end
             
-            # Row 3.5: Polygon control buttons (Start/Close/Clear)
-            local polygon_control_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
+            # Row 3: Polygon control buttons (Start/Close/Clear)
+            local polygon_control_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
             
             local start_poly_btn = Bas3GLMakie.GLMakie.Button(
                 polygon_control_grid[1, 1],
@@ -1683,8 +2065,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 polygon_complete_per_image[col_idx][] = false
             end
             
-            # Row 5: Date label + textbox
-            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
+            # Row 4: Date label + textbox
+            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
             Bas3GLMakie.GLMakie.Label(
                 date_grid[1, 1],
                 "Datum:",
@@ -1699,8 +2081,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(date_textboxes, date_tb)
             
-            # Row 6: Info label + textbox
-            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[6, col])
+            # Row 5: Info label + textbox
+            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
             Bas3GLMakie.GLMakie.Label(
                 info_grid[1, 1],
                 "Info:",
@@ -1715,8 +2097,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(info_textboxes, info_tb)
             
-            # Row 7: Patient-ID label + textbox (for reassignment)
-            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[7, col])
+            # Row 6: Patient-ID label + textbox (for reassignment)
+            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[6, col])
             Bas3GLMakie.GLMakie.Label(
                 pid_grid[1, 1],
                 "Patient:",
@@ -1731,9 +2113,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(patient_id_textboxes, pid_tb)
             
-            # Row 8: Save button
+            # Row 7: Save button
             local save_btn = Bas3GLMakie.GLMakie.Button(
-                images_grid[8, col],
+                images_grid[7, col],
                 label="Speichern",
                 fontsize=11
             )
@@ -1818,6 +2200,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             timeline_axis[] = create_hs_timeline!(timeline_grid, entries[1:num_images], hsv_class_data, classes)
         end
         
+        # ====================================================================
+        # CREATE L*C*h TIMELINE PLOT (after all LCh data is collected)
+        # ====================================================================
+        if !isempty(lch_class_data)
+            println("[COMPARE-UI] Creating L*C*h timeline with $(length(lch_class_data)) data points")
+            timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch, entries[1:num_images], lch_class_data, classes)
+        end
+        
         # Show message if more images exist
         if length(entries) > max_images_per_row
             Bas3GLMakie.GLMakie.Label(
@@ -1836,13 +2226,12 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         
         # Set row sizes
         Bas3GLMakie.GLMakie.rowsize!(images_grid, 1, Bas3GLMakie.GLMakie.Fixed(30))   # Label
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(300))  # Image (reduced for HSV space)
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(200))  # HSV histograms (4 stacked)
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Polygon controls
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Date
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Info
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 8, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(400))  # Image (increased - no HSV)
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(35))   # Polygon controls
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(40))   # Date
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Info
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
         
             # Log timing
             local build_elapsed = round((time() - build_start_time) * 1000, digits=1)
@@ -1876,6 +2265,58 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     # EVENT CALLBACKS
     # ========================================================================
     
+    # Filter menu callback
+    Bas3GLMakie.GLMakie.on(filter_menu.selection) do selected
+        if !isnothing(selected)
+            # Map selection to exact image count
+            target_count = if selected == "Alle"
+                0
+            elseif selected == "1 Bild"
+                1
+            elseif selected == "2 Bilder"
+                2
+            elseif selected == "3 Bilder"
+                3
+            elseif selected == "4 Bilder"
+                4
+            elseif selected == "5 Bilder"
+                5
+            else
+                0
+            end
+            
+            exact_image_filter[] = target_count
+            
+            println("[FILTER] Applying filter: exactly $target_count images")
+            
+            # Apply filter
+            counts = patient_image_counts[]
+            all_pids = get_all_patient_ids(db_path)
+            filtered = filter_patients_by_exact_count(all_pids, counts, target_count)
+            
+            filtered_patient_ids[] = filtered
+            
+            # Update patient menu with filtered list
+            if isempty(filtered)
+                filter_text = target_count == 1 ? "exakt 1 Bild" : "exakt $target_count Bildern"
+                status_label.text = "Keine Patienten mit $filter_text"
+                status_label.color = :orange
+                patient_menu.options = []
+            else
+                patient_menu.options = [string(pid) for pid in filtered]
+                
+                # Select first patient in filtered list
+                patient_menu.i_selected[] = 1
+                current_patient_id[] = filtered[1]
+                build_patient_images!(filtered[1])
+                
+                filter_text = target_count == 0 ? "alle" : (target_count == 1 ? "exakt 1 Bild" : "exakt $target_count Bilder")
+                status_label.text = "$(length(filtered)) Patienten ($filter_text)"
+                status_label.color = :green
+            end
+        end
+    end
+    
     # Patient menu selection callback
     Bas3GLMakie.GLMakie.on(patient_menu.selection) do selected
         if !isnothing(selected)
@@ -1901,19 +2342,39 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             return
         end
         
-        # Update menu options
-        patient_menu.options = [string(pid) for pid in new_patient_ids]
+        # Recompute image counts
+        patient_image_counts[] = get_patient_image_counts(db_path)
         
-        # Rebuild current patient view
-        if current_patient_id[] in new_patient_ids
-            build_patient_images!(current_patient_id[])
-        elseif !isempty(new_patient_ids)
-            current_patient_id[] = new_patient_ids[1]
-            patient_menu.i_selected[] = 1
-            build_patient_images!(new_patient_ids[1])
+        # Apply current filter
+        counts = patient_image_counts[]
+        target_count = exact_image_filter[]
+        filtered = filter_patients_by_exact_count(new_patient_ids, counts, target_count)
+        
+        filtered_patient_ids[] = filtered
+        
+        if isempty(filtered)
+            filter_text = target_count == 1 ? "exakt 1 Bild" : "exakt $target_count Bildern"
+            status_label.text = "Keine Patienten mit $filter_text"
+            status_label.color = :orange
+            patient_menu.options = []
+            return
         end
         
-        status_label.text = "Liste aktualisiert: $(length(new_patient_ids)) Patienten"
+        # Update menu with filtered list
+        patient_menu.options = [string(pid) for pid in filtered]
+        
+        # Rebuild current patient if still in filtered list
+        if current_patient_id[] in filtered
+            build_patient_images!(current_patient_id[])
+        else
+            # Switch to first patient in filtered list
+            current_patient_id[] = filtered[1]
+            patient_menu.i_selected[] = 1
+            build_patient_images!(filtered[1])
+        end
+        
+        filter_text = target_count == 0 ? "" : (target_count == 1 ? " (exakt 1 Bild)" : " (exakt $(target_count) Bilder)")
+        status_label.text = "Liste aktualisiert: $(length(filtered)) Patienten$(filter_text)"
         status_label.color = :green
     end
     
@@ -1973,12 +2434,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     
     # Navigation helper: navigate to patient at given index
     function navigate_to_patient_index(target_idx::Int)
-        if target_idx < 1 || target_idx > length(all_patient_ids)
-            println("[NAV] Index $target_idx out of bounds (1-$(length(all_patient_ids)))")
+        local available_patients = filtered_patient_ids[]
+        
+        if target_idx < 1 || target_idx > length(available_patients)
+            println("[NAV] Index $target_idx out of bounds (1-$(length(available_patients)))")
             return
         end
         
-        local target_patient_id = all_patient_ids[target_idx]
+        local target_patient_id = available_patients[target_idx]
         println("[NAV] Navigating to patient index $target_idx (patient_id=$target_patient_id)")
         
         # Update current patient
@@ -1991,20 +2454,21 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         # Clean up old cache entries
         cleanup_cache(target_patient_id)
         
-        # Trigger preloads for neighbors
+        # Trigger preloads for neighbors (within filtered list)
         if target_idx > 1
-            trigger_preload(all_patient_ids[target_idx - 1])
+            trigger_preload(available_patients[target_idx - 1])
         end
-        if target_idx < length(all_patient_ids)
-            trigger_preload(all_patient_ids[target_idx + 1])
+        if target_idx < length(available_patients)
+            trigger_preload(available_patients[target_idx + 1])
         end
     end
     
     # Previous button callback
     Bas3GLMakie.GLMakie.on(prev_button.clicks) do n
-        local current_idx = findfirst(==(current_patient_id[]), all_patient_ids)
+        local available_patients = filtered_patient_ids[]
+        local current_idx = findfirst(==(current_patient_id[]), available_patients)
         if isnothing(current_idx)
-            println("[NAV] Current patient not found in list")
+            println("[NAV] Current patient not found in filtered list")
             return
         end
         
@@ -2019,13 +2483,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     
     # Next button callback
     Bas3GLMakie.GLMakie.on(next_button.clicks) do n
-        local current_idx = findfirst(==(current_patient_id[]), all_patient_ids)
+        local available_patients = filtered_patient_ids[]
+        local current_idx = findfirst(==(current_patient_id[]), available_patients)
         if isnothing(current_idx)
-            println("[NAV] Current patient not found in list")
+            println("[NAV] Current patient not found in filtered list")
             return
         end
         
-        if current_idx >= length(all_patient_ids)
+        if current_idx >= length(available_patients)
             status_label.text = "Letzter Patient erreicht"
             status_label.color = :orange
             return
@@ -2078,6 +2543,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             ),
             widgets = Dict(
                 :patient_menu => patient_menu,
+                :filter_menu => filter_menu,       # NEW: Filter menu for testing
                 :refresh_button => refresh_button,
                 :clear_polygons_button => clear_polygons_button,  # NEW: Clear all polygons
                 :prev_button => prev_button,      # NEW: Navigation buttons
