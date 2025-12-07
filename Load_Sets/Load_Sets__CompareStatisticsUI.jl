@@ -81,16 +81,9 @@ function create_compare_statistics_figure(sets, db_path;
     local patient_counts = get_patient_image_counts(db_path)
     local all_patient_ids = sort(collect(keys(patient_counts)))
     
-    # Get available classes (from CompareUI)
-    local classes = [:redness, :granulation_tissue, :fistula, :scar, :necrosis, :hematoma]
-    local classes_de = Dict(
-        :redness => "Rötung",
-        :granulation_tissue => "Granulationsgewebe",
-        :fistula => "Fistel",
-        :scar => "Narbe",
-        :necrosis => "Nekrose",
-        :hematoma => "Hämatom"
-    )
+    # Get available classes from CLASS_NAMES_DE (defined in Load_Sets__Colors.jl)
+    # Exclude :background as it's not relevant for wound analysis
+    local classes = [:scar, :redness, :hematoma, :necrosis]
     
     # Count patients per image count
     local counts_by_num = Dict{Int, Int}()
@@ -163,11 +156,11 @@ function create_compare_statistics_figure(sets, db_path;
         padding = (5, 5, 15, 10)
     )
     
-    local class_options = [classes_de[c] for c in classes]
+    local class_options = [String(c) for c in classes]
     local class_menu = Bas3GLMakie.GLMakie.Menu(
         left_panel[4, 1:2],
         options = class_options,
-        default = classes_de[default_class],
+        default = String(default_class),
         fontsize = 13
     )
     
@@ -189,33 +182,17 @@ function create_compare_statistics_figure(sets, db_path;
         halign = :left
     )
     
-    local toggle_mean_std = Bas3GLMakie.GLMakie.Toggle(left_panel[7, 1], active=true)
+    local toggle_boxplot = Bas3GLMakie.GLMakie.Toggle(left_panel[7, 1], active=true)
     Bas3GLMakie.GLMakie.Label(
         left_panel[7, 2],
-        "Mittelwert ± Std",
-        fontsize = 12,
-        halign = :left
-    )
-    
-    local toggle_median = Bas3GLMakie.GLMakie.Toggle(left_panel[8, 1], active=true)
-    Bas3GLMakie.GLMakie.Label(
-        left_panel[8, 2],
-        "Median",
-        fontsize = 12,
-        halign = :left
-    )
-    
-    local toggle_quartiles = Bas3GLMakie.GLMakie.Toggle(left_panel[9, 1], active=false)
-    Bas3GLMakie.GLMakie.Label(
-        left_panel[9, 2],
-        "Quartile (25%-75%)",
+        "Boxplot",
         fontsize = 12,
         halign = :left
     )
     
     # Update button
     local update_button = Bas3GLMakie.GLMakie.Button(
-        left_panel[10, 1:2],
+        left_panel[8, 1:2],
         label = "Aktualisieren",
         fontsize = 14,
         padding = (5, 5, 15, 5)
@@ -223,7 +200,7 @@ function create_compare_statistics_figure(sets, db_path;
     
     # Status label
     local status_label = Bas3GLMakie.GLMakie.Label(
-        left_panel[11, 1:2],
+        left_panel[9, 1:2],
         "",
         fontsize = 11,
         halign = :center,
@@ -245,7 +222,7 @@ function create_compare_statistics_figure(sets, db_path;
     local right_panel = Bas3GLMakie.GLMakie.GridLayout(fig[2, 2])
     
     # Patient list area
-    local patient_grid = Bas3GLMakie.GLMakie.GridLayout(right_panel[2, 1:2])
+    local patient_grid = Bas3GLMakie.GLMakie.GridLayout(right_panel[2, 1:3])
     
     # Set row sizes for right panel (removed stats table)
     Bas3GLMakie.GLMakie.rowsize!(right_panel, 1, Bas3GLMakie.GLMakie.Relative(0.87))  # Plot - much larger
@@ -277,8 +254,7 @@ function create_compare_statistics_figure(sets, db_path;
         local target_count = filter_values[selected_filter_idx]
         
         local selected_class_name = class_menu.selection[]
-        local selected_class = findfirst(c -> classes_de[c] == selected_class_name, classes)
-        local selected_class_symbol = classes[selected_class]  # Get the actual Symbol
+        local selected_class_symbol = Symbol(selected_class_name)  # Convert string to symbol
         
         println("[COHORT-UI] Filter: $target_count images")
         println("[COHORT-UI] Class: $selected_class_symbol")
@@ -366,53 +342,115 @@ function create_compare_statistics_figure(sets, db_path;
         # Clear patient_grid contents (but keep the GridLayout itself)
         delete_gridlayout_contents!(patient_grid)
         
-        # Create new axis (directly in right_panel)
-        local ax = Bas3GLMakie.GLMakie.Axis(
+        # Create three axes side-by-side: L* (left), C* (center), h° (right)
+        local ax_l = Bas3GLMakie.GLMakie.Axis(
             right_panel[1, 1],
-            title = "L*C*h Zeitverlauf: $(selected_class_name) (n=$(cohort_stats.num_patients))",
+            title = "L* Zeitverlauf: $(selected_class_symbol) (n=$(cohort_stats.num_patients))",
             xlabel = "Zeitpunkt",
-            ylabel = "Normalisierter Wert (0-1)",
+            ylabel = "L* (Lightness, 0-1)",
             xticks = (1:cohort_stats.timepoint_count, ["T$i" for i in 1:cohort_stats.timepoint_count]),
-            titlesize = 20,
-            xlabelsize = 18,
-            ylabelsize = 18,
-            xticklabelsize = 16,
-            yticklabelsize = 16
+            titlesize = 16,
+            xlabelsize = 14,
+            ylabelsize = 14,
+            xticklabelsize = 12,
+            yticklabelsize = 12
         )
         
-        Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
+        local ax_c = Bas3GLMakie.GLMakie.Axis(
+            right_panel[1, 2],
+            title = "C* Zeitverlauf: $(selected_class_symbol) (n=$(cohort_stats.num_patients))",
+            xlabel = "Zeitpunkt",
+            ylabel = "C* (Chroma, 0-1)",
+            xticks = (1:cohort_stats.timepoint_count, ["T$i" for i in 1:cohort_stats.timepoint_count]),
+            titlesize = 16,
+            xlabelsize = 14,
+            ylabelsize = 14,
+            xticklabelsize = 12,
+            yticklabelsize = 12
+        )
+        
+        local ax_h = Bas3GLMakie.GLMakie.Axis(
+            right_panel[1, 3],
+            title = "h° Zeitverlauf: $(selected_class_symbol) (n=$(cohort_stats.num_patients))",
+            xlabel = "Zeitpunkt",
+            ylabel = "h° (Hue, 0-1)",
+            xticks = (1:cohort_stats.timepoint_count, ["T$i" for i in 1:cohort_stats.timepoint_count]),
+            titlesize = 16,
+            xlabelsize = 14,
+            ylabelsize = 14,
+            xticklabelsize = 12,
+            yticklabelsize = 12
+        )
+        
+        # Calculate dynamic axis limits with 10% padding
+        # For L* (0-100 range, normalized to 0-1)
+        local l_all_values = Float64[]
+        for traj in cohort_stats.all_l_trajectories
+            append!(l_all_values, filter(!isnan, traj ./ 100.0))
+        end
+        local l_min = isempty(l_all_values) ? 0.0 : minimum(l_all_values)
+        local l_max = isempty(l_all_values) ? 1.0 : maximum(l_all_values)
+        local l_span = l_max - l_min
+        local l_padding = l_span * 0.1
+        local l_ylim_min = max(0.0, l_min - l_padding)
+        local l_ylim_max = min(1.0, l_max + l_padding)
+        
+        # For C* (0-150 range, normalized to 0-1)
+        local c_all_values = Float64[]
+        for traj in cohort_stats.all_c_trajectories
+            append!(c_all_values, filter(!isnan, traj ./ 150.0))
+        end
+        local c_min = isempty(c_all_values) ? 0.0 : minimum(c_all_values)
+        local c_max = isempty(c_all_values) ? 1.0 : maximum(c_all_values)
+        local c_span = c_max - c_min
+        local c_padding = c_span * 0.1
+        local c_ylim_min = max(0.0, c_min - c_padding)
+        local c_ylim_max = min(1.0, c_max + c_padding)
+        
+        # For h° (0-360 range, normalized to 0-1)
+        local h_all_values = Float64[]
+        for traj in cohort_stats.all_h_trajectories
+            append!(h_all_values, filter(!isnan, traj ./ 360.0))
+        end
+        local h_min = isempty(h_all_values) ? 0.0 : minimum(h_all_values)
+        local h_max = isempty(h_all_values) ? 1.0 : maximum(h_all_values)
+        local h_span = h_max - h_min
+        local h_padding = h_span * 0.1
+        local h_ylim_min = max(0.0, h_min - h_padding)
+        local h_ylim_max = min(1.0, h_max + h_padding)
+        
+        # Apply dynamic limits
+        Bas3GLMakie.GLMakie.ylims!(ax_l, l_ylim_min, l_ylim_max)
+        Bas3GLMakie.GLMakie.ylims!(ax_c, c_ylim_min, c_ylim_max)
+        Bas3GLMakie.GLMakie.ylims!(ax_h, h_ylim_min, h_ylim_max)
+        
+        println("[COHORT-UI] Dynamic axis limits:")
+        println("  L*: [$(round(l_ylim_min, digits=3)), $(round(l_ylim_max, digits=3))] (span: $(round(l_span, digits=3)))")
+        println("  C*: [$(round(c_ylim_min, digits=3)), $(round(c_ylim_max, digits=3))] (span: $(round(c_span, digits=3)))")
+        println("  h°: [$(round(h_ylim_min, digits=3)), $(round(h_ylim_max, digits=3))] (span: $(round(h_span, digits=3)))")
+        
+        # Set equal column sizes for all three axes
+        Bas3GLMakie.GLMakie.colsize!(right_panel, 1, Bas3GLMakie.GLMakie.Auto())
+        Bas3GLMakie.GLMakie.colsize!(right_panel, 2, Bas3GLMakie.GLMakie.Auto())
+        Bas3GLMakie.GLMakie.colsize!(right_panel, 3, Bas3GLMakie.GLMakie.Auto())
         
         # Get class color
         local class_color = get(BBOX_COLORS, selected_class_symbol, (:blue, 1.0))[1]
         
         # Plot with current toggle settings
-        local legend_elements = plot_cohort_lch_timeline!(
-            ax,
+        plot_cohort_lch_timeline!(
+            ax_l,
+            ax_c,
+            ax_h,
             cohort_stats,
             toggle_individuals.active[],
-            toggle_mean_std.active[],
-            toggle_median.active[],
-            toggle_quartiles.active[],
+            toggle_boxplot.active[],
             base_color = class_color,
-            class_name = selected_class_name
+            class_name = String(selected_class_symbol)
         )
         
-        # Add legend
-        if !isempty(legend_elements)
-            Bas3GLMakie.GLMakie.Legend(
-                right_panel[1, 2],
-                legend_elements,
-                [e.label[] for e in legend_elements if !isnothing(e.label[])],
-                framevisible = true,
-                labelsize = 15,
-                padding = (10, 10, 10, 10)
-            )
-            Bas3GLMakie.GLMakie.colsize!(right_panel, 1, Bas3GLMakie.GLMakie.Auto())
-            Bas3GLMakie.GLMakie.colsize!(right_panel, 2, Bas3GLMakie.GLMakie.Fixed(200))
-        end
-        
-        # Create patient list
-        create_patient_list!(patient_grid, [p.patient_id for p in patient_data_list])
+        # Create time delta histograms
+        create_time_delta_histograms!(patient_grid, patient_data_list)
         
         # Update status
         local elapsed = round(time() - update_start, digits=2)
@@ -440,21 +478,7 @@ function create_compare_statistics_figure(sets, db_path;
         end
     end
     
-    Bas3GLMakie.GLMakie.on(toggle_mean_std.active) do _
-        local has_axis = any(c -> c isa Bas3GLMakie.GLMakie.Axis, right_panel.content)
-        if has_axis
-            update_cohort_plot!()
-        end
-    end
-    
-    Bas3GLMakie.GLMakie.on(toggle_median.active) do _
-        local has_axis = any(c -> c isa Bas3GLMakie.GLMakie.Axis, right_panel.content)
-        if has_axis
-            update_cohort_plot!()
-        end
-    end
-    
-    Bas3GLMakie.GLMakie.on(toggle_quartiles.active) do _
+    Bas3GLMakie.GLMakie.on(toggle_boxplot.active) do _
         local has_axis = any(c -> c isa Bas3GLMakie.GLMakie.Axis, right_panel.content)
         if has_axis
             update_cohort_plot!()

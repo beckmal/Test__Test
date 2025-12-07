@@ -21,7 +21,7 @@
     plot_individual_trajectories!(ax, trajectories, dates, color, alpha;
                                    metric_name="L*")
 
-Plot individual patient trajectories as semi-transparent lines.
+Plot individual patient trajectories as semi-transparent lines with scatter points.
 
 # Arguments
 - `ax`: GLMakie Axis to plot on
@@ -44,12 +44,22 @@ function plot_individual_trajectories!(ax, trajectories, dates, color, alpha=0.2
             local valid_dates = dates[valid_indices]
             local valid_values = trajectory[valid_indices]
             
+            # Plot lines
             Bas3GLMakie.GLMakie.lines!(
                 ax,
                 valid_dates,
                 valid_values,
                 color = (color, alpha),
                 linewidth = 1
+            )
+            
+            # Plot scatter points
+            Bas3GLMakie.GLMakie.scatter!(
+                ax,
+                valid_dates,
+                valid_values,
+                color = (color, alpha * 1.5),  # Slightly more visible than lines
+                markersize = 4
             )
         end
     end
@@ -180,64 +190,50 @@ function plot_median_quartiles!(ax, dates, medians, q25, q75, color;
 end
 
 """
-    plot_cohort_lch_timeline!(ax, cohort_stats::CohortClassStats,
+    plot_cohort_lch_timeline!(ax_l, ax_c, ax_h, cohort_stats::CohortClassStats,
                               show_individuals::Bool,
-                              show_mean_std::Bool,
-                              show_median::Bool,
-                              show_quartiles::Bool;
+                              show_boxplot::Bool;
                               base_color=:blue,
                               class_name="Class")
 
-Main plotting function for cohort L*C*h timeline.
+Main plotting function for cohort L*C*h° timeline (three separate axes).
 
-Plots three metrics (L*, C*, h°) with different line styles:
-- L*: Solid lines
-- C*: Dashed lines  
-- h°: Dotted lines
+Plots three metrics on separate axes:
+- L* (Lightness): Plotted on ax_l
+- C* (Chroma): Plotted on ax_c
+- h° (Hue): Plotted on ax_h
 
 # Arguments
-- `ax`: GLMakie Axis
+- `ax_l`: GLMakie Axis for L* (Lightness)
+- `ax_c`: GLMakie Axis for C* (Chroma)
+- `ax_h`: GLMakie Axis for h° (Hue)
 - `cohort_stats`: CohortClassStats with aggregated data
-- `show_individuals`: Plot individual patient trajectories (overlay)
-- `show_mean_std`: Plot mean ± std bands
-- `show_median`: Plot median lines
-- `show_quartiles`: Plot 25th-75th percentile bands
+- `show_individuals`: Plot individual patient trajectories (overlay with scatter)
+- `show_boxplot`: Plot boxplots for each metric at each timepoint
 - `base_color`: Color for plots (default :blue)
 - `class_name`: Name for legend (default "Class")
 
-# Returns
-- Vector of legend elements
-
 # Example
 ```julia
-legend_elems = plot_cohort_lch_timeline!(ax, redness_stats, true, true, false, false)
+plot_cohort_lch_timeline!(ax_l, ax_c, ax_h, redness_stats, true, true)
 ```
 """
-function plot_cohort_lch_timeline!(ax, cohort_stats::CohortClassStats,
+function plot_cohort_lch_timeline!(ax_l, ax_c, ax_h, cohort_stats::CohortClassStats,
                                    show_individuals::Bool,
-                                   show_mean_std::Bool,
-                                   show_median::Bool,
-                                   show_quartiles::Bool;
+                                   show_boxplot::Bool;
                                    base_color=:blue,
                                    class_name="Class")
-    local legend_elements = []
     local timepoints = collect(1:cohort_stats.timepoint_count)
     
     # Normalize values (L*: 0-100 → 0-1, C*: 0-150 → 0-1, h°: 0-360 → 0-1)
-    local l_means_norm = cohort_stats.l_means ./ 100.0
-    local l_stds_norm = cohort_stats.l_stds ./ 100.0
     local l_medians_norm = cohort_stats.l_medians ./ 100.0
     local l_q25_norm = cohort_stats.l_q25 ./ 100.0
     local l_q75_norm = cohort_stats.l_q75 ./ 100.0
     
-    local c_means_norm = cohort_stats.c_means ./ 150.0
-    local c_stds_norm = cohort_stats.c_stds ./ 150.0
     local c_medians_norm = cohort_stats.c_medians ./ 150.0
     local c_q25_norm = cohort_stats.c_q25 ./ 150.0
     local c_q75_norm = cohort_stats.c_q75 ./ 150.0
     
-    local h_means_norm = cohort_stats.h_means ./ 360.0
-    local h_stds_norm = cohort_stats.h_stds ./ 360.0
     local h_medians_norm = cohort_stats.h_medians ./ 360.0
     local h_q25_norm = cohort_stats.h_q25 ./ 360.0
     local h_q75_norm = cohort_stats.h_q75 ./ 360.0
@@ -248,104 +244,115 @@ function plot_cohort_lch_timeline!(ax, cohort_stats::CohortClassStats,
     local h_traj_norm = [traj ./ 360.0 for traj in cohort_stats.all_h_trajectories]
     
     # ========================================================================
-    # Plot L* (solid lines)
+    # Plot L* on ax_l (Lightness axis)
     # ========================================================================
     
     if show_individuals && !isempty(l_traj_norm)
-        plot_individual_trajectories!(ax, l_traj_norm, timepoints, base_color, 0.15, 
+        plot_individual_trajectories!(ax_l, l_traj_norm, timepoints, base_color, 0.15, 
                                       metric_name="L*")
     end
     
-    if show_mean_std
-        local l_mean_line, l_std_band = plot_mean_std_band!(
-            ax, timepoints, l_means_norm, l_stds_norm, base_color,
-            metric_name="L*", line_label="Mittelwert", linestyle=:solid
-        )
-        if !isnothing(l_mean_line)
-            push!(legend_elements, l_mean_line)
+    if show_boxplot
+        for t in 1:cohort_stats.timepoint_count
+            local l_q25 = l_q25_norm[t]
+            local l_median = l_medians_norm[t]
+            local l_q75 = l_q75_norm[t]
+            
+            if !isnan(l_median) && !isnan(l_q25) && !isnan(l_q75)
+                # Box (IQR: Q1 to Q3)
+                Bas3GLMakie.GLMakie.poly!(
+                    ax_l,
+                    Bas3GLMakie.GLMakie.Rect(t - 0.15, l_q25, 0.3, l_q75 - l_q25),
+                    color = (base_color, 0.3),
+                    strokecolor = base_color,
+                    strokewidth = 2
+                )
+                
+                # Median line
+                Bas3GLMakie.GLMakie.linesegments!(
+                    ax_l,
+                    [Bas3GLMakie.GLMakie.Point2f(t - 0.15, l_median), 
+                     Bas3GLMakie.GLMakie.Point2f(t + 0.15, l_median)],
+                    color = base_color,
+                    linewidth = 3
+                )
+            end
         end
     end
     
-    if show_median
-        local l_median_line, _ = plot_median_quartiles!(
-            ax, timepoints, l_medians_norm, l_q25_norm, l_q75_norm, base_color,
-            metric_name="L*", linestyle=:solid
-        )
-        if !isnothing(l_median_line)
-            push!(legend_elements, l_median_line)
-        end
-    end
-    
-    if show_quartiles
-        local dummy_line, l_iqr_band = plot_median_quartiles!(
-            ax, timepoints, l_medians_norm, l_q25_norm, l_q75_norm, base_color,
-            metric_name="L*", linestyle=:solid
-        )
-    end
-    
     # ========================================================================
-    # Plot C* (dashed lines)
+    # Plot C* on ax_c (Chroma axis)
     # ========================================================================
-    
-    local c_color = (base_color, 0.7)  # Slightly transparent for distinction
     
     if show_individuals && !isempty(c_traj_norm)
-        plot_individual_trajectories!(ax, c_traj_norm, timepoints, base_color, 0.1,
+        plot_individual_trajectories!(ax_c, c_traj_norm, timepoints, base_color, 0.15, 
                                       metric_name="C*")
     end
     
-    if show_mean_std
-        local c_mean_line, c_std_band = plot_mean_std_band!(
-            ax, timepoints, c_means_norm, c_stds_norm, base_color,
-            metric_name="C*", line_label="Mittelwert", linestyle=:dash
-        )
-        if !isnothing(c_mean_line)
-            push!(legend_elements, c_mean_line)
+    if show_boxplot
+        for t in 1:cohort_stats.timepoint_count
+            local c_q25 = c_q25_norm[t]
+            local c_median = c_medians_norm[t]
+            local c_q75 = c_q75_norm[t]
+            
+            if !isnan(c_median) && !isnan(c_q25) && !isnan(c_q75)
+                # Box (IQR: Q1 to Q3)
+                Bas3GLMakie.GLMakie.poly!(
+                    ax_c,
+                    Bas3GLMakie.GLMakie.Rect(t - 0.15, c_q25, 0.3, c_q75 - c_q25),
+                    color = (base_color, 0.3),
+                    strokecolor = base_color,
+                    strokewidth = 2
+                )
+                
+                # Median line
+                Bas3GLMakie.GLMakie.linesegments!(
+                    ax_c,
+                    [Bas3GLMakie.GLMakie.Point2f(t - 0.15, c_median), 
+                     Bas3GLMakie.GLMakie.Point2f(t + 0.15, c_median)],
+                    color = base_color,
+                    linewidth = 3
+                )
+            end
         end
     end
     
-    if show_median
-        local c_median_plot = Bas3GLMakie.GLMakie.lines!(
-            ax, timepoints, c_medians_norm,
-            color = base_color,
-            linewidth = 3,
-            linestyle = :dash,
-            label = "C* Median"
-        )
-        push!(legend_elements, c_median_plot)
-    end
-    
     # ========================================================================
-    # Plot h° (dotted lines)
+    # Plot h° on ax_h (Hue axis)
     # ========================================================================
     
     if show_individuals && !isempty(h_traj_norm)
-        plot_individual_trajectories!(ax, h_traj_norm, timepoints, base_color, 0.08,
+        plot_individual_trajectories!(ax_h, h_traj_norm, timepoints, base_color, 0.15, 
                                       metric_name="h°")
     end
     
-    if show_mean_std
-        local h_mean_line, h_std_band = plot_mean_std_band!(
-            ax, timepoints, h_means_norm, h_stds_norm, base_color,
-            metric_name="h°", line_label="Mittelwert", linestyle=:dot
-        )
-        if !isnothing(h_mean_line)
-            push!(legend_elements, h_mean_line)
+    if show_boxplot
+        for t in 1:cohort_stats.timepoint_count
+            local h_q25 = h_q25_norm[t]
+            local h_median = h_medians_norm[t]
+            local h_q75 = h_q75_norm[t]
+            
+            if !isnan(h_median) && !isnan(h_q25) && !isnan(h_q75)
+                # Box (IQR: Q1 to Q3)
+                Bas3GLMakie.GLMakie.poly!(
+                    ax_h,
+                    Bas3GLMakie.GLMakie.Rect(t - 0.15, h_q25, 0.3, h_q75 - h_q25),
+                    color = (base_color, 0.3),
+                    strokecolor = base_color,
+                    strokewidth = 2
+                )
+                
+                # Median line
+                Bas3GLMakie.GLMakie.linesegments!(
+                    ax_h,
+                    [Bas3GLMakie.GLMakie.Point2f(t - 0.15, h_median), 
+                     Bas3GLMakie.GLMakie.Point2f(t + 0.15, h_median)],
+                    color = base_color,
+                    linewidth = 3
+                )
+            end
         end
     end
-    
-    if show_median
-        local h_median_plot = Bas3GLMakie.GLMakie.lines!(
-            ax, timepoints, h_medians_norm,
-            color = base_color,
-            linewidth = 3,
-            linestyle = :dot,
-            label = "h° Median"
-        )
-        push!(legend_elements, h_median_plot)
-    end
-    
-    return legend_elements
 end
 
 # ============================================================================
@@ -438,47 +445,97 @@ function create_statistics_table!(layout, cohort_stats::CohortClassStats, class_
 end
 
 # ============================================================================
-# PATIENT LIST
+# TIME DELTA HISTOGRAMS
 # ============================================================================
 
 """
-    create_patient_list!(layout, patient_ids::Vector{Int}, max_display::Int=20)
+    create_time_delta_histograms!(layout, patient_data_list::Vector{PatientLChData})
 
-Create a scrollable list of patient IDs included in cohort.
+Create side-by-side histograms showing time deltas between timepoints.
 
 # Arguments
-- `layout`: GridLayout to place list in
-- `patient_ids`: Vector of patient IDs
-- `max_display`: Maximum number of patients to show (default 20)
+- `layout`: GridLayout to place histograms in
+- `patient_data_list`: Vector of PatientLChData with date information
+
+# Layout
+Creates one histogram per delta:
+- Δ(T1→T2), Δ(T2→T3), Δ(T3→T4), etc.
+Number of histograms = max(dates per patient) - 1
+
+# Histogram Properties
+- Bin width: 1 day (fixed)
+- No statistics overlay (clean visualization)
+- Horizontal layout (side-by-side)
 """
-function create_patient_list!(layout, patient_ids::Vector{Int}, max_display::Int=20)
-    # Title
-    Bas3GLMakie.GLMakie.Label(
-        layout[1, 1],
-        "Patienten (n=$(length(patient_ids)))",
-        fontsize = 13,
-        font = :bold,
-        halign = :center,
-        padding = (5, 5, 8, 5)
-    )
-    
-    # Show first max_display patients
-    local display_count = min(length(patient_ids), max_display)
-    local patient_list_str = join(["P$id" for id in patient_ids[1:display_count]], ", ")
-    
-    if length(patient_ids) > max_display
-        patient_list_str *= ", ... (+$(length(patient_ids) - max_display) mehr)"
+function create_time_delta_histograms!(layout, patient_data_list)
+    # Calculate time deltas for all patients
+    local max_deltas = 0
+    for patient in patient_data_list
+        max_deltas = max(max_deltas, length(patient.dates) - 1)
     end
     
-    Bas3GLMakie.GLMakie.Label(
-        layout[2, 1],
-        patient_list_str,
-        fontsize = 10,
-        halign = :left,
-        valign = :top,
-        padding = (10, 10, 5, 5),
-        word_wrap = true
-    )
+    if max_deltas == 0
+        # No deltas to show (patients have only 1 image each)
+        Bas3GLMakie.GLMakie.Label(
+            layout[1, 1],
+            "Keine Zeitintervalle (alle Patienten haben nur 1 Bild)",
+            fontsize = 12,
+            halign = :center,
+            color = :gray
+        )
+        return
+    end
+    
+    # Collect deltas: deltas[i] = all Δ(Ti→Ti+1) across patients
+    local deltas = [Float64[] for _ in 1:max_deltas]
+    
+    for patient in patient_data_list
+        for i in 1:(length(patient.dates) - 1)
+            local delta_days = (patient.dates[i+1] - patient.dates[i]).value
+            push!(deltas[i], Float64(delta_days))
+        end
+    end
+    
+    # Create one histogram per delta (directly in row 1, no separate title row)
+    for i in 1:max_deltas
+        local delta_values = deltas[i]
+        
+        if isempty(delta_values)
+            continue
+        end
+        
+        # Calculate bin range with 1-day bins
+        local min_val = floor(minimum(delta_values))
+        local max_val = ceil(maximum(delta_values))
+        local bins = range(min_val, max_val + 1, step=1)
+        
+        # Create axis with title incorporating the delta description
+        local ax = Bas3GLMakie.GLMakie.Axis(
+            layout[1, i],
+            title = "Δ(T$(i)→T$(i+1)) - Zeitintervall",
+            xlabel = "Tage",
+            ylabel = i == 1 ? "Anzahl Patienten" : "",
+            titlesize = 11,
+            xlabelsize = 10,
+            ylabelsize = 10,
+            xticklabelsize = 9,
+            yticklabelsize = 9
+        )
+        
+        # Plot histogram with 1-day bins
+        Bas3GLMakie.GLMakie.hist!(
+            ax,
+            delta_values,
+            bins = bins,
+            color = (:steelblue, 0.7),
+            strokewidth = 1,
+            strokecolor = :steelblue
+        )
+        
+        # Set x-axis limits to exclude empty bins on left and right
+        # Add small padding (0.5 days) to prevent bars from touching edges
+        Bas3GLMakie.GLMakie.xlims!(ax, min_val - 0.5, max_val + 0.5)
+    end
 end
 
 println("✅ CompareStatisticsUI Visualization module loaded")
