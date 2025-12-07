@@ -716,10 +716,28 @@ Color components:
 function extract_class_lch_values(input_img, output_img, classes)
     local input_data = data(input_img)
     local output_data = data(output_img)
+    local output_classes = shape(output_img)  # Get actual class channels in output
     local results = Dict{Symbol, NamedTuple}()
     
-    for (class_idx, class) in enumerate(classes)
+    for class in classes
         if class == :background
+            continue
+        end
+        
+        # Find the channel index for this class in the output
+        local class_idx = findfirst(==(class), output_classes)
+        
+        if isnothing(class_idx)
+            # Class not present in this output image
+            results[class] = (
+                l_values = Float64[],
+                c_values = Float64[],
+                h_values = Float64[],
+                median_l = NaN,
+                median_c = NaN,
+                median_h = NaN,
+                count = 0
+            )
             continue
         end
         
