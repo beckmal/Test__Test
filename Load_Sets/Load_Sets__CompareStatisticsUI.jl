@@ -111,7 +111,14 @@ function create_compare_statistics_figure(sets, db_path;
     # CREATE FIGURE
     # ========================================================================
     
-    local fig = Bas3GLMakie.GLMakie.Figure(size=(1920, 1080), backgroundcolor=:white)
+    # Calculate figure width based on content (3 axes side-by-side)
+    # Each axis needs ~400px, plus 300px for left control panel
+    local num_axes = 3
+    local axis_width = 400
+    local control_width = 300
+    local fig_width = control_width + (num_axes * axis_width) + 100  # +100 for padding/gaps
+    
+    local fig = Bas3GLMakie.GLMakie.Figure(size=(fig_width, 1280), backgroundcolor=:white)
     
     # Title
     Bas3GLMakie.GLMakie.Label(
@@ -224,16 +231,16 @@ function create_compare_statistics_figure(sets, db_path;
     # Patient list area
     local patient_grid = Bas3GLMakie.GLMakie.GridLayout(right_panel[2, 1:3])
     
-    # Set row sizes for right panel (removed stats table)
-    Bas3GLMakie.GLMakie.rowsize!(right_panel, 1, Bas3GLMakie.GLMakie.Relative(0.87))  # Plot - much larger
-    Bas3GLMakie.GLMakie.rowsize!(right_panel, 2, Bas3GLMakie.GLMakie.Relative(0.13))  # Patient list
+    # Set row sizes for right panel - better balance between plots and histograms
+    Bas3GLMakie.GLMakie.rowsize!(right_panel, 1, Bas3GLMakie.GLMakie.Relative(0.70))  # L*C*h axes - 70%
+    Bas3GLMakie.GLMakie.rowsize!(right_panel, 2, Bas3GLMakie.GLMakie.Relative(0.30))  # Time histograms - 30%
     
     # Add row spacing for better visual separation
     Bas3GLMakie.GLMakie.rowgap!(right_panel, 15)
     
-    # Set column sizes for main figure
-    Bas3GLMakie.GLMakie.colsize!(fig.layout, 1, Bas3GLMakie.GLMakie.Fixed(330))  # Left panel - increased from 300
-    Bas3GLMakie.GLMakie.colsize!(fig.layout, 2, Bas3GLMakie.GLMakie.Auto())      # Right panel
+    # Set column sizes for main figure - fixed left column like CompareUI
+    Bas3GLMakie.GLMakie.colsize!(fig.layout, 1, Bas3GLMakie.GLMakie.Fixed(300))  # Left panel - fixed width
+    Bas3GLMakie.GLMakie.colsize!(fig.layout, 2, Bas3GLMakie.GLMakie.Auto())      # Right panel - remaining space
     
     # Add column spacing
     Bas3GLMakie.GLMakie.colgap!(fig.layout, 20)

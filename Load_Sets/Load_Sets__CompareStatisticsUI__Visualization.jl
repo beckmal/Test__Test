@@ -58,7 +58,7 @@ function plot_individual_trajectories!(ax, trajectories, dates, color, alpha=0.2
                 ax,
                 valid_dates,
                 valid_values,
-                color = (color, alpha * 1.5),  # Slightly more visible than lines
+                color = (color, alpha),  # Same transparency as lines
                 markersize = 4
             )
         end
@@ -248,7 +248,7 @@ function plot_cohort_lch_timeline!(ax_l, ax_c, ax_h, cohort_stats::CohortClassSt
     # ========================================================================
     
     if show_individuals && !isempty(l_traj_norm)
-        plot_individual_trajectories!(ax_l, l_traj_norm, timepoints, base_color, 0.15, 
+        plot_individual_trajectories!(ax_l, l_traj_norm, timepoints, base_color, 0.5, 
                                       metric_name="L*")
     end
     
@@ -285,7 +285,7 @@ function plot_cohort_lch_timeline!(ax_l, ax_c, ax_h, cohort_stats::CohortClassSt
     # ========================================================================
     
     if show_individuals && !isempty(c_traj_norm)
-        plot_individual_trajectories!(ax_c, c_traj_norm, timepoints, base_color, 0.15, 
+        plot_individual_trajectories!(ax_c, c_traj_norm, timepoints, base_color, 0.5, 
                                       metric_name="C*")
     end
     
@@ -322,7 +322,7 @@ function plot_cohort_lch_timeline!(ax_l, ax_c, ax_h, cohort_stats::CohortClassSt
     # ========================================================================
     
     if show_individuals && !isempty(h_traj_norm)
-        plot_individual_trajectories!(ax_h, h_traj_norm, timepoints, base_color, 0.15, 
+        plot_individual_trajectories!(ax_h, h_traj_norm, timepoints, base_color, 0.5, 
                                       metric_name="h°")
     end
     
