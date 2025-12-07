@@ -255,6 +255,126 @@ function update_patient_id_compare(db_path::String, row::Int, new_patient_id::In
 end
 
 # ============================================================================
+# POLYGON GEOMETRY FUNCTIONS (for polygon selection feature)
+# ============================================================================
+
+"""
+    point_in_polygon(point, vertices)
+
+Test if a point is inside a polygon using ray-casting algorithm.
+Point and vertices are in (x, y) = (col, row) format.
+Returns true if point is inside polygon, false otherwise.
+
+Algorithm: Cast a ray from the point to the right (increasing x).
+Count how many polygon edges the ray crosses.
+If odd number of crossings, point is inside; if even, point is outside.
+"""
+function point_in_polygon(point::Bas3GLMakie.GLMakie.Point2f, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
+    if length(vertices) < 3
+        return false
+    end
+    
+    local px, py = point[1], point[2]
+    local n = length(vertices)
+    local inside = false
+    
+    # Check each edge of the polygon
+    local p1 = vertices[end]
+    for i in 1:n
+        local p2 = vertices[i]
+        local x1, y1 = p1[1], p1[2]
+        local x2, y2 = p2[1], p2[2]
+        
+        # Check if ray crosses this edge
+        # Ray is cast horizontally to the right from point
+        if ((y1 > py) != (y2 > py)) &&
+           (px < (x2 - x1) * (py - y1) / (y2 - y1) + x1)
+            inside = !inside
+        end
+        
+        p1 = p2
+    end
+    
+    return inside
+end
+
+"""
+    polygon_bounds_aabb(vertices)
+
+Calculate axis-aligned bounding box (AABB) for polygon.
+Returns (min_x, max_x, min_y, max_y).
+"""
+function polygon_bounds_aabb(vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
+    if isempty(vertices)
+        return (0.0, 0.0, 0.0, 0.0)
+    end
+    
+    local x_coords = [v[1] for v in vertices]
+    local y_coords = [v[2] for v in vertices]
+    
+    return (minimum(x_coords), maximum(x_coords), minimum(y_coords), maximum(y_coords))
+end
+
+"""
+    create_polygon_mask(img, vertices)
+
+Create a binary mask for the polygon region.
+Returns a BitMatrix with true for pixels inside the polygon.
+Uses AABB optimization to reduce number of point-in-polygon tests.
+
+Vertices are in axis coordinates (x, y) = (col, row).
+"""
+function create_polygon_mask(img, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
+    if length(vertices) < 3
+        # Return empty mask
+        local img_data = data(img)
+        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+        return falses(h, w)
+    end
+    
+    # Get image dimensions
+    local img_data = data(img)
+    local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+    
+    # Get AABB for optimization
+    local min_x, max_x, min_y, max_y = polygon_bounds_aabb(vertices)
+    
+    # Convert to pixel indices (clamp to image bounds)
+    # vertices are in (x, y) = (col, row) format
+    local col_start = max(1, floor(Int, min_x))
+    local col_end = min(w, ceil(Int, max_x))
+    local row_start = max(1, floor(Int, min_y))
+    local row_end = min(h, ceil(Int, max_y))
+    
+    println("[POLYGON-MASK] AABB: rows=$(row_start):$(row_end), cols=$(col_start):$(col_end)")
+    println("[POLYGON-MASK] Image size: $(h)x$(w), vertices: $(length(vertices))")
+    
+    # Create mask
+    local mask = falses(h, w)
+    
+    # Only test pixels within AABB
+    local pixels_tested = 0
+    local pixels_inside = 0
+    
+    for row in row_start:row_end
+        for col in col_start:col_end
+            # Create point in (x, y) = (col, row) format
+            local pt = Bas3GLMakie.GLMakie.Point2f(Float32(col), Float32(row))
+            pixels_tested += 1
+            
+            if point_in_polygon(pt, vertices)
+                mask[row, col] = true
+                pixels_inside += 1
+            end
+        end
+    end
+    
+    println("[POLYGON-MASK] Tested $(pixels_tested) pixels, $(pixels_inside) inside polygon")
+    
+    return mask
+end
+
+# ============================================================================
 # BOUNDING BOX EXTRACTION FOR CLASS VISUALIZATION
 # ============================================================================
 
@@ -858,20 +978,27 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         fontsize = 11
     )
     
-    # Row 5: Status label
-    local status_label = Bas3GLMakie.GLMakie.Label(
+    # Row 5: Clear all polygons button
+    local clear_polygons_button = Bas3GLMakie.GLMakie.Button(
         left_column[5, 1],
+        label = "Polygone löschen",
+        fontsize = 11
+    )
+    
+    # Row 6: Status label
+    local status_label = Bas3GLMakie.GLMakie.Label(
+        left_column[6, 1],
         "",
         fontsize=10,
         halign=:center,
         color=:gray
     )
     
-    # Row 6: Spacer (expands to fill space)
-    Bas3GLMakie.GLMakie.Box(left_column[6, 1], color=:transparent)
+    # Row 7: Spacer (expands to fill space)
+    Bas3GLMakie.GLMakie.Box(left_column[7, 1], color=:transparent)
     
-    # Row 7: H/S Timeline Plot
-    local timeline_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[7, 1])
+    # Row 8: H/S Timeline Plot
+    local timeline_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[8, 1])
     local timeline_axis = Ref{Any}(nothing)  # Will hold axis reference for clearing
     
     # Set left column row sizes
@@ -879,9 +1006,10 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     Bas3GLMakie.GLMakie.rowsize!(left_column, 2, Bas3GLMakie.GLMakie.Fixed(35))   # Patient selector
     Bas3GLMakie.GLMakie.rowsize!(left_column, 3, Bas3GLMakie.GLMakie.Fixed(35))   # Nav buttons
     Bas3GLMakie.GLMakie.rowsize!(left_column, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Refresh
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Status
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Auto())      # Spacer (flexible)
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Fixed(300))  # Timeline
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Fixed(35))   # Clear polygons
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Status
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Auto())      # Spacer (flexible)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Fixed(300))  # Timeline
     
     # ========================================================================
     # RIGHT COLUMN: Images Container (scrollable grid)
@@ -898,6 +1026,13 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local image_observables = []
     local hsv_grids = []        # NEW: HSV histogram 2x2 grids
     local hsv_class_data = []   # NEW: HSV data per image
+    
+    # POLYGON SELECTION: Per-image polygon state arrays
+    local polygon_vertices_per_image = []     # Vector of Observable{Vector{Point2f}}
+    local polygon_active_per_image = []       # Vector of Observable{Bool}
+    local polygon_complete_per_image = []     # Vector of Observable{Bool}
+    local polygon_buttons_per_image = []      # Vector of (close_btn, clear_btn) tuples
+    
     local current_entries = Bas3GLMakie.GLMakie.Observable(NamedTuple[])
     local current_patient_id = Bas3GLMakie.GLMakie.Observable(isempty(all_patient_ids) ? 0 : all_patient_ids[1])
     
@@ -1255,6 +1390,12 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         empty!(hsv_grids)       # NEW
         empty!(hsv_class_data)  # NEW
         
+        # Clear polygon state arrays
+        empty!(polygon_vertices_per_image)
+        empty!(polygon_active_per_image)
+        empty!(polygon_complete_per_image)
+        empty!(polygon_buttons_per_image)
+        
         println("[COMPARE-UI] Grid cleared, $(length(images_grid.content)) items remaining")
     end
     
@@ -1377,6 +1518,36 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     println("[COMPARE-UI] Drew on-demand bboxes for image $(entry.image_index)")
                 end
                 
+                # Layer 4: POLYGON OVERLAY (per-image polygon selection)
+                # Initialize polygon state for this image
+                local poly_verts = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
+                local poly_active = Bas3GLMakie.GLMakie.Observable(false)
+                local poly_complete = Bas3GLMakie.GLMakie.Observable(false)
+                
+                push!(polygon_vertices_per_image, poly_verts)
+                push!(polygon_active_per_image, poly_active)
+                push!(polygon_complete_per_image, poly_complete)
+                
+                # Draw polygon lines (cyan, auto-closing)
+                Bas3GLMakie.GLMakie.lines!(ax,
+                    Bas3GLMakie.GLMakie.@lift(begin
+                        verts = $poly_verts
+                        isempty(verts) ? Bas3GLMakie.GLMakie.Point2f[] : vcat(verts, [verts[1]])
+                    end),
+                    color=:cyan,
+                    linewidth=2,
+                    visible = Bas3GLMakie.GLMakie.@lift(!isempty($poly_verts))
+                )
+                
+                # Draw polygon vertices (cyan circles)
+                Bas3GLMakie.GLMakie.scatter!(ax, poly_verts,
+                    color=:cyan,
+                    markersize=8,
+                    visible = Bas3GLMakie.GLMakie.@lift(!isempty($poly_verts))
+                )
+                
+                println("[POLYGON] Initialized polygon state for column $col")
+                
                 # Row 3: HSV mini histograms (computed on-demand from cached raw data)
                 if !isnothing(img_data.output_raw) && !isnothing(img_data.input_raw)
                     local class_hsv = extract_class_hsv_values(img_data.input_raw, img_data.output_raw, classes)
@@ -1412,6 +1583,36 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     println("[COMPARE-UI] Drew fresh bboxes for image $(entry.image_index)")
                 end
                 
+                # Layer 4: POLYGON OVERLAY (per-image polygon selection)
+                # Initialize polygon state for this image
+                local poly_verts = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
+                local poly_active = Bas3GLMakie.GLMakie.Observable(false)
+                local poly_complete = Bas3GLMakie.GLMakie.Observable(false)
+                
+                push!(polygon_vertices_per_image, poly_verts)
+                push!(polygon_active_per_image, poly_active)
+                push!(polygon_complete_per_image, poly_complete)
+                
+                # Draw polygon lines (cyan, auto-closing)
+                Bas3GLMakie.GLMakie.lines!(ax,
+                    Bas3GLMakie.GLMakie.@lift(begin
+                        verts = $poly_verts
+                        isempty(verts) ? Bas3GLMakie.GLMakie.Point2f[] : vcat(verts, [verts[1]])
+                    end),
+                    color=:cyan,
+                    linewidth=2,
+                    visible = Bas3GLMakie.GLMakie.@lift(!isempty($poly_verts))
+                )
+                
+                # Draw polygon vertices (cyan circles)
+                Bas3GLMakie.GLMakie.scatter!(ax, poly_verts,
+                    color=:cyan,
+                    markersize=8,
+                    visible = Bas3GLMakie.GLMakie.@lift(!isempty($poly_verts))
+                )
+                
+                println("[POLYGON] Initialized polygon state for column $col (fallback)")
+                
                 # Row 3: HSV mini histograms
                 if !isnothing(images.output_raw) && !isnothing(images.input_raw)
                     local class_hsv = extract_class_hsv_values(images.input_raw, images.output_raw, classes)
@@ -1425,8 +1626,65 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Row 4: Date label + textbox
-            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
+            # Row 3.5: Polygon control buttons (Start/Close/Clear)
+            local polygon_control_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
+            
+            local start_poly_btn = Bas3GLMakie.GLMakie.Button(
+                polygon_control_grid[1, 1],
+                label="Polygon",
+                fontsize=9,
+                width=60
+            )
+            
+            local close_poly_btn = Bas3GLMakie.GLMakie.Button(
+                polygon_control_grid[1, 2],
+                label="Schließen",
+                fontsize=9,
+                width=70
+            )
+            
+            local clear_poly_btn = Bas3GLMakie.GLMakie.Button(
+                polygon_control_grid[1, 3],
+                label="Löschen",
+                fontsize=9,
+                width=60
+            )
+            
+            push!(polygon_buttons_per_image, (start_poly_btn, close_poly_btn, clear_poly_btn))
+            
+            # Polygon button callbacks (capture col index for this specific image)
+            local col_idx = col
+            
+            # Start polygon button
+            Bas3GLMakie.GLMakie.on(start_poly_btn.clicks) do n
+                println("[POLYGON] Start polygon for column $col_idx")
+                # Clear existing vertices when starting new polygon
+                polygon_vertices_per_image[col_idx][] = Bas3GLMakie.GLMakie.Point2f[]
+                polygon_active_per_image[col_idx][] = true
+                polygon_complete_per_image[col_idx][] = false
+            end
+            
+            # Close polygon button
+            Bas3GLMakie.GLMakie.on(close_poly_btn.clicks) do n
+                if length(polygon_vertices_per_image[col_idx][]) >= 3
+                    println("[POLYGON] Close polygon for column $col_idx ($(length(polygon_vertices_per_image[col_idx][])) vertices)")
+                    polygon_complete_per_image[col_idx][] = true
+                    polygon_active_per_image[col_idx][] = false
+                else
+                    println("[POLYGON] Cannot close polygon for column $col_idx - need at least 3 vertices")
+                end
+            end
+            
+            # Clear polygon button
+            Bas3GLMakie.GLMakie.on(clear_poly_btn.clicks) do n
+                println("[POLYGON] Clear polygon for column $col_idx")
+                polygon_vertices_per_image[col_idx][] = Bas3GLMakie.GLMakie.Point2f[]
+                polygon_active_per_image[col_idx][] = false
+                polygon_complete_per_image[col_idx][] = false
+            end
+            
+            # Row 5: Date label + textbox
+            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
             Bas3GLMakie.GLMakie.Label(
                 date_grid[1, 1],
                 "Datum:",
@@ -1441,8 +1699,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(date_textboxes, date_tb)
             
-            # Row 5: Info label + textbox
-            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
+            # Row 6: Info label + textbox
+            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[6, col])
             Bas3GLMakie.GLMakie.Label(
                 info_grid[1, 1],
                 "Info:",
@@ -1457,8 +1715,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(info_textboxes, info_tb)
             
-            # Row 6: Patient-ID label + textbox (for reassignment)
-            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[6, col])
+            # Row 7: Patient-ID label + textbox (for reassignment)
+            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[7, col])
             Bas3GLMakie.GLMakie.Label(
                 pid_grid[1, 1],
                 "Patient:",
@@ -1473,9 +1731,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(patient_id_textboxes, pid_tb)
             
-            # Row 7: Save button
+            # Row 8: Save button
             local save_btn = Bas3GLMakie.GLMakie.Button(
-                images_grid[7, col],
+                images_grid[8, col],
                 label="Speichern",
                 fontsize=11
             )
@@ -1563,7 +1821,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         # Show message if more images exist
         if length(entries) > max_images_per_row
             Bas3GLMakie.GLMakie.Label(
-                images_grid[8, 1:num_images],
+                images_grid[9, 1:num_images],
                 "Weitere $(length(entries) - max_images_per_row) Bilder vorhanden (max. $max_images_per_row angezeigt)",
                 fontsize=12,
                 halign=:center,
@@ -1580,10 +1838,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         Bas3GLMakie.GLMakie.rowsize!(images_grid, 1, Bas3GLMakie.GLMakie.Fixed(30))   # Label
         Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(300))  # Image (reduced for HSV space)
         Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(200))  # HSV histograms (4 stacked)
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(40))   # Date
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Info
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Polygon controls
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Date
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Info
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 8, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
         
             # Log timing
             local build_elapsed = round((time() - build_start_time) * 1000, digits=1)
@@ -1656,6 +1915,60 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         
         status_label.text = "Liste aktualisiert: $(length(new_patient_ids)) Patienten"
         status_label.color = :green
+    end
+    
+    # Clear all polygons button callback
+    Bas3GLMakie.GLMakie.on(clear_polygons_button.clicks) do n
+        println("[POLYGON] Clearing all polygons ($(length(polygon_vertices_per_image)) images)")
+        for i in 1:length(polygon_vertices_per_image)
+            polygon_vertices_per_image[i][] = Bas3GLMakie.GLMakie.Point2f[]
+            polygon_active_per_image[i][] = false
+            polygon_complete_per_image[i][] = false
+        end
+        status_label.text = "Alle Polygone gelöscht"
+        status_label.color = :green
+    end
+    
+    # Mouse click handler for polygon vertex placement
+    Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mousebutton) do event
+        if event.button == Bas3GLMakie.GLMakie.Mouse.left && 
+           event.action == Bas3GLMakie.GLMakie.Mouse.press
+            
+            # Determine which axis was clicked
+            for (col_idx, ax) in enumerate(image_axes)
+                # Check if this axis is valid and has a scene
+                if !isnothing(ax) && !isnothing(ax.scene)
+                    # Get mouse position in axis coordinates
+                    local mp = Bas3GLMakie.GLMakie.mouseposition(ax.scene)
+                    
+                    # Check if mouse is inside axis limits
+                    if !isnothing(mp)
+                        local x_limits = ax.finallimits[].origin[1] .+ (0, ax.finallimits[].widths[1])
+                        local y_limits = ax.finallimits[].origin[2] .+ (0, ax.finallimits[].widths[2])
+                        
+                        if mp[1] >= x_limits[1] && mp[1] <= x_limits[2] &&
+                           mp[2] >= y_limits[1] && mp[2] <= y_limits[2]
+                            
+                            # Mouse is inside this axis
+                            if col_idx <= length(polygon_active_per_image) &&
+                               polygon_active_per_image[col_idx][] && 
+                               !polygon_complete_per_image[col_idx][]
+                                
+                                # Add vertex to this image's polygon
+                                local new_vertex = Bas3GLMakie.GLMakie.Point2f(Float32(mp[1]), Float32(mp[2]))
+                                local current_verts = polygon_vertices_per_image[col_idx][]
+                                push!(current_verts, new_vertex)
+                                polygon_vertices_per_image[col_idx][] = current_verts
+                                
+                                println("[POLYGON] Added vertex to column $col_idx: $new_vertex (total: $(length(current_verts)))")
+                            end
+                            
+                            break  # Only process one axis per click
+                        end
+                    end
+                end
+            end
+        end
     end
     
     # Navigation helper: navigate to patient at given index
@@ -1766,6 +2079,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             widgets = Dict(
                 :patient_menu => patient_menu,
                 :refresh_button => refresh_button,
+                :clear_polygons_button => clear_polygons_button,  # NEW: Clear all polygons
                 :prev_button => prev_button,      # NEW: Navigation buttons
                 :next_button => next_button,      # NEW: Navigation buttons
                 :status_label => status_label,
@@ -1781,6 +2095,10 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 :image_observables => image_observables,
                 :hsv_grids => hsv_grids,
                 :hsv_class_data => hsv_class_data,
+                :polygon_vertices_per_image => polygon_vertices_per_image,      # NEW: Polygon state
+                :polygon_active_per_image => polygon_active_per_image,          # NEW: Polygon state
+                :polygon_complete_per_image => polygon_complete_per_image,      # NEW: Polygon state
+                :polygon_buttons_per_image => polygon_buttons_per_image,        # NEW: Polygon buttons
             ),
             # Expose helper functions for testing
             functions = Dict(
