@@ -325,6 +325,96 @@ function update_patient_id_compare(db_path::String, row::Int, new_patient_id::In
 end
 
 # ============================================================================
+# POLYGON MASK EXPORT FUNCTIONS
+# ============================================================================
+
+"""
+    get_patient_folder_from_filename(filename::String, base_dir::String) -> Union{String, Nothing}
+
+Extract patient folder path from filename.
+Parses patient number from filename and constructs full path to patient folder.
+
+# Arguments
+- `filename`: Image filename (e.g., "MuHa_001_raw_adj.png")
+- `base_dir`: Base directory path (e.g., "/mnt/c/Syncthing/MuHa - Bilder")
+
+# Returns
+- Full path to patient folder (e.g., "/mnt/c/Syncthing/MuHa - Bilder/MuHa_001/")
+- `nothing` if filename is invalid or folder doesn't exist
+
+# Examples
+```julia
+path = get_patient_folder_from_filename("MuHa_001_raw_adj.png", "/mnt/c/Syncthing/MuHa - Bilder")
+# => "/mnt/c/Syncthing/MuHa - Bilder/MuHa_001/"
+```
+"""
+function get_patient_folder_from_filename(filename::String, base_dir::String)
+    # Match pattern: MuHa_XXX_... where XXX is 3 digits
+    m = match(r"MuHa_(\d{3})", filename)
+    if isnothing(m)
+        @warn "[MASK-EXPORT] Invalid filename format: $filename"
+        return nothing
+    end
+    
+    local patient_num = m.captures[1]  # e.g., "001"
+    local patient_folder_name = "MuHa_$(patient_num)"
+    local patient_folder_path = joinpath(base_dir, patient_folder_name)
+    
+    # Check if folder exists
+    if !isdir(patient_folder_path)
+        @warn "[MASK-EXPORT] Patient folder not found: $patient_folder_path"
+        return nothing
+    end
+    
+    return patient_folder_path
+end
+
+"""
+    save_polygon_mask_png(mask::BitMatrix, output_path::String) -> Tuple{Bool, String}
+
+Save polygon mask as PNG file.
+
+# Arguments
+- `mask`: BitMatrix (h x w) - binary mask where true=inside polygon, false=outside
+- `output_path`: Full path including filename (e.g., "/path/MuHa_001_raw_adj_polygon_mask.png")
+
+# Returns
+- Tuple of (success::Bool, message::String)
+  - success=true: File saved successfully
+  - success=false: Error occurred, message contains error details
+
+# Notes
+- Converts BitMatrix to grayscale: false→0 (black), true→255 (white)
+- Uses PNG format (lossless compression)
+- Overwrites existing files without warning
+"""
+function save_polygon_mask_png(mask::BitMatrix, output_path::String)
+    try
+        # Convert BitMatrix to RGB image for GLMakie save
+        # false → RGB{Float32}(0,0,0) = black
+        # true → RGB{Float32}(1,1,1) = white
+        local h, w = size(mask)
+        
+        # GLMakie.save() saves arrays as-is WITHOUT transposing!
+        # We need to manually transpose: H×W array → W×H array for correct PNG orientation
+        local img_transposed = Matrix{Bas3ImageSegmentation.v_RGB}(undef, w, h)
+        for i in 1:h, j in 1:w
+            img_transposed[j, i] = mask[i, j] ? Bas3ImageSegmentation.v_RGB(1, 1, 1) : Bas3ImageSegmentation.v_RGB(0, 0, 0)
+        end
+        
+        # Save as PNG - will be W×H in PNG file
+        Bas3GLMakie.GLMakie.save(output_path, img_transposed)
+        
+        println("[MASK-EXPORT] Saved mask: $(h)×$(w) array → transposed to $(w)×$(h) PNG")
+        return (true, "Maske gespeichert: $(basename(output_path))")
+    catch e
+        local error_msg = "Fehler beim Speichern: $(typeof(e))"
+        @warn "[MASK-EXPORT] Failed to save mask: $e"
+        return (false, error_msg)
+    end
+end
+
+# ============================================================================
 # POLYGON GEOMETRY FUNCTIONS (for polygon selection feature)
 # ============================================================================
 
@@ -411,6 +501,15 @@ function create_polygon_mask(img, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
         return falses(h, w)
     end
     
+    # GLMakie's image! displays with standard image convention:
+    # - Y coordinate matches matrix row index (Y increases downward)
+    # - X coordinate matches matrix col index (X increases rightward)
+    # - Mouse position (x, y) directly corresponds to (col, row)
+    # Therefore, NO coordinate transformation is needed
+    
+    println("[POLYGON-MASK] Image size: $(h)x$(w), vertices: $(length(vertices))")
+    println("[POLYGON-MASK] Vertex coordinates (x=col, y=row): ", vertices)
+    
     # Get AABB for optimization
     local min_x, max_x, min_y, max_y = polygon_bounds_aabb(vertices)
     
@@ -422,7 +521,6 @@ function create_polygon_mask(img, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
     local row_end = min(h, ceil(Int, max_y))
     
     println("[POLYGON-MASK] AABB: rows=$(row_start):$(row_end), cols=$(col_start):$(col_end)")
-    println("[POLYGON-MASK] Image size: $(h)x$(w), vertices: $(length(vertices))")
     
     # Create mask
     local mask = falses(h, w)
@@ -896,7 +994,114 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     end
     
     # ========================================================================
-    # FILTER STATE OBSERVABLES
+    # POLYGON MASK EXPORT FUNCTION (for programmatic access)
+    # ========================================================================
+    
+    """
+    Save polygon mask for a specific column to PNG file.
+    Can be called programmatically for testing or batch processing.
+    
+    Returns: (success::Bool, message::String, output_path::String)
+    """
+    function save_polygon_mask_for_column(col_idx::Int)
+        # Check if polygon is closed
+        if !polygon_complete_per_image[col_idx][]
+            return (false, "Polygon muss geschlossen sein zum Speichern", "")
+        end
+        
+        # Check if column index is valid
+        if col_idx < 1 || col_idx > length(image_observables)
+            return (false, "Ungültiger Spaltenindex: $col_idx", "")
+        end
+        
+        # Get current entry and polygon vertices
+        local entry = current_entries[][col_idx]
+        local vertices_lowres = polygon_vertices_per_image[col_idx][]
+        
+        if length(vertices_lowres) < 3
+            return (false, "Polygon muss mindestens 3 Vertices haben", "")
+        end
+        
+        println("[MASK-EXPORT] Image index: $(entry.image_index) → Patient folder: MuHa_$(lpad(entry.image_index, 3, '0'))")
+        println("[MASK-EXPORT] Polygon vertices (lowres): $(length(vertices_lowres))")
+        
+        # Construct paths
+        local base_dir = dirname(get_database_path())
+        local patient_num = lpad(entry.image_index, 3, '0')
+        local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+        
+        if !isdir(patient_folder)
+            return (false, "Patient-Ordner nicht gefunden: $patient_folder", "")
+        end
+        
+        local original_filename = "MuHa_$(patient_num)_raw_adj.png"
+        local original_path = joinpath(patient_folder, original_filename)
+        
+        if !isfile(original_path)
+            return (false, "Original-Bild nicht gefunden: $original_path", "")
+        end
+        
+        # Load original full-resolution image
+        println("[MASK-EXPORT] Loading original image: $original_path")
+        local original_img_loaded = Bas3GLMakie.GLMakie.FileIO.load(original_path)
+        println("[MASK-EXPORT] Original loaded size: $(size(original_img_loaded))")
+        
+        # Apply same rotation as UI (rotr90 for landscape viewing)
+        local original_img_rotated = rotr90(original_img_loaded)
+        println("[MASK-EXPORT] Original rotated size: $(size(original_img_rotated))")
+        
+        # Scale vertices from UI coordinate space to fullres
+        # NOTE: The UI image might be downsampled by GLMakie for display!
+        # We need to scale based on the ACTUAL displayed image size, not the array size
+        local rotated_lowres = image_observables[col_idx][]
+        local height_rot_lowres = size(rotated_lowres, 1)   # Height of actual image array in UI
+        local width_rot_lowres = size(rotated_lowres, 2)    # Width of actual image array in UI
+        local height_rot_fullres = size(original_img_rotated, 1)  # Height of rotated fullres image
+        local width_rot_fullres = size(original_img_rotated, 2)   # Width of rotated fullres image
+        
+        # Scale factors (from UI image to fullres)
+        local scale_factor_x = Float32(width_rot_fullres) / Float32(width_rot_lowres)
+        local scale_factor_y = Float32(height_rot_fullres) / Float32(height_rot_lowres)
+        
+        println("[MASK-EXPORT] UI image size: $(height_rot_lowres)×$(width_rot_lowres) (H×W)")
+        println("[MASK-EXPORT] Fullres rotated size: $(height_rot_fullres)×$(width_rot_fullres) (H×W)")
+        println("[MASK-EXPORT] Scale factors: x=$(scale_factor_x), y=$(scale_factor_y)")
+        println("[MASK-EXPORT] Vertices in UI space: ", vertices_lowres)
+        
+        # Scale vertices to fullres (stay in rotated coordinate space)
+        # NOTE: v[1] and v[2] are SWAPPED - v[1]=y, v[2]=x in GLMakie mouse coordinates!
+        # NOTE: X-axis is horizontally flipped - need to invert x-coordinate
+        local vertices_fullres = [Bas3GLMakie.GLMakie.Point2f(
+            width_rot_fullres - (v[2] * scale_factor_x),   # Flip X: width - x
+            v[1] * scale_factor_y                            # Y is correct
+        ) for v in vertices_lowres]
+        println("[MASK-EXPORT] Scaled vertices to fullres rotated space: ", vertices_fullres)
+        
+        # Generate mask in ROTATED fullres space (matches what user sees in UI)
+        local mask_rotated = create_polygon_mask(original_img_rotated, vertices_fullres)
+        println("[MASK-EXPORT] Mask generated in rotated space: $(size(mask_rotated))")
+        println("[MASK-EXPORT] This is the mask that matches the UI display (landscape)")
+        
+        # Construct output path
+        local output_filename = "MuHa_$(patient_num)_polygon_mask.png"
+        local output_path = joinpath(patient_folder, output_filename)
+        
+        println("[MASK-EXPORT] Saving mask in landscape orientation: $output_path")
+        
+        # Save mask as PNG (keep in rotated/landscape orientation to match raw file which is also landscape)
+        local success, msg = save_polygon_mask_png(mask_rotated, output_path)
+        
+        if success
+            println("[MASK-EXPORT] SUCCESS: $msg")
+        else
+            println("[MASK-EXPORT] FAILED: $msg")
+        end
+        
+        return (success, msg, output_path)
+    end
+    
+    # ========================================================================
+    # BUILD PATIENT IMAGES
     # ========================================================================
     # Cache patient image counts (computed once, updated on refresh)
     local patient_image_counts = Bas3GLMakie.GLMakie.Observable(
@@ -1633,7 +1838,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 width=60
             )
             
-            push!(polygon_buttons_per_image, (start_poly_btn, close_poly_btn, clear_poly_btn))
+            local save_mask_btn = Bas3GLMakie.GLMakie.Button(
+                polygon_control_grid[1, 4],
+                label="PNG speichern",
+                fontsize=9,
+                width=90
+            )
+            
+            push!(polygon_buttons_per_image, (start_poly_btn, close_poly_btn, clear_poly_btn, save_mask_btn))
             
             # Polygon button callbacks (capture col index for this specific image)
             local col_idx = col
@@ -1691,6 +1903,22 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 polygon_vertices_per_image[col_idx][] = Bas3GLMakie.GLMakie.Point2f[]
                 polygon_active_per_image[col_idx][] = false
                 polygon_complete_per_image[col_idx][] = false
+            end
+            
+            # Save polygon mask button
+            Bas3GLMakie.GLMakie.on(save_mask_btn.clicks) do n
+                println("[POLYGON] Save mask for column $col_idx")
+                
+                # Call the extracted function
+                local success, msg, output_path = save_polygon_mask_for_column(col_idx)
+                
+                if success
+                    status_label.text = msg
+                    status_label.color = :green
+                else
+                    status_label.text = msg
+                    status_label.color = :red
+                end
             end
             
             # Row 4: Date label + textbox
@@ -2195,8 +2423,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 :save_buttons => save_buttons,
                 :image_labels => image_labels,
                 :image_observables => image_observables,
-                :hsv_grids => hsv_grids,
-                :hsv_class_data => hsv_class_data,
+                # :hsv_grids => hsv_grids,  # TODO: Not implemented yet
+                # :hsv_class_data => hsv_class_data,  # TODO: Not implemented yet
                 :polygon_vertices_per_image => polygon_vertices_per_image,      # NEW: Polygon state
                 :polygon_active_per_image => polygon_active_per_image,          # NEW: Polygon state
                 :polygon_complete_per_image => polygon_complete_per_image,      # NEW: Polygon state
@@ -2213,6 +2441,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 :get_from_cache => get_from_cache,                                # NEW: Non-blocking cache check
                 :cleanup_cache => cleanup_cache,
                 :navigate_to_patient_index => navigate_to_patient_index,
+                :save_polygon_mask_for_column => save_polygon_mask_for_column,   # NEW: Programmatic mask save
             ),
             # Cache state for testing
             cache = Dict(
