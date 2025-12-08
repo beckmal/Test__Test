@@ -395,16 +395,21 @@ Uses AABB optimization to reduce number of point-in-polygon tests.
 Vertices are in axis coordinates (x, y) = (col, row).
 """
 function create_polygon_mask(img, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
-    if length(vertices) < 3
-        # Return empty mask
+    # Get image dimensions - handle both Matrix and v__Image_Data types
+    local h, w
+    if img isa AbstractMatrix
+        # img is already a Matrix (e.g., Matrix{RGB{Float32}})
+        h, w = Base.size(img, 1), Base.size(img, 2)
+    else
+        # img is v__Image_Data type
         local img_data = data(img)
-        local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
-        return falses(h, w)
+        h, w = Base.size(img_data, 1), Base.size(img_data, 2)
     end
     
-    # Get image dimensions
-    local img_data = data(img)
-    local h, w = Base.size(img_data, 1), Base.size(img_data, 2)
+    if length(vertices) < 3
+        # Return empty mask
+        return falses(h, w)
+    end
     
     # Get AABB for optimization
     local min_x, max_x, min_y, max_y = polygon_bounds_aabb(vertices)
@@ -445,256 +450,111 @@ function create_polygon_mask(img, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
 end
 
 # ============================================================================
-# BOUNDING BOX EXTRACTION FOR CLASS VISUALIZATION
+# POLYGON-BASED L*C*h EXTRACTION (Manual ROI Selection)
 # ============================================================================
 
-# Color scheme for bounding boxes (matches InteractiveUI)
-const BBOX_COLORS = Dict(
-    :scar => (:green, 0.5),
-    :redness => (:red, 0.5),
-    :hematoma => (:goldenrod, 0.5),
-    :necrosis => (:blue, 0.5)
-)
-
-"""
-    extract_class_bboxes(output_image, classes) -> Dict{Symbol, Vector{Vector{Float64}}}
-
-Extracts rotated bounding boxes for all classes in an output segmentation image.
-Uses PCA to compute oriented bounding boxes (minimum area rectangles).
-
-Returns a Dict mapping class symbols to lists of corner coordinates.
-Each bbox is [r1, c1, r2, c2, r3, c3, r4, c4] representing 4 corners.
-"""
-function extract_class_bboxes(output_image, classes)
-    local output_data = data(output_image)
-    local bboxes_by_class = Dict{Symbol, Vector{Vector{Float64}}}()
-    
-    # Process each non-background class
-    for (class_idx, class) in enumerate(classes)
-        if class == :background
-            continue
-        end
-        
-        bboxes_by_class[class] = []
-        
-        # Extract binary mask for this class (threshold at 0.5)
-        local class_mask = output_data[:, :, class_idx] .> 0.5
-        
-        # Skip if no pixels for this class
-        if !any(class_mask)
-            continue
-        end
-        
-        # Label connected components
-        local labeled = Bas3ImageSegmentation.label_components(class_mask)
-        local num_components = maximum(labeled)
-        
-        # Process each connected component
-        for component_id in 1:num_components
-            # Get mask for this component
-            local component_mask = labeled .== component_id
-            
-            # Find all pixels in this component
-            local pixel_coords = findall(component_mask)
-            
-            if isempty(pixel_coords)
-                continue
-            end
-            
-            # Extract row and column indices
-            local row_indices = Float64[p[1] for p in pixel_coords]
-            local col_indices = Float64[p[2] for p in pixel_coords]
-            
-            # Compute centroid
-            local centroid_row = sum(row_indices) / length(row_indices)
-            local centroid_col = sum(col_indices) / length(col_indices)
-            
-            # Center the coordinates
-            local centered_rows = row_indices .- centroid_row
-            local centered_cols = col_indices .- centroid_col
-            
-            # Compute covariance matrix for PCA
-            local n = length(centered_rows)
-            local cov_matrix = [
-                sum(centered_rows .* centered_rows) / n   sum(centered_rows .* centered_cols) / n;
-                sum(centered_rows .* centered_cols) / n   sum(centered_cols .* centered_cols) / n
-            ]
-            
-            # Compute eigenvectors (principal directions)
-            local eigen_result = eigen(cov_matrix)
-            local principal_axes = eigen_result.vectors
-            
-            # Project points onto principal axes
-            local proj_axis1 = centered_rows .* principal_axes[1, 2] .+ centered_cols .* principal_axes[2, 2]
-            local proj_axis2 = centered_rows .* principal_axes[1, 1] .+ centered_cols .* principal_axes[2, 1]
-            
-            # Find min/max along each principal axis
-            local min_proj1, max_proj1 = extrema(proj_axis1)
-            local min_proj2, max_proj2 = extrema(proj_axis2)
-            
-            # Compute corners of rotated rectangle in original coordinates
-            local corners_proj = [
-                (min_proj1, min_proj2),
-                (max_proj1, min_proj2),
-                (max_proj1, max_proj2),
-                (min_proj1, max_proj2)
-            ]
-            
-            local corners_original = map(corners_proj) do (p1, p2)
-                row = centroid_row + p1 * principal_axes[1, 2] + p2 * principal_axes[1, 1]
-                col = centroid_col + p1 * principal_axes[2, 2] + p2 * principal_axes[2, 1]
-                [row, col]
-            end
-            
-            # Flatten to [r1, c1, r2, c2, r3, c3, r4, c4]
-            local rotated_corners = vcat(corners_original...)
-            
-            push!(bboxes_by_class[class], rotated_corners)
-        end
-    end
-    
-    return bboxes_by_class
-end
-
-"""
-    draw_bboxes_on_axis!(ax, bboxes_dict, img_height)
-
-Draws bounding boxes for all classes on the given axis.
-Handles coordinate transformation for rotr90 display.
-"""
-function draw_bboxes_on_axis!(ax, bboxes_dict, img_height)
-    local bbox_plots = []
-    
-    for (class, bboxes) in bboxes_dict
-        local color = get(BBOX_COLORS, class, (:white, 0.5))
-        
-        for rotated_corners in bboxes
-            # rotated_corners is [r1, c1, r2, c2, r3, c3, r4, c4]
-            if length(rotated_corners) < 8
-                continue
-            end
-            
-            # Extract 4 corners
-            local corners = [
-                (rotated_corners[1], rotated_corners[2]),
-                (rotated_corners[3], rotated_corners[4]),
-                (rotated_corners[5], rotated_corners[6]),
-                (rotated_corners[7], rotated_corners[8])
-            ]
-            
-            # Transform coordinates for rotr90 display
-            # rotr90 transforms: (row, col) -> (col, height - row + 1)
-            local x_coords = Float64[]
-            local y_coords = Float64[]
-            
-            for (row, col) in corners
-                push!(x_coords, col)
-                push!(y_coords, img_height - row + 1)
-            end
-            
-            # Close the rectangle
-            push!(x_coords, corners[1][2])
-            push!(y_coords, img_height - corners[1][1] + 1)
-            
-            local line_plot = Bas3GLMakie.GLMakie.lines!(ax, x_coords, y_coords; color=color, linewidth=2)
-            push!(bbox_plots, line_plot)
-        end
-    end
-    
-    return bbox_plots
-end
-
 # ============================================================================
-# HSV HISTOGRAM EXTRACTION FOR CLASS REGIONS
+# L*C*h EXTRACTION FROM POLYGON REGIONS
 # ============================================================================
 
-# Import Colors for HSV and LCh conversion (available via Bas3ImageSegmentation)
-using Colors: HSV, RGB, LCHab
-
-# German class names for display
-const CLASS_NAMES_DE_HSV = Dict(
-    :scar => "Narbe",
-    :redness => "Rötung", 
-    :hematoma => "Hämatom",
-    :necrosis => "Nekrose"
-)
+# Import Colors for LCh conversion (available via Bas3ImageSegmentation)
+using Colors: RGB, LCHab
 
 """
-    extract_class_hsv_values(input_img, output_img, classes)
+    extract_polygon_lch_values(input_img, polygon_vertices, img_rotated)
 
-Extract HSV values for each class based on segmentation mask.
-Returns Dict mapping class symbol to NamedTuple with:
-- h_values, s_values, v_values: Arrays for histogram
-- median_h, median_s, median_v: Median values
-- count: Number of pixels
+Extract L*C*h values from polygon region in input image.
+
+# Arguments
+- `input_img`: Raw input image (NOT rotated, for data access)
+- `polygon_vertices`: Vector{Point2f} in axis coordinates (rotated space)
+- `img_rotated`: Rotated image (for dimensions)
+
+# Returns
+NamedTuple with:
+- l_values, c_values, h_values: Arrays of L*C*h values
+- median_l, median_c, median_h: Median values
+- count: Number of pixels in polygon
+
+# Notes
+- Handles coordinate transformation for rotr90 images
+- Returns empty data if polygon has < 3 vertices
 """
-function extract_class_hsv_values(input_img, output_img, classes)
-    local input_data = data(input_img)
-    local output_data = data(output_img)
-    local results = Dict{Symbol, NamedTuple}()
-    
-    for (class_idx, class) in enumerate(classes)
-        if class == :background
-            continue
-        end
-        
-        # Get class mask (pixels belonging to this class)
-        local class_mask = output_data[:, :, class_idx] .> 0.5
-        
-        if !any(class_mask)
-            results[class] = (
-                h_values = Float64[],
-                s_values = Float64[],
-                v_values = Float64[],
-                median_h = NaN,
-                median_s = NaN,
-                median_v = NaN,
-                count = 0
-            )
-            continue
-        end
-        
-        # Count pixels for pre-allocation
-        local pixel_indices = findall(class_mask)
-        local n_pixels = length(pixel_indices)
-        
-        # Pre-allocate arrays
-        local h_values = Vector{Float64}(undef, n_pixels)
-        local s_values = Vector{Float64}(undef, n_pixels)
-        local v_values = Vector{Float64}(undef, n_pixels)
-        
-        # Extract HSV values from input image at masked locations
-        @inbounds for (i, idx) in enumerate(pixel_indices)
-            local r, c = idx[1], idx[2]
-            # Get RGB values from input data array (row, col, channel)
-            local red = input_data[r, c, 1]
-            local green = input_data[r, c, 2]
-            local blue = input_data[r, c, 3]
-            local rgb_pixel = RGB(red, green, blue)
-            local hsv_pixel = HSV(rgb_pixel)
-            
-            h_values[i] = hsv_pixel.h           # 0-360°
-            s_values[i] = hsv_pixel.s * 100.0   # 0-100%
-            v_values[i] = hsv_pixel.v * 100.0   # 0-100%
-        end
-        
-        # Compute medians
-        local median_h = n_pixels > 0 ? median(h_values) : NaN
-        local median_s = n_pixels > 0 ? median(s_values) : NaN
-        local median_v = n_pixels > 0 ? median(v_values) : NaN
-        
-        results[class] = (
-            h_values = h_values,
-            s_values = s_values,
-            v_values = v_values,
-            median_h = median_h,
-            median_s = median_s,
-            median_v = median_v,
-            count = n_pixels
+function extract_polygon_lch_values(input_img, polygon_vertices::Vector{Bas3GLMakie.GLMakie.Point2f}, img_rotated)
+    # Return empty if invalid polygon
+    if length(polygon_vertices) < 3
+        return (
+            l_values = Float64[],
+            c_values = Float64[],
+            h_values = Float64[],
+            median_l = NaN,
+            median_c = NaN,
+            median_h = NaN,
+            count = 0
         )
     end
     
-    return results
+    # Create polygon mask in rotated space
+    local mask_rotated = create_polygon_mask(img_rotated, polygon_vertices)
+    
+    # Transform mask back to original orientation
+    # rotr90 inverse is rotl90
+    local mask_original = rotl90(mask_rotated)
+    
+    # Get input data in original orientation
+    local input_data = data(input_img)
+    
+    # Find pixels inside polygon
+    local pixel_indices = findall(mask_original)
+    local n_pixels = length(pixel_indices)
+    
+    if n_pixels == 0
+        return (
+            l_values = Float64[],
+            c_values = Float64[],
+            h_values = Float64[],
+            median_l = NaN,
+            median_c = NaN,
+            median_h = NaN,
+            count = 0
+        )
+    end
+    
+    # Pre-allocate arrays
+    local l_values = Vector{Float64}(undef, n_pixels)
+    local c_values = Vector{Float64}(undef, n_pixels)
+    local h_values = Vector{Float64}(undef, n_pixels)
+    
+    # Extract L*C*h values
+    @inbounds for (i, idx) in enumerate(pixel_indices)
+        local r, c = idx[1], idx[2]
+        local red = input_data[r, c, 1]
+        local green = input_data[r, c, 2]
+        local blue = input_data[r, c, 3]
+        local rgb_pixel = RGB(red, green, blue)
+        local lch_pixel = LCHab(rgb_pixel)
+        
+        l_values[i] = lch_pixel.l
+        c_values[i] = lch_pixel.c
+        h_values[i] = lch_pixel.h
+    end
+    
+    # Compute medians
+    local median_l = median(l_values)
+    local median_c = median(c_values)
+    local median_h = median(h_values)
+    
+    println("[POLYGON-LCH] Extracted $(n_pixels) pixels: L*=$(round(median_l, digits=1)), C*=$(round(median_c, digits=1)), h°=$(round(median_h, digits=1))")
+    
+    return (
+        l_values = l_values,
+        c_values = c_values,
+        h_values = h_values,
+        median_l = median_l,
+        median_c = median_c,
+        median_h = median_h,
+        count = n_pixels
+    )
 end
 
 """
@@ -802,257 +662,12 @@ function extract_class_lch_values(input_img, output_img, classes)
     return results
 end
 
-"""
-    create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
-
-Create vertically stacked mini HSV histograms for each class (4 rows x 1 column).
-Returns the created GridLayout.
-"""
-function create_hsv_mini_histograms!(parent_layout, hsv_class_data, classes)
-    # Define class order for vertical stack: scar, redness, hematoma, necrosis
-    local class_order = [:scar, :redness, :hematoma, :necrosis]
-    
-    # Create vertical nested grid (4 rows, 1 column)
-    local hsv_grid = Bas3GLMakie.GLMakie.GridLayout(parent_layout)
-    
-    for (row_idx, class) in enumerate(class_order)
-        local class_data = get(hsv_class_data, class, nothing)
-        local color = BBOX_COLORS[class][1]
-        local class_name = get(CLASS_NAMES_DE_HSV, class, string(class))
-        
-        if isnothing(class_data) || class_data.count == 0
-            # No data - show placeholder
-            Bas3GLMakie.GLMakie.Label(
-                hsv_grid[row_idx, 1],
-                "$class_name (keine Pixel)",
-                fontsize=8,
-                color=:gray,
-                halign=:center
-            )
-            continue
-        end
-        
-        # Create compact title with class name and stats on one line (normalized 0-1)
-        local h_norm = round(class_data.median_h / 360.0, digits=2)
-        local s_norm = round(class_data.median_s / 100.0, digits=2)
-        local v_norm = round(class_data.median_v / 100.0, digits=2)
-        local title_text = "$class_name n=$(class_data.count) H=$(h_norm) S=$(s_norm) V=$(v_norm)"
-        
-        local ax = Bas3GLMakie.GLMakie.Axis(
-            hsv_grid[row_idx, 1],
-            title=title_text,
-            titlesize=7,
-            titlecolor=color,
-            xlabelsize=6,
-            ylabelsize=6,
-            xticklabelsize=5,
-            yticklabelsize=5
-        )
-        
-        # Hide decorations for compact display
-        Bas3GLMakie.GLMakie.hideydecorations!(ax)
-        Bas3GLMakie.GLMakie.hidexdecorations!(ax)
-        
-        # Plot H, S, V histograms with transparency (all normalized to 0-1)
-        if length(class_data.h_values) > 0
-            # Hue (0-360) - normalize to 0-1
-            local h_normalized = class_data.h_values ./ 360.0
-            Bas3GLMakie.GLMakie.hist!(ax, h_normalized, bins=12, color=(:orange, 0.5), normalization=:pdf, direction=:x)
-            
-            # Saturation (0-100) - normalize to 0-1
-            local s_normalized = class_data.s_values ./ 100.0
-            Bas3GLMakie.GLMakie.hist!(ax, s_normalized, bins=12, color=(:magenta, 0.4), normalization=:pdf, direction=:x)
-            
-            # Value (0-100) - normalize to 0-1
-            local v_normalized = class_data.v_values ./ 100.0
-            Bas3GLMakie.GLMakie.hist!(ax, v_normalized, bins=12, color=(:gray, 0.4), normalization=:pdf, direction=:x)
-        end
-        
-        # Set axis limits (y-axis for values since rotated 90°, normalized 0-1)
-        Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
-    end
-    
-    # Set tight row spacing for vertical stack
-    Bas3GLMakie.GLMakie.rowgap!(hsv_grid, 2)
-    
-    return hsv_grid
-end
-
-# ============================================================================
-# H/S TIMELINE PLOT (Narrow left-column axis showing H/S medians over time)
-# ============================================================================
+# H/S timeline and mini histograms removed - now using polygon-based L*C*h analysis
 
 """
-    create_hs_timeline!(timeline_grid, entries, hsv_data_list, classes)
+    create_lch_timeline!(timeline_grid, entries, lch_data_list)
 
-Create a timeline plot showing H and S median values over time for each class.
-Optimized for narrow left-column layout (280px width) with legend below axis.
-
-# Arguments
-- `timeline_grid`: Parent GridLayout for the timeline
-- `entries`: Vector of NamedTuples with :date field (YYYY-MM-DD format)
-- `hsv_data_list`: Vector of Dict{Symbol, NamedTuple} with HSV data per image
-- `classes`: Tuple of class symbols (e.g., (:scar, :redness, :hematoma, :necrosis, :background))
-
-# Plot Design
-- X-axis: Date (parsed from entries) - abbreviated format "dd.mm"
-- Y-axis: Normalized value (0-1)
-  - H (Hue): normalized from 0-360° to 0-1
-  - S (Saturation): normalized from 0-100% to 0-1
-- Lines: Solid + markers for H, dashed + markers for S
-- Colors: Match BBOX_COLORS per class
-- Legend: Below axis in 2-column layout
-
-# Returns
-- The created Axis object
-"""
-function create_hs_timeline!(timeline_grid, entries, hsv_data_list, classes)
-    # Skip if no data
-    if isempty(entries) || isempty(hsv_data_list)
-        Bas3GLMakie.GLMakie.Label(
-            timeline_grid[1, 1],
-            "Keine Zeitdaten",
-            fontsize=10,
-            color=:gray,
-            halign=:center
-        )
-        return nothing
-    end
-    
-    # Parse dates and convert to numeric values for plotting
-    local dates = Dates.Date[]
-    local date_values = Float64[]
-    
-    for entry in entries
-        try
-            local parsed_date = Dates.Date(entry.date, "yyyy-mm-dd")
-            push!(dates, parsed_date)
-            push!(date_values, Float64(Dates.value(parsed_date)))
-        catch e
-            @warn "[TIMELINE] Failed to parse date: $(entry.date)"
-            # Use index-based fallback (should not happen per requirements)
-            push!(dates, Dates.Date(2000, 1, 1))
-            push!(date_values, Float64(length(dates)))
-        end
-    end
-    
-    # Create axis (optimized for narrow width)
-    local ax = Bas3GLMakie.GLMakie.Axis(
-        timeline_grid[1, 1],
-        title = "H/S Verlauf",
-        titlesize = 10,
-        xlabel = "",  # Remove xlabel to save space
-        ylabel = "Wert (0-1)",
-        xlabelsize = 8,
-        ylabelsize = 8,
-        xticklabelsize = 6,
-        yticklabelsize = 6,
-        xticklabelrotation = π/4  # Rotate labels 45° to fit
-    )
-    
-    # Set Y limits (normalized 0-1)
-    Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
-    
-    # Custom X-axis tick formatting (abbreviated dates for narrow width)
-    local unique_dates = unique(dates)
-    local tick_positions = [Float64(Dates.value(d)) for d in unique_dates]
-    local tick_labels = [Dates.format(d, "dd.mm") for d in unique_dates]  # Abbreviated
-    ax.xticks = (tick_positions, tick_labels)
-    
-    # Class order for plotting
-    local class_order = [:scar, :redness, :hematoma, :necrosis]
-    
-    # Collect plot elements for legend
-    local legend_elements = []
-    local legend_labels = String[]
-    
-    for class in class_order
-        local base_color = BBOX_COLORS[class][1]
-        local class_name = get(CLASS_NAMES_DE_HSV, class, string(class))
-        
-        # Extract H and S values for this class across all images
-        local h_values = Float64[]
-        local s_values = Float64[]
-        local valid_date_values = Float64[]
-        
-        for (i, hsv_data) in enumerate(hsv_data_list)
-            local class_data = get(hsv_data, class, nothing)
-            if !isnothing(class_data) && class_data.count > 0 && !isnan(class_data.median_h)
-                # Normalize H from 0-360 to 0-1
-                push!(h_values, class_data.median_h / 360.0)
-                # Normalize S from 0-100 to 0-1
-                push!(s_values, class_data.median_s / 100.0)
-                push!(valid_date_values, date_values[i])
-            end
-        end
-        
-        # Skip if no valid data for this class
-        if isempty(h_values)
-            continue
-        end
-        
-        # Sort by date for proper line connection
-        local sort_idx = sortperm(valid_date_values)
-        local sorted_dates = valid_date_values[sort_idx]
-        local sorted_h = h_values[sort_idx]
-        local sorted_s = s_values[sort_idx]
-        
-        # Plot H line (solid + circle markers, smaller for narrow width)
-        local h_line = Bas3GLMakie.GLMakie.scatterlines!(
-            ax, 
-            sorted_dates, 
-            sorted_h;
-            color = base_color,
-            linewidth = 1.5,
-            linestyle = :solid,
-            marker = :circle,
-            markersize = 6
-        )
-        push!(legend_elements, h_line)
-        push!(legend_labels, "$class_name H")
-        
-        # Plot S line (dashed + diamond markers, slightly transparent)
-        local s_line = Bas3GLMakie.GLMakie.scatterlines!(
-            ax,
-            sorted_dates,
-            sorted_s;
-            color = (base_color, 0.7),
-            linewidth = 1.5,
-            linestyle = :dash,
-            marker = :diamond,
-            markersize = 6
-        )
-        push!(legend_elements, s_line)
-        push!(legend_labels, "$class_name S")
-    end
-    
-    # Add legend BELOW axis (2-column layout for compact display)
-    if !isempty(legend_elements)
-        Bas3GLMakie.GLMakie.Legend(
-            timeline_grid[2, 1],  # Below axis
-            legend_elements,
-            legend_labels,
-            labelsize = 6,
-            framevisible = false,
-            padding = (2, 2, 2, 2),
-            rowgap = 1,
-            colgap = 5,
-            nbanks = 2,  # 2-column layout
-            orientation = :horizontal
-        )
-        
-        # Set row sizes: axis takes most space, legend is compact below
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, Bas3GLMakie.GLMakie.Relative(0.75))
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, Bas3GLMakie.GLMakie.Relative(0.25))
-    end
-    
-    return ax
-end
-
-"""
-    create_lch_timeline!(timeline_grid, entries, lch_data_list, classes)
-
-Create L*C*h timeline plot showing color evolution over time.
+Create L*C*h timeline plot showing color evolution over time from polygon regions.
 
 L*C*h is a perceptually uniform color space based on L*a*b*.
 - L* (Lightness): 0-100, whether wound becomes paler
@@ -1062,30 +677,88 @@ L*C*h is a perceptually uniform color space based on L*a*b*.
 # Arguments
 - `timeline_grid`: GridLayout to place the plot
 - `entries`: Vector of entry dictionaries with date field
-- `lch_data_list`: Vector of Dict{Symbol, NamedTuple} with LCh data per image
-- `classes`: Vector of class symbols
+- `lch_data_list`: Vector of NamedTuple with L*C*h data per polygon
 
 # Returns
 - The created Axis object
 """
-function create_lch_timeline!(timeline_grid, entries, lch_data_list, classes)
+function create_lch_timeline!(timeline_grid, entries, lch_data_list)
     # Skip if no data
     if isempty(entries) || isempty(lch_data_list)
         Bas3GLMakie.GLMakie.Label(
             timeline_grid[1, 1],
-            "Keine L*C*h-Zeitdaten",
-            fontsize=10,
+            "Keine Polygondaten\n\nBitte Polygone zeichnen",
+            fontsize=12,
             color=:gray,
             halign=:center
         )
         return nothing
     end
     
-    # Parse dates and convert to numeric values for plotting
+    # Extract L, C, h values from polygon data across all images FIRST
+    local l_values = Float64[]
+    local c_values = Float64[]
+    local h_values = Float64[]
+    local valid_indices = Int[]
+    
+    for (i, lch_data) in enumerate(lch_data_list)
+        # lch_data is now a NamedTuple (not Dict)
+        if !isnothing(lch_data) && lch_data.count > 0 && !isnan(lch_data.median_l)
+            # Normalize L from 0-100 to 0-1
+            push!(l_values, lch_data.median_l / 100.0)
+            # Normalize C from 0-150 to 0-1 (assume max chroma ~150)
+            push!(c_values, lch_data.median_c / 150.0)
+            # Normalize h from 0-360 to 0-1
+            push!(h_values, lch_data.median_h / 360.0)
+            push!(valid_indices, i)
+        end
+    end
+    
+    # Skip if no valid data - show EMPTY AXIS with placeholder text
+    if isempty(l_values)
+        println("[LCH-TIMELINE] No valid polygon data, showing empty axis")
+        
+        # Create empty axis with title
+        local ax = Bas3GLMakie.GLMakie.Axis(
+            timeline_grid[1, 1],
+            title = "L*C*h Verlauf (Polygonregion)",
+            titlesize = 12,
+            xlabel = "",
+            ylabel = "Wert (norm. 0-1)",
+            xlabelsize = 9,
+            ylabelsize = 9,
+            xticklabelsize = 7,
+            yticklabelsize = 7
+        )
+        
+        # Set Y limits
+        Bas3GLMakie.GLMakie.ylims!(ax, 0, 1)
+        Bas3GLMakie.GLMakie.xlims!(ax, 0, 1)  # Set X limits too
+        
+        # Add centered text message
+        Bas3GLMakie.GLMakie.text!(
+            ax,
+            0.5, 0.5,
+            text = "Keine Polygondaten\n\nBitte Polygone zeichnen und schließen",
+            align = (:center, :center),
+            fontsize = 12,
+            color = :gray
+        )
+        
+        # NO LEGEND when empty (skip it entirely)
+        
+        # Set row sizes
+        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, Bas3GLMakie.GLMakie.Relative(1.0))  # Full height when no legend
+        
+        return ax
+    end
+    
+    # Parse dates and convert to numeric values for plotting (only for valid entries)
     local dates = Dates.Date[]
     local date_values = Float64[]
     
-    for entry in entries
+    for idx in valid_indices
+        entry = entries[idx]
         try
             local parsed_date = Dates.Date(entry.date, "yyyy-mm-dd")
             push!(dates, parsed_date)
@@ -1098,17 +771,17 @@ function create_lch_timeline!(timeline_grid, entries, lch_data_list, classes)
         end
     end
     
-    # Create axis (optimized for narrow width)
+    # Create axis (optimized for narrow width, larger for single timeline)
     local ax = Bas3GLMakie.GLMakie.Axis(
         timeline_grid[1, 1],
-        title = "L*C*h Verlauf",
-        titlesize = 10,
+        title = "L*C*h Verlauf (Polygonregion)",
+        titlesize = 12,
         xlabel = "",  # Remove xlabel to save space
         ylabel = "Wert (norm. 0-1)",
-        xlabelsize = 8,
-        ylabelsize = 8,
-        xticklabelsize = 6,
-        yticklabelsize = 6,
+        xlabelsize = 9,
+        ylabelsize = 9,
+        xticklabelsize = 7,
+        yticklabelsize = 7,
         xticklabelrotation = π/4  # Rotate labels 45° to fit
     )
     
@@ -1121,110 +794,65 @@ function create_lch_timeline!(timeline_grid, entries, lch_data_list, classes)
     local tick_labels = [Dates.format(d, "dd.mm") for d in unique_dates]  # Abbreviated
     ax.xticks = (tick_positions, tick_labels)
     
-    # Class order for plotting
-    local class_order = [:scar, :redness, :hematoma, :necrosis]
+    # Sort by date for proper line connection
+    local sort_idx = sortperm(date_values)
+    local sorted_dates = date_values[sort_idx]
+    local sorted_l = l_values[sort_idx]
+    local sorted_c = c_values[sort_idx]
+    local sorted_h = h_values[sort_idx]
     
-    # Collect plot elements for legend
-    local legend_elements = []
-    local legend_labels = String[]
+    # Plot L* line (solid, blue)
+    local l_line = Bas3GLMakie.GLMakie.scatterlines!(
+        ax, 
+        sorted_dates, 
+        sorted_l;
+        color = :blue,
+        linewidth = 2,
+        linestyle = :solid,
+        marker = :circle,
+        markersize = 8
+    )
     
-    for class in class_order
-        local base_color = BBOX_COLORS[class][1]
-        local class_name = get(CLASS_NAMES_DE_HSV, class, string(class))
-        
-        # Extract L, C, h values for this class across all images
-        local l_values = Float64[]
-        local c_values = Float64[]
-        local h_values = Float64[]
-        local valid_date_values = Float64[]
-        
-        for (i, lch_data) in enumerate(lch_data_list)
-            local class_data = get(lch_data, class, nothing)
-            if !isnothing(class_data) && class_data.count > 0 && !isnan(class_data.median_l)
-                # Normalize L from 0-100 to 0-1
-                push!(l_values, class_data.median_l / 100.0)
-                # Normalize C from 0-150 to 0-1 (assume max chroma ~150)
-                push!(c_values, class_data.median_c / 150.0)
-                # Normalize h from 0-360 to 0-1
-                push!(h_values, class_data.median_h / 360.0)
-                push!(valid_date_values, date_values[i])
-            end
-        end
-        
-        # Skip if no valid data for this class
-        if isempty(l_values)
-            continue
-        end
-        
-        # Sort by date for proper line connection
-        local sort_idx = sortperm(valid_date_values)
-        local sorted_dates = valid_date_values[sort_idx]
-        local sorted_l = l_values[sort_idx]
-        local sorted_c = c_values[sort_idx]
-        local sorted_h = h_values[sort_idx]
-        
-        # Plot L* line (solid + circle markers)
-        local l_line = Bas3GLMakie.GLMakie.scatterlines!(
-            ax, 
-            sorted_dates, 
-            sorted_l;
-            color = base_color,
-            linewidth = 1.5,
-            linestyle = :solid,
-            marker = :circle,
-            markersize = 6
-        )
-        push!(legend_elements, l_line)
-        push!(legend_labels, "$class_name L*")
-        
-        # Plot C* line (dashed + diamond markers, slightly transparent)
-        local c_line = Bas3GLMakie.GLMakie.scatterlines!(
-            ax,
-            sorted_dates,
-            sorted_c;
-            color = (base_color, 0.7),
-            linewidth = 1.5,
-            linestyle = :dash,
-            marker = :diamond,
-            markersize = 6
-        )
-        push!(legend_elements, c_line)
-        push!(legend_labels, "$class_name C*")
-        
-        # Plot h° line (dotted + square markers, more transparent)
-        local h_line = Bas3GLMakie.GLMakie.scatterlines!(
-            ax,
-            sorted_dates,
-            sorted_h;
-            color = (base_color, 0.5),
-            linewidth = 1.5,
-            linestyle = :dot,
-            marker = :rect,
-            markersize = 5
-        )
-        push!(legend_elements, h_line)
-        push!(legend_labels, "$class_name h°")
-    end
+    # Plot C* line (dashed, red)
+    local c_line = Bas3GLMakie.GLMakie.scatterlines!(
+        ax,
+        sorted_dates,
+        sorted_c;
+        color = :red,
+        linewidth = 2,
+        linestyle = :dash,
+        marker = :diamond,
+        markersize = 8
+    )
     
-    # Add legend BELOW axis (2-column layout for compact display)
-    if !isempty(legend_elements)
-        Bas3GLMakie.GLMakie.Legend(
-            timeline_grid[2, 1],  # Below axis
-            legend_elements,
-            legend_labels,
-            labelsize = 6,
-            framevisible = false,
-            padding = (2, 2, 2, 2),
-            rowgap = 1,
-            colgap = 5,
-            nbanks = 2,  # 2-column layout
-            orientation = :horizontal
-        )
-        
-        # Set row sizes: axis takes most space, legend is compact below
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, Bas3GLMakie.GLMakie.Relative(0.75))
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, Bas3GLMakie.GLMakie.Relative(0.25))
-    end
+    # Plot h° line (dotted, green)
+    local h_line = Bas3GLMakie.GLMakie.scatterlines!(
+        ax,
+        sorted_dates,
+        sorted_h;
+        color = :green,
+        linewidth = 2,
+        linestyle = :dot,
+        marker = :rect,
+        markersize = 7
+    )
+    
+    # Simplified legend (single-column)
+    Bas3GLMakie.GLMakie.Legend(
+        timeline_grid[2, 1],  # Below axis
+        [l_line, c_line, h_line],
+        ["L* (Helligkeit)", "C* (Chroma)", "h° (Farbton)"],
+        labelsize = 8,
+        framevisible = true,
+        padding = (5, 5, 5, 5),
+        rowgap = 2,
+        orientation = :horizontal,
+        nbanks = 1
+    )
+    
+    # Set row sizes: axis takes most space, legend is compact below
+    Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, Bas3GLMakie.GLMakie.Relative(0.80))
+    Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, Bas3GLMakie.GLMakie.Relative(0.20))
     
     return ax
 end
@@ -1382,12 +1010,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     # Row 7: Spacer (expands to fill space)
     Bas3GLMakie.GLMakie.Box(left_column[7, 1], color=:transparent)
     
-    # Row 8: H/S Timeline Plot
-    local timeline_grid = Bas3GLMakie.GLMakie.GridLayout(left_column[8, 1])
-    local timeline_axis = Ref{Any}(nothing)  # Will hold axis reference for clearing
-    
-    # Row 9: L*C*h Timeline Plot (NEW)
-    local timeline_grid_lch = Bas3GLMakie.GLMakie.GridLayout(left_column[9, 1])
+    # Row 8: L*C*h Timeline Plot (polygon-based)
+    local timeline_grid_lch = Bas3GLMakie.GLMakie.GridLayout(left_column[8, 1])
     local timeline_axis_lch = Ref{Any}(nothing)  # Will hold LCh axis reference for clearing
     
     # Set left column row sizes
@@ -1398,8 +1022,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Fixed(35))   # Clear polygons
     Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Status
     Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Auto())      # Spacer (flexible)
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Fixed(280))  # H/S Timeline
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 9, Bas3GLMakie.GLMakie.Fixed(280))  # L*C*h Timeline (NEW)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Fixed(560))  # L*C*h Timeline (expanded)
     
     # ========================================================================
     # RIGHT COLUMN: Images Container (scrollable grid)
@@ -1410,13 +1033,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local image_axes = Bas3GLMakie.GLMakie.Axis[]
     local date_textboxes = []
     local info_textboxes = []
-    local patient_id_textboxes = []  # NEW: for patient ID reassignment
+    local patient_id_textboxes = []  # For patient ID reassignment
     local save_buttons = []
     local image_labels = []
     local image_observables = []
-    local hsv_grids = []        # NEW: HSV histogram 2x2 grids
-    local hsv_class_data = []   # NEW: HSV data per image
-    local lch_class_data = []   # NEW: LCh data per image
+    local lch_polygon_data = []   # L*C*h data per polygon (NamedTuple per image)
     
     # POLYGON SELECTION: Per-image polygon state arrays
     local polygon_vertices_per_image = []     # Vector of Observable{Vector{Point2f}}
@@ -1455,16 +1076,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             if idx == image_index
                 return (
                     input = rotr90(image(input_img)),
-                    output = rotr90(image(output_img)),
-                    input_raw = input_img,    # Keep raw for HSV extraction
-                    output_raw = output_img,  # Keep raw for bbox extraction
+                    input_raw = input_img,    # Keep raw for L*C*h extraction from polygons
                     height = Base.size(data(input_img), 1)  # Original height before rotr90
                 )
             end
         end
         # Return placeholder if not found
         local placeholder = fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
-        return (input = placeholder, output = placeholder, input_raw = nothing, output_raw = nothing, height = 100)
+        return (input = placeholder, input_raw = nothing, height = 100)
     end
     
     # Legacy function for compatibility
@@ -1522,16 +1141,13 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                         # Get raw images (loads .bin files into RAM)
                         images = get_images_by_index(entry.image_index)
                         
-                        # Return ONLY the raw data - no bbox/HSV computation
-                        # (bbox/HSV will be computed on-demand when UI displays them)
+                        # Return input images only (no segmentation output needed)
                         (
                             success = true,
                             data = (
                                 image_index = entry.image_index,
                                 input_rotated = images.input,
-                                output_rotated = images.output,
                                 input_raw = images.input_raw,
-                                output_raw = images.output_raw,
                                 height = images.height,
                             ),
                             error = nothing
@@ -1734,43 +1350,40 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         end
     end
     
+    # Helper to recursively delete GridLayout contents
+    # Moved outside clear_images_grid! so it can be called from polygon callbacks
+    function delete_gridlayout_contents!(gl)
+        while !isempty(gl.content)
+            content_item = gl.content[1]
+            obj = content_item.content
+            
+            # If this is a nested GridLayout, recursively clear it first
+            if obj isa Bas3GLMakie.GLMakie.GridLayout
+                delete_gridlayout_contents!(obj)
+            end
+            
+            # Delete the object from the figure
+            try
+                Bas3GLMakie.GLMakie.delete!(obj)
+            catch e
+                # Fallback: remove from content array
+                try
+                    deleteat!(gl.content, 1)
+                catch
+                    # Skip if already removed
+                end
+            end
+        end
+    end
+    
     # Clear all image widgets - RECURSIVE deletion for nested GridLayouts
     function clear_images_grid!()
         println("[COMPARE-UI] Clearing images grid ($(length(images_grid.content)) items) and timeline...")
         
-        # Helper to recursively delete GridLayout contents
-        function delete_gridlayout_contents!(gl)
-            while !isempty(gl.content)
-                content_item = gl.content[1]
-                obj = content_item.content
-                
-                # If this is a nested GridLayout, recursively clear it first
-                if obj isa Bas3GLMakie.GLMakie.GridLayout
-                    delete_gridlayout_contents!(obj)
-                end
-                
-                # Delete the object from the figure
-                try
-                    Bas3GLMakie.GLMakie.delete!(obj)
-                catch e
-                    # Fallback: remove from content array
-                    try
-                        deleteat!(gl.content, 1)
-                    catch
-                        # Skip if already removed
-                    end
-                end
-            end
-        end
-        
         # Clear the main images_grid recursively
         delete_gridlayout_contents!(images_grid)
         
-        # Clear the timeline_grid as well (HSV)
-        delete_gridlayout_contents!(timeline_grid)
-        timeline_axis[] = nothing
-        
-        # Clear the LCh timeline_grid as well (NEW)
+        # Clear the LCh timeline_grid
         delete_gridlayout_contents!(timeline_grid_lch)
         timeline_axis_lch[] = nothing
         
@@ -1778,13 +1391,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         empty!(image_axes)
         empty!(date_textboxes)
         empty!(info_textboxes)
-        empty!(patient_id_textboxes)  # NEW
+        empty!(patient_id_textboxes)
         empty!(save_buttons)
         empty!(image_labels)
         empty!(image_observables)
-        empty!(hsv_grids)       # NEW
-        empty!(hsv_class_data)  # NEW
-        empty!(lch_class_data)  # NEW: Clear LCh data to prevent accumulation
+        empty!(lch_polygon_data)  # Clear L*C*h polygon data
         
         # Clear polygon state arrays
         empty!(polygon_vertices_per_image)
@@ -1903,18 +1514,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Layer 1: Display input image (base layer)
                 Bas3GLMakie.GLMakie.image!(ax, img_obs)
                 
-                # Layer 2: Overlay output segmentation with 50% transparency
-                local output_obs = Bas3GLMakie.GLMakie.Observable(img_data.output_rotated)
-                Bas3GLMakie.GLMakie.image!(ax, output_obs; alpha=0.5)
-                
-                # Layer 3: Draw bounding boxes (computed on-demand from cached raw data)
-                if !isnothing(img_data.output_raw)
-                    local bboxes = extract_class_bboxes(img_data.output_raw, classes)
-                    draw_bboxes_on_axis!(ax, bboxes, img_data.height)
-                    println("[COMPARE-UI] Drew on-demand bboxes for image $(entry.image_index)")
-                end
-                
-                # Layer 4: POLYGON OVERLAY (per-image polygon selection)
+                # Layer 2: POLYGON OVERLAY (per-image polygon selection)
                 # Initialize polygon state for this image
                 local poly_verts = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
                 local poly_active = Bas3GLMakie.GLMakie.Observable(false)
@@ -1944,19 +1544,16 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 println("[POLYGON] Initialized polygon state for column $col")
                 
-                # Row 3: HSV mini histograms (REMOVED - not needed in CompareUI)
-                # Histograms removed to simplify UI layout
-                # But we still need HSV and LCh data for the timeline plots!
-                if !isnothing(img_data.output_raw) && !isnothing(img_data.input_raw)
-                    local class_hsv = extract_class_hsv_values(img_data.input_raw, img_data.output_raw, classes)
-                    local class_lch = extract_class_lch_values(img_data.input_raw, img_data.output_raw, classes)
-                    push!(hsv_class_data, class_hsv)
-                    push!(lch_class_data, class_lch)
-                else
-                    push!(hsv_class_data, Dict())
-                    push!(lch_class_data, Dict())
-                end
-                push!(hsv_grids, nothing)
+                # Initialize empty L*C*h data (will be populated when polygon is closed)
+                push!(lch_polygon_data, (
+                    l_values = Float64[],
+                    c_values = Float64[],
+                    h_values = Float64[],
+                    median_l = NaN,
+                    median_c = NaN,
+                    median_h = NaN,
+                    count = 0
+                ))
             else
                 # FALLBACK: Compute fresh (should rarely happen)
                 println("[COMPARE-UI] WARNING: Image $(entry.image_index) not in cache, computing fresh")
@@ -1970,18 +1567,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Layer 1: Display input image (base layer)
                 Bas3GLMakie.GLMakie.image!(ax, img_obs)
                 
-                # Layer 2: Overlay output segmentation with 50% transparency
-                local output_obs = Bas3GLMakie.GLMakie.Observable(images.output)
-                Bas3GLMakie.GLMakie.image!(ax, output_obs; alpha=0.5)
-                
-                # Layer 3: Draw bounding boxes for each class
-                if !isnothing(images.output_raw)
-                    local bboxes = extract_class_bboxes(images.output_raw, classes)
-                    draw_bboxes_on_axis!(ax, bboxes, images.height)
-                    println("[COMPARE-UI] Drew fresh bboxes for image $(entry.image_index)")
-                end
-                
-                # Layer 4: POLYGON OVERLAY (per-image polygon selection)
+                # Layer 2: POLYGON OVERLAY (per-image polygon selection)
                 # Initialize polygon state for this image
                 local poly_verts = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
                 local poly_active = Bas3GLMakie.GLMakie.Observable(false)
@@ -2011,19 +1597,16 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 println("[POLYGON] Initialized polygon state for column $col (fallback)")
                 
-                # Row 3: HSV mini histograms (REMOVED - not needed in CompareUI)
-                # Histograms removed to simplify UI layout
-                # But we still need HSV and LCh data for the timeline plots!
-                if !isnothing(output_obs[]) && !isnothing(img_obs[])
-                    local class_hsv = extract_class_hsv_values(img_obs[], output_obs[], classes)
-                    local class_lch = extract_class_lch_values(img_obs[], output_obs[], classes)
-                    push!(hsv_class_data, class_hsv)
-                    push!(lch_class_data, class_lch)
-                else
-                    push!(hsv_class_data, Dict())
-                    push!(lch_class_data, Dict())
-                end
-                push!(hsv_grids, nothing)
+                # Initialize empty L*C*h data (will be populated when polygon is closed)
+                push!(lch_polygon_data, (
+                    l_values = Float64[],
+                    c_values = Float64[],
+                    h_values = Float64[],
+                    median_l = NaN,
+                    median_c = NaN,
+                    median_h = NaN,
+                    count = 0
+                ))
             end
             
             # Row 3: Polygon control buttons (Start/Close/Clear)
@@ -2070,8 +1653,35 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     println("[POLYGON] Close polygon for column $col_idx ($(length(polygon_vertices_per_image[col_idx][])) vertices)")
                     polygon_complete_per_image[col_idx][] = true
                     polygon_active_per_image[col_idx][] = false
+                    
+                    # Extract L*C*h values from polygon region
+                    local entry = current_entries[][col_idx]
+                    local img_data = get(cached_lookup, entry.image_index, nothing)
+                    
+                    if !isnothing(img_data)
+                        local lch_result = extract_polygon_lch_values(
+                            img_data.input_raw,
+                            polygon_vertices_per_image[col_idx][],
+                            img_data.input_rotated
+                        )
+                        
+                        # Store in lch_polygon_data array
+                        lch_polygon_data[col_idx] = lch_result
+                        
+                        # Rebuild timeline with new data
+                        delete_gridlayout_contents!(timeline_grid_lch)
+                        timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch, current_entries[], lch_polygon_data)
+                        
+                        status_label.text = "Polygon $(col_idx): $(lch_result.count) Pixel analysiert"
+                        status_label.color = :green
+                    else
+                        status_label.text = "Fehler: Bilddaten nicht verfügbar"
+                        status_label.color = :red
+                    end
                 else
                     println("[POLYGON] Cannot close polygon for column $col_idx - need at least 3 vertices")
+                    status_label.text = "Polygon braucht mindestens 3 Punkte"
+                    status_label.color = :orange
                 end
             end
             
@@ -2211,19 +1821,20 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         end
         
         # ====================================================================
-        # CREATE H/S TIMELINE PLOT (after all HSV data is collected)
+        # CREATE L*C*h TIMELINE PLOT (initially empty, populated when polygons closed)
         # ====================================================================
-        if !isempty(hsv_class_data)
-            println("[COMPARE-UI] Creating H/S timeline with $(length(hsv_class_data)) data points")
-            timeline_axis[] = create_hs_timeline!(timeline_grid, entries[1:num_images], hsv_class_data, classes)
-        end
-        
-        # ====================================================================
-        # CREATE L*C*h TIMELINE PLOT (after all LCh data is collected)
-        # ====================================================================
-        if !isempty(lch_class_data)
-            println("[COMPARE-UI] Creating L*C*h timeline with $(length(lch_class_data)) data points")
-            timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch, entries[1:num_images], lch_class_data, classes)
+        if !isempty(lch_polygon_data)
+            println("[COMPARE-UI] Creating L*C*h timeline with $(length(lch_polygon_data)) data points")
+            timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch, entries[1:num_images], lch_polygon_data)
+        else
+            # Show placeholder message
+            Bas3GLMakie.GLMakie.Label(
+                timeline_grid_lch[1, 1],
+                "Keine Polygondaten\n\nBitte Polygone zeichnen und schließen",
+                fontsize=12,
+                color=:gray,
+                halign=:center
+            )
         end
         
         # Show message if more images exist
@@ -2548,6 +2159,13 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     println("  - Edit date/info fields for each image")
     println("  - Click 'Speichern' to save changes")
     println("  - Click 'Aktualisieren' to reload patient list")
+    println("")
+    println("=== Polygon Analysis Workflow ===")
+    println("  1. Click 'Polygon' button to activate drawing mode")
+    println("  2. Click on image to add vertices (cyan points)")
+    println("  3. Click 'Schließen' to close polygon and extract L*C*h values")
+    println("  4. Timeline updates automatically with median L*C*h values")
+    println("  5. Click 'Löschen' to clear polygon and start over")
     println("")
     
     # Return based on mode
