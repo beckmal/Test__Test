@@ -441,40 +441,61 @@ LOAD: FileIO.load() → PNG in landscape → matches UI display directly!
 4. Return mask (already matches base image orientation!)
 """
 function load_polygon_mask_if_exists(image_index::Int)
-    local base_dir = dirname(get_database_path())
-    local patient_num = lpad(image_index, 3, '0')
-    local mask_path = joinpath(base_dir, "MuHa_$(patient_num)", 
-                               "MuHa_$(patient_num)_polygon_mask.png")
+    local total_time = 0.0
+    local file_check_time = 0.0
+    local png_load_time = 0.0
+    local convert_time = 0.0
+    local rotation_time = 0.0
     
-    if !isfile(mask_path)
-        return nothing
-    end
-    
-    try
-        # Load PNG directly with FileIO
-        local img = Bas3GLMakie.GLMakie.FileIO.load(mask_path)
+    total_time = @elapsed begin
+        local base_dir = dirname(get_database_path())
+        local patient_num = lpad(image_index, 3, '0')
+        local mask_path = joinpath(base_dir, "MuHa_$(patient_num)", 
+                                   "MuHa_$(patient_num)_polygon_mask.png")
         
-        # Convert to RGB{Float32}
-        local h, w = size(img)
-        local mask_rgb = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
-        
-        for i in 1:h, j in 1:w
-            local rgb_val = Bas3ImageSegmentation.RGB(img[i, j])
-            mask_rgb[i, j] = Bas3ImageSegmentation.RGB{Float32}(Float32(rgb_val.r), Float32(rgb_val.g), Float32(rgb_val.b))
+        file_check_time = @elapsed begin
+            if !isfile(mask_path)
+                return nothing
+            end
         end
         
-        # Apply rotr90 to match base image orientation
-        # Base image: load from .bin (portrait) → rotr90() → landscape display
-        # Mask: load from PNG (portrait) → rotr90() → landscape display (matches base!)
-        println("[MASK-LOAD-DEBUG] Before rotr90: $(size(mask_rgb))")
-        local mask_rotated = rotr90(mask_rgb)
-        println("[MASK-LOAD-DEBUG] After rotr90: $(size(mask_rotated))")
-        
-        println("[MASK-LOAD] Loaded existing mask for image $(image_index): $(size(mask_rotated)) [FIXED-V4]")
-        return mask_rotated
-    catch e
-        @warn "[MASK-LOAD] Failed to load mask for image $(image_index): $e"
-        return nothing
+        try
+            # Load PNG directly with FileIO
+            local img = nothing
+            png_load_time = @elapsed begin
+                img = Bas3GLMakie.GLMakie.FileIO.load(mask_path)
+            end
+            
+            # Convert to RGB{Float32}
+            local h, w = size(img)
+            local mask_rgb = nothing
+            
+            convert_time = @elapsed begin
+                mask_rgb = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
+                
+                for i in 1:h, j in 1:w
+                    local rgb_val = Bas3ImageSegmentation.RGB(img[i, j])
+                    mask_rgb[i, j] = Bas3ImageSegmentation.RGB{Float32}(Float32(rgb_val.r), Float32(rgb_val.g), Float32(rgb_val.b))
+                end
+            end
+            
+            # Apply rotr90 to match base image orientation
+            # Base image: load from .bin (portrait) → rotr90() → landscape display
+            # Mask: load from PNG (portrait) → rotr90() → landscape display (matches base!)
+            println("[MASK-LOAD-DEBUG] Before rotr90: $(size(mask_rgb))")
+            local mask_rotated = nothing
+            rotation_time = @elapsed begin
+                mask_rotated = rotr90(mask_rgb)
+            end
+            println("[MASK-LOAD-DEBUG] After rotr90: $(size(mask_rotated))")
+            
+            println("[PERF-MASK-PNG] Image $image_index: total=$(round(total_time*1000, digits=2))ms, file_check=$(round(file_check_time*1000, digits=2))ms, png_load=$(round(png_load_time*1000, digits=2))ms, convert=$(round(convert_time*1000, digits=2))ms, rotate=$(round(rotation_time*1000, digits=2))ms, size=$(size(img))")
+            println("[MASK-LOAD] Loaded existing mask for image $(image_index): $(size(mask_rotated)) [FIXED-V4]")
+            return mask_rotated
+        catch e
+            @warn "[MASK-LOAD] Failed to load mask for image $(image_index): $e"
+            return nothing
+        end
     end
 end
 
@@ -503,39 +524,61 @@ Load saved polygon mask from .bin file using memory mapping (FAST VERSION).
 - Identical code path to input image loading
 """
 function load_polygon_mask_mmap(image_index::Int)
-    # Path to .bin mask file in dataset folder
-    local mask_bin_path = joinpath(base_path, "original_quarter_res", "$(image_index)_polygon_mask.bin")
+    local total_time = 0.0
+    local file_check_time = 0.0
+    local mmap_load_time = 0.0
+    local array_construct_time = 0.0
+    local rotation_time = 0.0
     
-    if !isfile(mask_bin_path)
-        return nothing
-    end
-    
-    try
-        # Load via mmap (756×1008×3 - H×W TRUE 1/4 of 4K)
-        local dims = (756, 1008, 3)
-        local mapped_data = load_image_mmap(mask_bin_path, dims, UInt8)
-        
-        # Convert to RGB{Float32} matrix (landscape orientation)
-        # mapped_data is UInt8, convert to Float32 by dividing by 255
-        local h, w, c = dims
-        local mask_matrix = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
-        
-        for i in 1:h, j in 1:w
-            mask_matrix[i, j] = Bas3ImageSegmentation.RGB{Float32}(
-                Float32(mapped_data[i, j, 1]) / 255.0f0,
-                Float32(mapped_data[i, j, 2]) / 255.0f0,
-                Float32(mapped_data[i, j, 3]) / 255.0f0
-            )
+    total_time = @elapsed begin
+        try
+            # Construct path to .bin mask file
+            local mask_bin_path = joinpath(dirname(get_database_path()), "polygon_masks_bin", "mask_$(image_index).bin")
+            
+            file_check_time = @elapsed begin
+                if !isfile(mask_bin_path)
+                    return nothing
+                end
+            end
+            
+            # Dimensions for quarter-res mask (portrait orientation before rotr90)
+            local dims = (1008, 756, 3)  # H×W×C in portrait
+            
+            local mapped_data = nothing
+            mmap_load_time = @elapsed begin
+                mapped_data = load_image_mmap(mask_bin_path, dims, UInt8)
+            end
+            
+            # Convert UInt8 to RGB{Float32} for compatibility
+            local h, w, c = dims
+            local mask_matrix = nothing
+            
+            array_construct_time = @elapsed begin
+                mask_matrix = Array{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
+                for i in 1:h, j in 1:w
+                    mask_matrix[i, j] = Bas3ImageSegmentation.RGB{Float32}(
+                        Float32(mapped_data[i, j, 1]) / 255.0f0,
+                        Float32(mapped_data[i, j, 2]) / 255.0f0,
+                        Float32(mapped_data[i, j, 3]) / 255.0f0
+                    )
+                end
+            end
+            
+            # Apply rotr90 to match UI coordinate system (landscape display)
+            local mask_rotated = nothing
+            rotation_time = @elapsed begin
+                mask_rotated = rotr90(mask_matrix)
+            end
+            
+            println("[PERF-MASK-MMAP] Image $image_index: total=$(round(total_time*1000, digits=2))ms, file_check=$(round(file_check_time*1000, digits=2))ms, mmap=$(round(mmap_load_time*1000, digits=2))ms, array_construct=$(round(array_construct_time*1000, digits=2))ms, rotate=$(round(rotation_time*1000, digits=2))ms")
+            println("[MASK-LOAD-MMAP] Loaded .bin mask for image $(image_index): $(size(mask_matrix)) → rotr90 → $(size(mask_rotated))")
+            
+            return mask_rotated
+            
+        catch e
+            @warn "[MASK-LOAD-MMAP] Failed to load .bin mask for image $(image_index): $e"
+            return nothing
         end
-        
-        # Apply rotr90 to match input image orientation (portrait 756×1008 → landscape 1008×756)
-        local mask_rotated = rotr90(mask_matrix)
-        println("[MASK-LOAD-MMAP] Loaded .bin mask for image $(image_index): $(size(mask_matrix)) → rotr90 → $(size(mask_rotated))")
-        return mask_rotated
-        
-    catch e
-        @warn "[MASK-LOAD-MMAP] Failed to load .bin mask for image $(image_index): $e"
-        return nothing
     end
 end
 
@@ -1715,18 +1758,60 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local classes = shape(sets[1][2])
     println("[COMPARE-UI] Classes detected: $classes")
     
+    # Build index map for O(1) lookup (replaces O(n) linear search)
+    # Map: image_index => array_position in sets
+    local sets_index_map = Dict{Int, Int}()
+    for (array_pos, mset) in enumerate(sets)
+        local idx = mset[3]  # Extract index from (input_img, output_img, idx) tuple
+        sets_index_map[idx] = array_pos
+    end
+    println("[COMPARE-UI] Built index map for $(length(sets_index_map)) images")
+    
     # Get both input and output images from sets by image_index
     function get_images_by_index(image_index::Int)
-        for (input_img, output_img, idx) in sets
-            if idx == image_index
+        local total_time = 0.0
+        local lookup_time = 0.0
+        local image_convert_time = 0.0
+        local rotation_time = 0.0
+        
+        total_time = @elapsed begin
+            # O(1) dictionary lookup instead of O(n) linear search
+            local array_pos = nothing
+            lookup_time = @elapsed begin
+                array_pos = get(sets_index_map, image_index, nothing)
+            end
+            
+            if !isnothing(array_pos)
+                local input_img = sets[array_pos][1]
+                local output_img = sets[array_pos][2]
+                
+                local rotated = nothing
+                local raw = nothing
+                local h = 0
+                
+                # Time image type conversion
+                image_convert_time = @elapsed begin
+                    raw = input_img
+                    h = Base.size(data(input_img), 1)
+                end
+                
+                # Time rotation
+                rotation_time = @elapsed begin
+                    rotated = rotr90(image(input_img))
+                end
+                
+                println("[PERF-GET_IMAGE] Image $image_index: total=$(round(total_time*1000, digits=2))ms, lookup=$(round(lookup_time*1000, digits=2))ms, convert=$(round(image_convert_time*1000, digits=2))ms, rotate=$(round(rotation_time*1000, digits=2))ms")
+                
                 return (
-                    input = rotr90(image(input_img)),
-                    input_raw = input_img,    # Keep raw for L*C*h extraction from polygons
-                    height = Base.size(data(input_img), 1)  # Original height before rotr90
+                    input = rotated,
+                    input_raw = raw,
+                    height = h
                 )
             end
         end
+        
         # Return placeholder if not found
+        println("[PERF-GET_IMAGE] Image $image_index: NOT FOUND (total=$(round(total_time*1000, digits=2))ms)")
         local placeholder = fill(Bas3ImageSegmentation.RGB{Float32}(0.5f0, 0.5f0, 0.5f0), 100, 100)
         return (input = placeholder, input_raw = nothing, height = 100)
     end
@@ -1779,28 +1864,51 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             # Spawn one task per image to load in parallel across CPU cores
             println("[PRELOAD] Loading $(length(entries)) images using $(Threads.nthreads()) threads")
             
+            local preload_start_time = time()
+            
             # Spawn parallel tasks to load each image and mask
             load_tasks = map(entries) do entry
                 Threads.@spawn begin
+                    local task_start_time = time()
+                    local get_images_time = 0.0
+                    local mask_load_time = 0.0
+                    local mask_resize_time = 0.0
+                    
                     try
                         # Get raw images (loads .bin files into RAM)
-                        images = get_images_by_index(entry.image_index)
+                        local images = nothing
+                        get_images_time = @elapsed begin
+                            images = get_images_by_index(entry.image_index)
+                        end
                         
                         # Load mask if available - OPTIMIZED: Use mmap loading (2-6x faster)
                         # Try .bin first (fast), fallback to PNG (slow, for backward compatibility)
-                        local mask_display = load_polygon_mask_mmap(entry.image_index)
+                        local mask_display = nothing
+                        local mask_method = "none"
                         
-                        if isnothing(mask_display)
-                            # Fallback to PNG loading (old method)
-                            local mask_fullres = load_polygon_mask_if_exists(entry.image_index)
-                            if !isnothing(mask_fullres)
-                                # Resize to display resolution
-                                local display_height, display_width = size(images.input)
-                                mask_display = resize_mask_to_display(mask_fullres, (display_height, display_width))
+                        mask_load_time = @elapsed begin
+                            mask_display = load_polygon_mask_mmap(entry.image_index)
+                            
+                            if isnothing(mask_display)
+                                mask_method = "png_fallback"
+                                # Fallback to PNG loading (old method)
+                                local mask_fullres = load_polygon_mask_if_exists(entry.image_index)
+                                if !isnothing(mask_fullres)
+                                    # Resize to display resolution
+                                    local display_height, display_width = size(images.input)
+                                    mask_resize_time = @elapsed begin
+                                        mask_display = resize_mask_to_display(mask_fullres, (display_height, display_width))
+                                    end
+                                end
+                            else
+                                mask_method = "bin_mmap"
                             end
                         end
                         
                         local mask_exists = !isnothing(mask_display)
+                        local task_total_time = time() - task_start_time
+                        
+                        println("[PERF-PRELOAD] Image $(entry.image_index): total=$(round(task_total_time*1000, digits=2))ms, get_images=$(round(get_images_time*1000, digits=2))ms, mask_load=$(round(mask_load_time*1000, digits=2))ms (method=$mask_method), mask_resize=$(round(mask_resize_time*1000, digits=2))ms")
                         
                         # Return input images and mask data
                         (
@@ -1824,6 +1932,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             end
             
             # Wait for all parallel loads to complete and collect results
+            local fetch_start = time()
             cached_images = NamedTuple[]
             for task in load_tasks
                 result = fetch(task)
@@ -1831,12 +1940,15 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     push!(cached_images, result.data)
                 end
             end
+            local fetch_time = time() - fetch_start
+            local total_preload_time = time() - preload_start_time
             
             # Store in cache
             lock(cache_lock) do
                 patient_image_cache[patient_id] = cached_images
                 delete!(preload_tasks, patient_id)  # Remove from in-progress
                 println("[PRELOAD] Cached $(length(cached_images))/$(length(entries)) images for patient $patient_id")
+                println("[PERF-PRELOAD-SUMMARY] Patient $patient_id: TOTAL=$(round(total_preload_time*1000, digits=2))ms, fetch_wait=$(round(fetch_time*1000, digits=2))ms, avg_per_image=$(round(total_preload_time*1000/length(entries), digits=2))ms")
             end
             
             return (success = true, error = nothing)
@@ -2346,20 +2458,24 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             # Row 3: Polygon control buttons - TOP ROW (Mask toggle)
             local polygon_control_grid_row1 = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
             
+            # IMPORTANT: Capture loop variable by VALUE to avoid closure issues
+            # Without this, all @lift macros would capture 'col' by reference and end up watching the last column
+            local col_captured = col
+            
             # Capture mask existence state for this column (plain Bool, not reactive)
-            local mask_exists_for_col = saved_mask_exists[col]
+            local mask_exists_for_col = saved_mask_exists[col_captured]
             
             local toggle_mask_btn = Bas3GLMakie.GLMakie.Button(
                 polygon_control_grid_row1[1, 1],
                 label = Bas3GLMakie.GLMakie.@lift(
-                    $(saved_mask_visible[col]) ? "Maske AN" : "Maske AUS"
+                    $(saved_mask_visible[col_captured]) ? "Maske AN" : "Maske AUS"
                 ),
                 fontsize = 10,
                 width = 120,
                 buttoncolor = Bas3GLMakie.GLMakie.@lift(
                     # Use captured Bool value (not reactive, but initialized before button creation)
                     !mask_exists_for_col ? Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7) :  # Disabled if no mask (gray)
-                    $(saved_mask_visible[col]) ? Bas3GLMakie.GLMakie.RGBf(0.9, 0.9, 0.3) : Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Yellow when visible, gray when hidden
+                    $(saved_mask_visible[col_captured]) ? Bas3GLMakie.GLMakie.RGBf(0.9, 0.9, 0.3) : Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Yellow when visible, gray when hidden
                 )
             )
             

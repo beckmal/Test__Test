@@ -138,13 +138,36 @@ end
 Get the input image, memory-mapped from disk.
 """
 function get_input(mset::MmapImageSet)
-    mapped_data = load_image_mmap(mset.input_path, mset.input_dims, mset.input_elem_type)
-    # Reconstruct the image type from mapped data
-    # Pass each channel slice separately to the constructor
-    # Convert to Float32 for compatibility with image processing functions
-    h, w, c = mset.input_dims
-    channels = ntuple(i -> Float32.(@view(mapped_data[:, :, i])), c)
-    return mset.input_type(channels...)
+    local mmap_time = 0.0
+    local convert_time = 0.0
+    local construct_time = 0.0
+    local total_time = 0.0
+    
+    total_time = @elapsed begin
+        local mapped_data = nothing
+        mmap_time = @elapsed begin
+            mapped_data = load_image_mmap(mset.input_path, mset.input_dims, mset.input_elem_type)
+        end
+        
+        # Reconstruct the image type from mapped data
+        # Pass each channel slice separately to the constructor
+        # Convert to Float32 for compatibility with image processing functions
+        h, w, c = mset.input_dims
+        local channels = nothing
+        
+        convert_time = @elapsed begin
+            channels = ntuple(i -> Float32.(@view(mapped_data[:, :, i])), c)
+        end
+        
+        local result = nothing
+        construct_time = @elapsed begin
+            result = mset.input_type(channels...)
+        end
+        
+        println("[PERF-MMAP-GET_INPUT] Path=$(basename(mset.input_path)): total=$(round(total_time*1000, digits=2))ms, mmap=$(round(mmap_time*1000, digits=2))ms, convert=$(round(convert_time*1000, digits=2))ms, construct=$(round(construct_time*1000, digits=2))ms")
+        
+        return result
+    end
 end
 
 """
