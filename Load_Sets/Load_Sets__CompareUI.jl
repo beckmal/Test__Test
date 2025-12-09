@@ -2197,6 +2197,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         empty!(polygon_complete_per_image)
         empty!(polygon_buttons_per_image)
         
+        # Clear mask overlay arrays
+        empty!(saved_mask_overlays)
+        empty!(saved_mask_visible)
+        empty!(saved_mask_exists)
+        
         println("[COMPARE-UI] Grid cleared, $(length(images_grid.content)) items remaining")
     end
     
@@ -2343,10 +2348,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 push!(saved_mask_visible, mask_visible_obs)
                 
                 # Display overlay (reactive to visibility toggle) with 50% alpha
-                # FIX: Use 'visible' attribute for reliable toggling (alpha reactive had issues)
+                # FIX: Use 'visible' attribute for reliable toggling
+                # Provide 1x1 black pixel placeholder when mask is nothing
                 Bas3GLMakie.GLMakie.image!(
                     ax,
-                    mask_rgb_obs;
+                    Bas3GLMakie.GLMakie.@lift(
+                        !isnothing($mask_rgb_obs) ? $mask_rgb_obs : 
+                        fill(Bas3ImageSegmentation.RGB{Float32}(0, 0, 0), 1, 1)
+                    );
                     alpha = 0.5,
                     visible = Bas3GLMakie.GLMakie.@lift($mask_visible_obs && !isnothing($mask_rgb_obs))
                 )
@@ -2426,10 +2435,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 push!(saved_mask_visible, mask_visible_obs)
                 
                 # Display overlay (reactive to visibility toggle) with 50% alpha
-                # FIX: Use 'visible' attribute for reliable toggling (alpha reactive had issues)
+                # FIX: Use 'visible' attribute for reliable toggling
+                # Provide 1x1 black pixel placeholder when mask is nothing
                 Bas3GLMakie.GLMakie.image!(
                     ax,
-                    mask_rgb_obs;
+                    Bas3GLMakie.GLMakie.@lift(
+                        !isnothing($mask_rgb_obs) ? $mask_rgb_obs : 
+                        fill(Bas3ImageSegmentation.RGB{Float32}(0, 0, 0), 1, 1)
+                    );
                     alpha = 0.5,
                     visible = Bas3GLMakie.GLMakie.@lift($mask_visible_obs && !isnothing($mask_rgb_obs))
                 )
