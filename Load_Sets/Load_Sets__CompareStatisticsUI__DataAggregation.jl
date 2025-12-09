@@ -625,4 +625,271 @@ function aggregate_full_cohort(patient_data_list::Vector{PatientLChData}, classe
     )
 end
 
+# ============================================================================
+# POLYGON MASK EXTRACTION
+# ============================================================================
+
+"""
+    extract_lch_from_polygon_mask(input_img, mask_rgb::Matrix{RGB{Float32}}) 
+    -> NamedTuple
+
+Extract L*C*h values from pixels inside a polygon mask.
+
+# Arguments
+- `input_img`: Raw input image data (portrait orientation)
+- `mask_rgb`: RGB polygon mask (landscape orientation from load_polygon_mask_mmap)
+
+# Returns
+NamedTuple with:
+- l_values, c_values, h_values: Arrays of L*C*h values
+- median_l, median_c, median_h: Median values  
+- count: Number of pixels in mask
+
+# Process
+1. Identify mask pixels (white/non-black pixels in mask)
+2. Transform mask coordinates back to input image orientation
+3. Extract RGB values from input image at mask locations
+4. Convert RGB → L*C*h using Colors.jl
+5. Compute statistics (median, mean)
+
+# Example
+```julia
+mask_rgb = load_polygon_mask_mmap(1)
+lch_data = extract_lch_from_polygon_mask(input_img, mask_rgb)
+```
+"""
+function extract_lch_from_polygon_mask(input_img, mask_rgb)
+    # Reverse rotation: mask is landscape, input is portrait
+    # mask is rotl90(portrait), so inverse is rotr90(landscape)
+    local mask_portrait = rotr90(mask_rgb)
+    
+    # Get input data (portrait orientation: 1008×756×3)
+    local input_data = data(input_img)
+    local h, w = size(mask_portrait)
+    
+    # Find mask pixels (threshold to identify white/colored pixels vs black)
+    local mask_pixels = findall(mask_portrait) do pixel
+        # Consider pixel part of mask if any channel > threshold
+        pixel.r > 0.1 || pixel.g > 0.1 || pixel.b > 0.1
+    end
+    
+    local n_pixels = length(mask_pixels)
+    
+    if n_pixels == 0
+        return (
+            l_values = Float64[],
+            c_values = Float64[],
+            h_values = Float64[],
+            median_l = NaN,
+            median_c = NaN,
+            median_h = NaN,
+            count = 0
+        )
+    end
+    
+    # Pre-allocate arrays
+    local l_values = Vector{Float64}(undef, n_pixels)
+    local c_values = Vector{Float64}(undef, n_pixels)
+    local h_values = Vector{Float64}(undef, n_pixels)
+    
+    # Extract L*C*h values
+    @inbounds for (i, idx) in enumerate(mask_pixels)
+        local r, c = idx[1], idx[2]
+        
+        # Get RGB from input image
+        local red = input_data[r, c, 1]
+        local green = input_data[r, c, 2]
+        local blue = input_data[r, c, 3]
+        local rgb_pixel = RGB(red, green, blue)
+        
+        # Convert to L*C*h
+        local lch_pixel = LCHab(rgb_pixel)
+        
+        l_values[i] = lch_pixel.l   # 0-100
+        c_values[i] = lch_pixel.c   # 0-150+
+        h_values[i] = lch_pixel.h   # 0-360°
+    end
+    
+    # Compute statistics
+    local median_l = median(l_values)
+    local median_c = median(c_values)
+    local median_h = median(h_values)
+    
+    return (
+        l_values = l_values,
+        c_values = c_values,
+        h_values = h_values,
+        median_l = median_l,
+        median_c = median_c,
+        median_h = median_h,
+        count = n_pixels
+    )
+end
+
+"""
+    collect_patient_lch_data_polygon_mask(sets, patient_id::Int)
+    -> PatientLChData or nothing
+
+Collect L*C*h values from polygon masks for a single patient.
+Similar to collect_patient_lch_data() but uses polygon masks instead of segmentation.
+
+# Arguments
+- `sets`: Image dataset from load_original_sets()
+- `patient_id`: Patient ID to collect data for
+
+# Returns
+- PatientLChData with single :polygon_region pseudo-class
+- nothing if no masks exist or patient invalid
+"""
+function collect_patient_lch_data_polygon_mask(sets, patient_id::Int)
+    # Get patient entries from cache
+    local entries = get_cached_patient_entries(patient_id)
+    
+    if isempty(entries)
+        @warn "Patient $patient_id has no entries"
+        return nothing
+    end
+    
+    # Helper function to get images from sets by index (O(1) lookup)
+    function get_images_by_index(image_index::Int)
+        local result = get(IMAGE_INDEX_MAP, image_index, nothing)
+        if isnothing(result)
+            return (input_raw = nothing, output_raw = nothing)
+        end
+        return (input_raw = result[1], output_raw = result[2])
+    end
+    
+    # Initialize containers
+    local dates = Dates.Date[]
+    local date_values = Float64[]
+    local polygon_timeseries = (
+        l_medians = Float64[],
+        c_medians = Float64[],
+        h_medians = Float64[],
+        l_means = Float64[],
+        c_means = Float64[],
+        h_means = Float64[],
+        pixel_counts = Int[]
+    )
+    
+    # Collect data for each image
+    for entry in entries
+        # Parse date
+        local date_obj = nothing
+        try
+            date_obj = Dates.Date(entry.date, "yyyy-mm-dd")
+        catch e
+            @warn "Failed to parse date for patient $patient_id, entry $(entry.image_index): $(entry.date)"
+            continue
+        end
+        
+        # Load images
+        local images = try
+            get_images_by_index(entry.image_index)
+        catch e
+            @warn "Failed to load images for patient $patient_id, index $(entry.image_index): $e"
+            continue
+        end
+        
+        if isnothing(images.input_raw)
+            @warn "Missing raw images for patient $patient_id, index $(entry.image_index)"
+            continue
+        end
+        
+        # Load polygon mask (.bin only, no PNG fallback)
+        local mask_rgb = load_polygon_mask_mmap(entry.image_index)
+        
+        # Extract L*C*h from mask (or NaN if no mask)
+        local lch_data = if !isnothing(mask_rgb)
+            extract_lch_from_polygon_mask(images.input_raw, mask_rgb)
+        else
+            (l_values = Float64[], c_values = Float64[], h_values = Float64[],
+             median_l = NaN, median_c = NaN, median_h = NaN, count = 0)
+        end
+        
+        # Store date
+        push!(dates, date_obj)
+        push!(date_values, Float64(Dates.value(date_obj)))
+        
+        # Store data
+        if lch_data.count > 0
+            push!(polygon_timeseries.l_medians, lch_data.median_l)
+            push!(polygon_timeseries.c_medians, lch_data.median_c)
+            push!(polygon_timeseries.h_medians, lch_data.median_h)
+            push!(polygon_timeseries.l_means, mean(lch_data.l_values))
+            push!(polygon_timeseries.c_means, mean(lch_data.c_values))
+            push!(polygon_timeseries.h_means, mean(lch_data.h_values))
+            push!(polygon_timeseries.pixel_counts, lch_data.count)
+        else
+            # No mask - use NaN
+            push!(polygon_timeseries.l_medians, NaN)
+            push!(polygon_timeseries.c_medians, NaN)
+            push!(polygon_timeseries.h_medians, NaN)
+            push!(polygon_timeseries.l_means, NaN)
+            push!(polygon_timeseries.c_means, NaN)
+            push!(polygon_timeseries.h_means, NaN)
+            push!(polygon_timeseries.pixel_counts, 0)
+        end
+    end
+    
+    if isempty(dates)
+        @warn "Patient $patient_id has no valid dates"
+        return nothing
+    end
+    
+    # Return with :polygon_region as pseudo-class
+    return (
+        patient_id = patient_id,
+        num_images = length(dates),
+        dates = dates,
+        date_values = date_values,
+        class_timeseries = Dict(:polygon_region => polygon_timeseries)
+    )
+end
+
+"""
+    collect_cohort_lch_data_polygon_masks(sets, patient_ids::Vector{Int};
+                                          show_progress::Bool=true)
+    -> Vector{PatientLChData}
+
+Collect L*C*h data from polygon masks for multiple patients.
+
+# Arguments
+- `sets`: Image dataset from load_original_sets()
+- `patient_ids`: Vector of patient IDs to collect
+- `show_progress`: Print progress messages (default: true)
+
+# Returns
+- Vector of PatientLChData (excluding failed patients or patients without masks)
+"""
+function collect_cohort_lch_data_polygon_masks(sets, patient_ids::Vector{Int};
+                                               show_progress::Bool=true)
+    local patient_data_list = PatientLChData[]
+    local failed_count = 0
+    
+    if show_progress
+        println("[COHORT-POLYGON] Collecting polygon mask data for $(length(patient_ids)) patients...")
+    end
+    
+    for (idx, patient_id) in enumerate(patient_ids)
+        if show_progress && idx % 10 == 0
+            println("[COHORT-POLYGON] Progress: $idx/$(length(patient_ids)) patients processed")
+        end
+        
+        local patient_data = collect_patient_lch_data_polygon_mask(sets, patient_id)
+        
+        if !isnothing(patient_data)
+            push!(patient_data_list, patient_data)
+        else
+            failed_count += 1
+        end
+    end
+    
+    if show_progress
+        println("[COHORT-POLYGON] Collected $(length(patient_data_list)) patients successfully ($(failed_count) failed/no masks)")
+    end
+    
+    return patient_data_list
+end
+
 println("✅ CompareStatisticsUI Data Aggregation module loaded")

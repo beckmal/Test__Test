@@ -7,6 +7,11 @@
 # - Filtering patients by exact image count
 # - Aggregating L*C*h color data across patient cohorts
 # - Visualizing trends with overlays, means, medians, and statistics
+# - Comparing segmentation classes vs polygon mask regions
+#
+# Data Sources:
+# - Segmentation (Klassen): Neural network predictions (e.g., :redness, :scar)
+# - Polygon-Masken: User-drawn ROI masks from .bin files
 #
 # Usage:
 #   include("Load_Sets__CompareStatisticsUI.jl")
@@ -15,8 +20,9 @@
 #
 # Prerequisites:
 # - Load_Sets.jl must be loaded (provides datasets and core functions)
-# - Load_Sets__CompareUI.jl must be loaded (provides filtering and extraction)
+# - Load_Sets__CompareUI.jl must be loaded (provides filtering, extraction, and mask loading)
 # - MuHa.xlsx database must exist
+# - Polygon masks must be generated as .bin files (optional, for polygon mode)
 # ============================================================================
 
 # Load required modules
@@ -43,10 +49,15 @@ Create multi-patient L*C*h cohort analysis UI.
 
 # Features
 - Filter patients by exact image count
-- Select which wound class to analyze
+- **Switch data source**: Segmentation classes OR polygon masks
+- Select which wound class to analyze (segmentation mode only)
 - Toggle visualization layers (individuals, mean±std, median, quartiles)
 - Statistics table showing metrics per timepoint
 - Patient list showing included IDs
+
+# Data Sources
+- **Segmentation (Klassen)**: Analyzes neural network predicted regions (e.g., :redness, :scar)
+- **Polygon-Masken**: Analyzes user-drawn ROI masks from .bin files (requires masks generated with run_Generate_Polygon_Mask_Bins.jl)
 
 # Example
 ```julia
@@ -123,7 +134,7 @@ function create_compare_statistics_figure(sets, db_path;
     # Title
     Bas3GLMakie.GLMakie.Label(
         fig[1, 1:2],
-        "L*C*h Kohortenanalyse - Statistischer Vergleich",
+        "L*C*h Verlauf",
         fontsize = 24,
         font = :bold,
         halign = :center,
@@ -153,9 +164,27 @@ function create_compare_statistics_figure(sets, db_path;
         fontsize = 13
     )
     
-    # Class selector
+    # Data source selector
     Bas3GLMakie.GLMakie.Label(
         left_panel[3, 1:2],
+        "Datenquelle:",
+        fontsize = 14,
+        font = :bold,
+        halign = :left,
+        padding = (5, 5, 15, 10)
+    )
+    
+    local source_options = ["Segmentierung (Klassen)", "Polygon-Masken"]
+    local source_menu = Bas3GLMakie.GLMakie.Menu(
+        left_panel[4, 1:2],
+        options = source_options,
+        default = "Segmentierung (Klassen)",
+        fontsize = 13
+    )
+    
+    # Class selector (conditional on source selection)
+    local class_label = Bas3GLMakie.GLMakie.Label(
+        left_panel[5, 1:2],
         "Klasse:",
         fontsize = 14,
         font = :bold,
@@ -165,15 +194,27 @@ function create_compare_statistics_figure(sets, db_path;
     
     local class_options = [String(c) for c in classes]
     local class_menu = Bas3GLMakie.GLMakie.Menu(
-        left_panel[4, 1:2],
+        left_panel[6, 1:2],
         options = class_options,
         default = String(default_class),
         fontsize = 13
     )
     
+    # Toggle visibility of class selector based on source selection
+    # Note: Menu widgets don't have a visible property in Makie,
+    # but we can hide/show the label and disable/enable the menu
+    Bas3GLMakie.GLMakie.on(source_menu.selection) do selection
+        if selection == "Polygon-Masken"
+            class_label.visible[] = false
+            # Just hide the label; the menu itself will be ignored in polygon mode
+        else
+            class_label.visible[] = true
+        end
+    end
+    
     # Visualization toggles
     Bas3GLMakie.GLMakie.Label(
-        left_panel[5, 1:2],
+        left_panel[7, 1:2],
         "Visualisierung:",
         fontsize = 14,
         font = :bold,
@@ -181,17 +222,17 @@ function create_compare_statistics_figure(sets, db_path;
         padding = (5, 5, 15, 10)
     )
     
-    local toggle_individuals = Bas3GLMakie.GLMakie.Toggle(left_panel[6, 1], active=false)
+    local toggle_individuals = Bas3GLMakie.GLMakie.Toggle(left_panel[8, 1], active=false)
     Bas3GLMakie.GLMakie.Label(
-        left_panel[6, 2],
+        left_panel[8, 2],
         "Einzelne Patienten",
         fontsize = 12,
         halign = :left
     )
     
-    local toggle_boxplot = Bas3GLMakie.GLMakie.Toggle(left_panel[7, 1], active=true)
+    local toggle_boxplot = Bas3GLMakie.GLMakie.Toggle(left_panel[9, 1], active=true)
     Bas3GLMakie.GLMakie.Label(
-        left_panel[7, 2],
+        left_panel[9, 2],
         "Boxplot",
         fontsize = 12,
         halign = :left
@@ -199,7 +240,7 @@ function create_compare_statistics_figure(sets, db_path;
     
     # Update button
     local update_button = Bas3GLMakie.GLMakie.Button(
-        left_panel[8, 1:2],
+        left_panel[10, 1:2],
         label = "Aktualisieren",
         fontsize = 14,
         padding = (5, 5, 15, 5)
@@ -207,7 +248,7 @@ function create_compare_statistics_figure(sets, db_path;
     
     # Status label
     local status_label = Bas3GLMakie.GLMakie.Label(
-        left_panel[9, 1:2],
+        left_panel[11, 1:2],
         "",
         fontsize = 11,
         halign = :center,
@@ -250,7 +291,7 @@ function create_compare_statistics_figure(sets, db_path;
     # ========================================================================
     
     """
-    Update the cohort plot based on current filter and class selection.
+    Update the cohort plot based on current filter, source, and class selection.
     """
     function update_cohort_plot!()
         println("\n[COHORT-UI] Updating cohort plot...")
@@ -260,11 +301,15 @@ function create_compare_statistics_figure(sets, db_path;
         local selected_filter_idx = findfirst(==(filter_menu.selection[]), filter_options)
         local target_count = filter_values[selected_filter_idx]
         
+        local selected_source = source_menu.selection[]
         local selected_class_name = class_menu.selection[]
         local selected_class_symbol = Symbol(selected_class_name)  # Convert string to symbol
         
         println("[COHORT-UI] Filter: $target_count images")
-        println("[COHORT-UI] Class: $selected_class_symbol")
+        println("[COHORT-UI] Source: $selected_source")
+        if selected_source == "Segmentierung (Klassen)"
+            println("[COHORT-UI] Class: $selected_class_symbol")
+        end
         
         # Filter patients
         local filtered_patients = if target_count == 0
@@ -285,14 +330,24 @@ function create_compare_statistics_figure(sets, db_path;
         status_label.text[] = "Lade Daten für $(length(filtered_patients)) Patienten..."
         status_label.color[] = Bas3GLMakie.GLMakie.RGBf(1.0, 0.6, 0.0)  # Orange
         
-        # Collect data
-        local patient_data_list = collect_cohort_lch_data(
-            sets,
-            db_path,
-            filtered_patients,
-            [selected_class_symbol],
-            show_progress = true
-        )
+        # Collect data based on source selection
+        local patient_data_list = if selected_source == "Polygon-Masken"
+            # NEW: Collect polygon mask data
+            collect_cohort_lch_data_polygon_masks(
+                sets,
+                filtered_patients,
+                show_progress = true
+            )
+        else
+            # EXISTING: Collect segmentation class data
+            collect_cohort_lch_data(
+                sets,
+                db_path,
+                filtered_patients,
+                [selected_class_symbol],
+                show_progress = true
+            )
+        end
         
         if isempty(patient_data_list)
             status_label.text[] = "Keine gültigen Daten gefunden"
@@ -300,8 +355,15 @@ function create_compare_statistics_figure(sets, db_path;
             return
         end
         
-        # Aggregate statistics
-        local cohort_stats = aggregate_cohort_statistics(patient_data_list, selected_class_symbol)
+        # Determine which class/region to analyze
+        local analysis_symbol = if selected_source == "Polygon-Masken"
+            :polygon_region
+        else
+            selected_class_symbol
+        end
+        
+        # Aggregate statistics (same function works for both!)
+        local cohort_stats = aggregate_cohort_statistics(patient_data_list, analysis_symbol)
         
         if isnothing(cohort_stats)
             status_label.text[] = "Fehler bei Aggregation"
@@ -349,10 +411,17 @@ function create_compare_statistics_figure(sets, db_path;
         # Clear patient_grid contents (but keep the GridLayout itself)
         delete_gridlayout_contents!(patient_grid)
         
+        # Determine display label for titles
+        local source_label = if selected_source == "Polygon-Masken"
+            "Polygon"
+        else
+            String(selected_class_symbol)
+        end
+        
         # Create three axes side-by-side: L* (left), C* (center), h° (right)
         local ax_l = Bas3GLMakie.GLMakie.Axis(
             right_panel[1, 1],
-            title = "L* Zeitverlauf: $(selected_class_symbol) (n=$(cohort_stats.num_patients))",
+            title = "L* : $(source_label) (n=$(cohort_stats.num_patients))",
             xlabel = "Zeitpunkt",
             ylabel = "L* (Lightness, 0-1)",
             xticks = (1:cohort_stats.timepoint_count, ["T$i" for i in 1:cohort_stats.timepoint_count]),
@@ -365,7 +434,7 @@ function create_compare_statistics_figure(sets, db_path;
         
         local ax_c = Bas3GLMakie.GLMakie.Axis(
             right_panel[1, 2],
-            title = "C* Zeitverlauf: $(selected_class_symbol) (n=$(cohort_stats.num_patients))",
+            title = "C* : $(source_label) (n=$(cohort_stats.num_patients))",
             xlabel = "Zeitpunkt",
             ylabel = "C* (Chroma, 0-1)",
             xticks = (1:cohort_stats.timepoint_count, ["T$i" for i in 1:cohort_stats.timepoint_count]),
@@ -378,7 +447,7 @@ function create_compare_statistics_figure(sets, db_path;
         
         local ax_h = Bas3GLMakie.GLMakie.Axis(
             right_panel[1, 3],
-            title = "h° Zeitverlauf: $(selected_class_symbol) (n=$(cohort_stats.num_patients))",
+            title = "h° : $(source_label) (n=$(cohort_stats.num_patients))",
             xlabel = "Zeitpunkt",
             ylabel = "h° (Hue, 0-1)",
             xticks = (1:cohort_stats.timepoint_count, ["T$i" for i in 1:cohort_stats.timepoint_count]),
@@ -441,8 +510,19 @@ function create_compare_statistics_figure(sets, db_path;
         Bas3GLMakie.GLMakie.colsize!(right_panel, 2, Bas3GLMakie.GLMakie.Auto())
         Bas3GLMakie.GLMakie.colsize!(right_panel, 3, Bas3GLMakie.GLMakie.Auto())
         
-        # Get class color
-        local class_color = get(BBOX_COLORS, selected_class_symbol, (:blue, 1.0))[1]
+        # Get class color (use cyan for polygon masks, class color for segmentation)
+        local class_colors_map = Dict(
+            :scar => :green,
+            :redness => :red,
+            :hematoma => :goldenrod,
+            :necrosis => :blue
+        )
+        
+        local class_color = if selected_source == "Polygon-Masken"
+            :cyan
+        else
+            get(class_colors_map, selected_class_symbol, :blue)
+        end
         
         # Plot with current toggle settings
         plot_cohort_lch_timeline!(
@@ -453,7 +533,7 @@ function create_compare_statistics_figure(sets, db_path;
             toggle_individuals.active[],
             toggle_boxplot.active[],
             base_color = class_color,
-            class_name = String(selected_class_symbol)
+            class_name = source_label
         )
         
         # Create time delta histograms
