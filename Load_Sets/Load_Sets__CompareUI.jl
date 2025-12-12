@@ -468,6 +468,8 @@ function load_polygon_mask_if_exists(image_index::Int)
             end
             
             # Convert to RGB{Float32}
+            # FIX: PNG is already in LANDSCAPE orientation (saved that way by save_polygon_mask_for_column)
+            # Do NOT apply rotr90 - PNG matches UI display orientation directly!
             local h, w = size(img)
             local mask_rgb = nothing
             
@@ -480,19 +482,16 @@ function load_polygon_mask_if_exists(image_index::Int)
                 end
             end
             
-            # Apply rotr90 to match base image orientation
-            # Base image: load from .bin (portrait) → rotr90() → landscape display
-            # Mask: load from PNG (portrait) → rotr90() → landscape display (matches base!)
-            println("[MASK-LOAD-DEBUG] Before rotr90: $(size(mask_rgb))")
-            local mask_rotated = nothing
-            rotation_time = @elapsed begin
-                mask_rotated = rotr90(mask_rgb)
-            end
-            println("[MASK-LOAD-DEBUG] After rotr90: $(size(mask_rotated))")
+            # FIXED: Remove rotr90 rotation
+            # PNG is saved in landscape orientation (see save_polygon_mask_for_column:1588)
+            # PNG already matches base image orientation (both landscape)
+            # OLD BUG: Applied rotr90 which rotated landscape → portrait (WRONG!)
+            # NEW: Direct return without rotation (CORRECT!)
+            println("[MASK-LOAD-DEBUG] PNG loaded in landscape: $(size(mask_rgb)) - NO ROTATION NEEDED")
             
-            println("[PERF-MASK-PNG] Image $image_index: total=$(round(total_time*1000, digits=2))ms, file_check=$(round(file_check_time*1000, digits=2))ms, png_load=$(round(png_load_time*1000, digits=2))ms, convert=$(round(convert_time*1000, digits=2))ms, rotate=$(round(rotation_time*1000, digits=2))ms, size=$(size(img))")
-            println("[MASK-LOAD] Loaded existing mask for image $(image_index): $(size(mask_rotated)) [FIXED-V4]")
-            return mask_rotated
+            println("[PERF-MASK-PNG] Image $image_index: total=$(round(total_time*1000, digits=2))ms, file_check=$(round(file_check_time*1000, digits=2))ms, png_load=$(round(png_load_time*1000, digits=2))ms, convert=$(round(convert_time*1000, digits=2))ms, size=$(size(img))")
+            println("[MASK-LOAD] Loaded existing mask for image $(image_index): $(size(mask_rgb)) [FIXED-V5-NO-ROTATION]")
+            return mask_rgb
         catch e
             @warn "[MASK-LOAD] Failed to load mask for image $(image_index): $e"
             return nothing

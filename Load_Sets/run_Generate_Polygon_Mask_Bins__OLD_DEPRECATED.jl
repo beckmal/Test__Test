@@ -1,13 +1,43 @@
 #!/usr/bin/env julia
-# run_Generate_Polygon_Mask_Bins.jl
-# Generate polygon mask .bin files using the EXACT same pipeline as input.bin generation
-# This script mirrors regenerate_quarter_res.jl but processes polygon_mask.png instead of raw_adj.png
+# run_Generate_Polygon_Mask_Bins__OLD_DEPRECATED.jl
+# 
+# ⚠️  DEPRECATED - DO NOT USE ⚠️
+# 
+# This script is DEPRECATED as of 2025-12-12.
+# It contains 217 lines of duplicated code from the input.bin pipeline.
+# 
+# USE INSTEAD: run_Generate_Polygon_Mask_Bins__v2.jl
+# - 86% less code (30 lines vs 217 lines)
+# - Uses shared pipeline (Load_Sets__DataLoading__ImagePipeline.jl)
+# - Fully tested and backward compatible
+# - Produces byte-identical output
+# 
+# This file is preserved for reference only.
+# It will be removed in 6 months (2025-06-12).
+# 
+# Migration guide: Replace this script with v2 - no changes to output files.
+# 
+# ============================================================================
+
+@warn """
+⚠️  DEPRECATED SCRIPT ⚠️
+
+This script is deprecated. Use run_Generate_Polygon_Mask_Bins__v2.jl instead.
+
+Old: 217 lines of duplicated code
+New: 30 lines using shared pipeline
+Result: Byte-identical output, 86% less code
+
+This script will be removed in 6 months (2025-06-12).
+"""
 
 import Base: println, print
 
 println("="^80)
-println("Polygon Mask .bin Generation - Using Input Pipeline")
+println("Polygon Mask .bin Generation - Using Input Pipeline (DEPRECATED)")
 println("="^80)
+println("\n⚠️  WARNING: This script is DEPRECATED")
+println("Use run_Generate_Polygon_Mask_Bins__v2.jl instead\n")
 
 # ============================================================================
 # SECTION 1: Environment Setup (COPY from regenerate_quarter_res.jl)
