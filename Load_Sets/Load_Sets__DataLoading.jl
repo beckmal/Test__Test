@@ -242,7 +242,7 @@ function load_original_sets(_length::Int=306, regenerate_images::Bool=false; res
         for index in 1:_length
             println("  Loading and saving image $(index)/$(_length)")
             @time begin
-                input, output = @__(Bas3ImageSegmentation.load_input_and_output(
+                input, output = @__(Bas3ImageSegmentation.load_images(
                     resolve_path("C:/Syncthing/MuHa - Bilder"),
                     _index_array[index];
                     input_type=input_type,

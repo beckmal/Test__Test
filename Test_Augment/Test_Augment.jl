@@ -58,11 +58,11 @@ catch
 
     #=
     for index in 1:8
-        input, output = Bas3ImageSegmentation.load_input_and_output("C:/Users/OsW-x/MuHa - Bilder", _index_array[index])
+        input, output = Bas3ImageSegmentation.load_images("C:/Users/OsW-x/MuHa - Bilder", _index_array[index]; input_type=input_type, output_type=output_type, output_collection=true)
         push!(training_sets, (memory_map(input), memory_map(output)))
     end
     for index in 9:_length
-        input, output = Bas3ImageSegmentation.load_input_and_output("C:/Users/OsW-x/MuHa - Bilder", _index_array[index])
+        input, output = Bas3ImageSegmentation.load_images("C:/Users/OsW-x/MuHa - Bilder", _index_array[index]; input_type=input_type, output_type=output_type, output_collection=true)
         push!(validation_sets, (memory_map(input), memory_map(output)))
     end
     =#
@@ -94,7 +94,7 @@ catch
     local training_sets = [
         #memory_map.(Bas3ImageSegmentation.load_input_and_output("C:/Users/OsW-x/MuHa - Bilder", _index_array[index]))
         begin
-            input, output = Bas3ImageSegmentation.load_input_and_output("C:/Users/OsW-x/MuHa - Bilder", _index_array[index])
+            input, output = Bas3ImageSegmentation.load_images("C:/Users/OsW-x/MuHa - Bilder", _index_array[index]; input_type=input_type, output_type=output_type, output_collection=true)
             output = convert_output(output)
             (memory_map(input), memory_map(output))
         end

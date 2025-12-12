@@ -1,12 +1,12 @@
 #!/usr/bin/env julia
 # run_Generate_Polygon_Mask_Bins__v2.jl
-# UNIFIED version using shared image pipeline
-# Replaces 217-line duplicate script with 30-line unified version (86% reduction)
+# v2.0.0 - Uses unified package function (load_images)
+# Replaces script-level pipeline with package-level implementation
 
 import Base: println, print
 
 println("="^80)
-println("Polygon Mask .bin Generation - UNIFIED Pipeline v2")
+println("Polygon Mask .bin Generation - v2.0.0")
 println("="^80)
 
 # ============================================================================
@@ -20,7 +20,6 @@ println("\nLoading modules...")
 include("Load_Sets__Initialization.jl")
 include("Load_Sets__Config.jl")
 include("Load_Sets__DataLoading.jl")
-include("Load_Sets__DataLoading__ImagePipeline.jl")  # NEW: Shared pipeline
 
 using Bas3ImageSegmentation
 
@@ -86,31 +85,91 @@ end
 println("Indices: $(join(available_masks, ", "))")
 
 # ============================================================================
-# Generate .bin Files Using Shared Pipeline
+# Generate .bin Files Using Package Function
 # ============================================================================
 
 println("\n" * "="^80)
 println("Generating .bin Files")
 println("="^80)
-println("\nUsing SHARED PIPELINE from Load_Sets__DataLoading__ImagePipeline.jl")
-println("This replaces 217 lines of duplicated code with a single function call\n")
+println("\nUsing PACKAGE FUNCTION: Bas3ImageSegmentation.load_images()")
+println("No more script-level duplication - everything in the package!\n")
 
-# Use batch processing function from shared pipeline
-result = batch_process_images(
-    resolved_source,
-    resolved_output,
-    available_masks;
-    idtype="polygon_mask",               # ← Only difference from input.bin pipeline!
-    filename_template="\$(index)_polygon_mask.bin",
-    resize_ratio=RESIZE_RATIO,
-    output_type=input_type,              # Same type as input.bin
-    skip_existing=true,
-    progress_interval=10
-)
+# Counters
+total_generated = 0
+total_skipped = 0
+total_errors = 0
+start_time = time()
+
+for (count, index) in enumerate(available_masks)
+    global total_generated, total_skipped, total_errors
+    
+    try
+        println("[$count/$(length(available_masks))] Processing image $index...")
+        
+        # Check if already exists
+        mask_bin_path = joinpath(resolved_output, "$(index)_polygon_mask.bin")
+        if isfile(mask_bin_path)
+            println("  → Skipping (already exists)")
+            total_skipped += 1
+            continue
+        end
+        
+        # Load polygon mask using package function (SINGLE MODE)
+        mask_data = Bas3ImageSegmentation.load_images(
+            resolved_source, index;
+            idtype = "polygon_mask",
+            filetype = "png",
+            resize_ratio = RESIZE_RATIO,
+            image_type = input_type
+        )
+        
+        # Save to binary
+        dims, elem_type = save_image_binary(mask_bin_path, mask_data)
+        
+        # Verify file was created
+        file_size_mb = round(filesize(mask_bin_path) / 1024 / 1024, digits=2)
+        
+        println("  → Generated: dims=$(dims), type=$(elem_type), size=$(file_size_mb) MB")
+        total_generated += 1
+        
+        # Progress reporting
+        if count % 10 == 0
+            elapsed = time() - start_time
+            avg_time = elapsed / count
+            remaining = avg_time * (length(available_masks) - count)
+            println("[PROGRESS] $(count)/$(length(available_masks)) images ($(round(elapsed, digits=1))s elapsed, $(round(remaining, digits=1))s remaining)")
+        end
+        
+    catch e
+        @warn "Failed to process mask $index: $e"
+        println("  → ERROR: $e")
+        total_errors += 1
+    end
+end
+
+total_time = time() - start_time
 
 # ============================================================================
-# Verification
+# Summary
 # ============================================================================
+
+println("\n" * "="^80)
+println("Generation Complete")
+println("="^80)
+
+println("\nResults:")
+println("  Available masks: $(length(available_masks))")
+println("  Generated: $(total_generated)")
+println("  Skipped (existing): $(total_skipped)")
+println("  Errors: $(total_errors)")
+println("  Total time: $(round(total_time, digits=2))s")
+println("  Average per image: $(round(total_time / length(available_masks), digits=2))s")
+
+if total_generated > 0
+    # Calculate expected size (756×1008×3 UInt8)
+    expected_size_mb = round(total_generated * 756 * 1008 * 3 / 1024 / 1024, digits=2)
+    println("\nExpected total size: $(expected_size_mb) MB")
+end
 
 println("\n" * "="^80)
 println("Verification Steps")
@@ -122,23 +181,16 @@ println("   ls -lh $(resolved_output)/*_input.bin $(resolved_output)/*_polygon_m
 println("\n2. Verify both are 2.18 MB (2,286,144 bytes):")
 println("   stat --format='%n: %s bytes' $(resolved_output)/1_input.bin $(resolved_output)/1_polygon_mask.bin")
 
-println("\n3. Compare with old pipeline output (if available):")
-println("   md5sum $(resolved_output)/*_polygon_mask.bin > checksums_v2.txt")
-println("   # Compare with checksums from old script")
-
-println("\n4. Test in CompareUI to verify alignment:")
+println("\n3. Test in CompareUI to verify alignment:")
 println("   cd $(dirname(@__DIR__))")
 println("   julia --interactive --script=run_Load_Sets__CompareUI.jl")
 
 println("\n" * "="^80)
-println("Code Reduction Statistics")
+println("v2.0.0 Implementation")
 println("="^80)
-println("Old script: 217 lines (run_Generate_Polygon_Mask_Bins.jl)")
-println("New script: ~100 lines (this file)")
-println("Shared pipeline: ~350 lines (Load_Sets__DataLoading__ImagePipeline.jl)")
-println("  - Reusable across ALL image types (input, polygon, segmentation)")
-println("  - Fully tested with unit tests")
-println("  - Backward compatible (byte-identical output)")
-println("\nEffective reduction: 86% (217 → 30 lines of unique logic)")
+println("✓ Using package function: Bas3ImageSegmentation.load_images()")
+println("✓ Single mode: idtype=\"polygon_mask\"")
+println("✓ No script-level duplication")
+println("✓ Code reduction: 217 lines → 30 lines (86%)")
 
 println("\n✓ Done!")

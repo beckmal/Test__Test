@@ -33,6 +33,10 @@ module Bas3ImageSegmentation
     Base.include(Bas3ImageSegmentation, "./error/-method-1.jl")
     Base.include(Bas3ImageSegmentation, "./neuralnetwork/-method-1.jl")
     Base.include(Bas3ImageSegmentation, "./load_input_and_output/-method-1.jl")
+    # v2.0.0: Unified image loading API
+    export load_images
+    # Deprecated (will be removed in v3.0.0)
+    export load_input_and_output
     Base.include(Bas3ImageSegmentation, "./augment/-method-1.jl")
     #-global-1
     const input_shape = ((:red, :green, :blue),)
