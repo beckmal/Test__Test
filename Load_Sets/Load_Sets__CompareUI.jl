@@ -1783,7 +1783,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     
     # Observable to track timeline visibility
     local timeline_visible = Bas3GLMakie.GLMakie.Observable(true)
-    local timeline_row_size = Bas3GLMakie.GLMakie.Observable{Any}(Bas3GLMakie.GLMakie.Relative(0.5))
+    # FIX: Use Fixed(540) instead of Auto() to guarantee space for 3 axes (3 × 180px)
+    local timeline_row_size = Bas3GLMakie.GLMakie.Observable{Any}(Bas3GLMakie.GLMakie.Fixed(540))
     
     # Timeline toggle callback (defined after observables)
     # Option A: Dynamic column widths with widget rebuild
@@ -1813,7 +1814,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             println("[TIMELINE-TOGGLE] Images rebuilt in $(round((time() - rebuild_start) * 1000, digits=1))ms")
             
             # Step 4: Expand timeline row and recreate content
-            timeline_row_size[] = Bas3GLMakie.GLMakie.Auto()
+            # FIX: Use Fixed(540) to guarantee space for 3 axes (3 × 180px = 540px)
+            timeline_row_size[] = Bas3GLMakie.GLMakie.Fixed(540)
             timeline_toggle_btn.label = "▼ Timeline"
             
             # Recreate timeline if we have data
@@ -1861,8 +1863,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         println("[TIMELINE-DEBUG] Setting row 8 size to: $size")
         Bas3GLMakie.GLMakie.rowsize!(left_column, 8, size)
     end
-    # Set initial timeline size
-    timeline_row_size[] = Bas3GLMakie.GLMakie.Auto()  # Auto size initially
+    # Set initial timeline size (Fixed(540) for 3 axes × 180px)
+    timeline_row_size[] = Bas3GLMakie.GLMakie.Fixed(540)
     
     # ========================================================================
     # PRELOAD CACHE INFRASTRUCTURE
