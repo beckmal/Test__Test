@@ -1609,23 +1609,28 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     # Filtered patient IDs (reactive to filter changes)
     local filtered_patient_ids = Bas3GLMakie.GLMakie.Observable(all_patient_ids)
     
-    # Create figure with dynamic width based on max images
-    # Add 300px for left control column
-    fig_width = min(350 * max_images_per_row + 300, 2400)
-    local fgr = Bas3GLMakie.GLMakie.Figure(size=(fig_width, 800))
+    # Create responsive figure with initial size (user can resize)
+    # Responsive design: no fixed width calculation, scales with window
+    local fgr = Bas3GLMakie.GLMakie.Figure(size=(1400, 900))
     
     # ========================================================================
-    # TWO-COLUMN MAIN LAYOUT
+    # TWO-COLUMN MAIN LAYOUT (RESPONSIVE, FILLS ENTIRE FIGURE)
     # ========================================================================
-    # Column 1: Controls + H/S Timeline (fixed 280px)
-    # Column 2: Images Grid (expandable)
+    # Column 1: Controls + Timeline (15% of window width)
+    # Column 2: Images Grid (85% of window width - MAXIMIZED)
     
-    local left_column = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 1])
-    local right_column = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 2])
+    # FIX: Add tellheight=false and tellwidth=false to accept parent allocations
+    # This ensures GridLayouts expand to fill entire figure height and width
+    local left_column = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 1]; tellheight=false, tellwidth=false)
+    local right_column = Bas3GLMakie.GLMakie.GridLayout(fgr[1, 2]; tellheight=false, tellwidth=false)
     
-    # Set column widths
-    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Fixed(280))
-    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 2, Bas3GLMakie.GLMakie.Auto())
+    # Set column widths (responsive proportions - change based on timeline visibility)
+    # Initial: Left 15% (controls + timeline), Right 85% (images)
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Relative(0.15))
+    Bas3GLMakie.GLMakie.colsize!(fgr.layout, 2, Bas3GLMakie.GLMakie.Relative(0.85))
+    
+    # FIX: Remove explicit rowsize! - default behavior fills figure height
+    # Previous: rowsize!(fgr.layout, 1, Auto()) prevented full height spanning
     
     # ========================================================================
     # LEFT COLUMN: Controls (rows 1-5) + Spacer (row 6) + Timeline (row 7)
@@ -1707,27 +1712,46 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         color=:gray
     )
     
-    # Row 7: Spacer (expands to fill space)
-    Bas3GLMakie.GLMakie.Box(left_column[7, 1], color=:transparent)
+    # Row 7: Timeline toggle button (in spacer area)
+    local timeline_toggle_btn = Bas3GLMakie.GLMakie.Button(
+        left_column[7, 1],
+        label = "▼ Timeline",
+        fontsize = 10,
+        halign = :center
+    )
     
-    # Row 8: L*C*h Timeline Plot (polygon-based)
-    local timeline_grid_lch = Bas3GLMakie.GLMakie.GridLayout(left_column[8, 1])
+    # Row 8: L*C*h Timeline Plot (polygon-based, collapsible)
+    # Using Ref to allow reassignment when deleting/recreating GridLayout
+    local timeline_grid_lch = Ref{Any}(Bas3GLMakie.GLMakie.GridLayout(left_column[8, 1]))
+    # FIX: Set tellheight=false to accept parent's height allocation (prevents bottom cut-off)
+    # This is consistent with left_column's tellheight=false (line 1622)
+    timeline_grid_lch[].tellheight = false
     local timeline_axis_lch = Ref{Any}(nothing)  # Will hold LCh axis reference for clearing
     
-    # Set left column row sizes
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 1, Bas3GLMakie.GLMakie.Fixed(50))   # Title
+    # Row 9: Expandable spacer (absorbs unused vertical space when timeline hidden)
+    # Empty Label acts as flexible spacer
+    local spacer_label = Bas3GLMakie.GLMakie.Label(
+        left_column[9, 1],
+        "",
+        fontsize = 1
+    )
+    
+    # Set left column row sizes (compact controls + responsive timeline with dynamic sizing)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 1, Bas3GLMakie.GLMakie.Fixed(40))   # Title (compact)
     Bas3GLMakie.GLMakie.rowsize!(left_column, 2, Bas3GLMakie.GLMakie.Fixed(70))   # Patient selector + filter (2 rows)
     Bas3GLMakie.GLMakie.rowsize!(left_column, 3, Bas3GLMakie.GLMakie.Fixed(35))   # Nav buttons
     Bas3GLMakie.GLMakie.rowsize!(left_column, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Refresh
     Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Fixed(35))   # Clear polygons
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Status
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Auto())      # Spacer (flexible)
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Fixed(560))  # L*C*h Timeline (expanded)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Fixed(30))   # Status
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Timeline toggle button
+    # Row 8 size is set dynamically via timeline_row_size observable (see below after observable is defined)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 9, Bas3GLMakie.GLMakie.Auto())      # Expandable spacer
     
     # ========================================================================
-    # RIGHT COLUMN: Images Container (scrollable grid)
+    # RIGHT COLUMN: Images Container (fills entire right column height)
     # ========================================================================
-    local images_grid = Bas3GLMakie.GLMakie.GridLayout(right_column[1, 1])
+    # FIX: Add tellheight=false and tellwidth=false to expand to parent size
+    local images_grid = Bas3GLMakie.GLMakie.GridLayout(right_column[1, 1]; tellheight=false, tellwidth=false)
     
     # Store references to dynamically created widgets
     local image_axes = Bas3GLMakie.GLMakie.Axis[]
@@ -1735,7 +1759,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     local info_textboxes = []
     local patient_id_textboxes = []  # For patient ID reassignment
     local save_buttons = []
-    local image_labels = []
+    local image_axes = []
     local image_observables = []
     local lch_polygon_data = []   # L*C*h data per polygon (NamedTuple per image)
     
@@ -1752,6 +1776,93 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     
     local current_entries = Bas3GLMakie.GLMakie.Observable(NamedTuple[])
     local current_patient_id = Bas3GLMakie.GLMakie.Observable(isempty(all_patient_ids) ? 0 : all_patient_ids[1])
+    
+    # ========================================================================
+    # COLLAPSIBLE TIMELINE STATE
+    # ========================================================================
+    
+    # Observable to track timeline visibility
+    local timeline_visible = Bas3GLMakie.GLMakie.Observable(true)
+    local timeline_row_size = Bas3GLMakie.GLMakie.Observable{Any}(Bas3GLMakie.GLMakie.Relative(0.5))
+    
+    # Timeline toggle callback (defined after observables)
+    # Option A: Dynamic column widths with widget rebuild
+    Bas3GLMakie.GLMakie.on(timeline_toggle_btn.clicks) do _
+        timeline_visible[] = !timeline_visible[]
+        
+        println("[TIMELINE-TOGGLE] Button clicked, timeline_visible = $(timeline_visible[])")
+        
+        # Store current patient to rebuild after layout change
+        local current_patient = current_patient_id[]
+        
+        if timeline_visible[]
+            # SHOW timeline - expand sidebar
+            println("[TIMELINE-TOGGLE] Showing timeline...")
+            
+            # Step 1: Change column proportions
+            Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Relative(0.15))  # 8% → 15%
+            Bas3GLMakie.GLMakie.colsize!(fgr.layout, 2, Bas3GLMakie.GLMakie.Relative(0.85))  # 92% → 85%
+            
+            # Step 2: Let layout solver process changes
+            yield()
+            
+            # Step 3: Rebuild images to pick up new column width
+            println("[TIMELINE-TOGGLE] Rebuilding images for narrower column...")
+            local rebuild_start = time()
+            build_patient_images!(current_patient)
+            println("[TIMELINE-TOGGLE] Images rebuilt in $(round((time() - rebuild_start) * 1000, digits=1))ms")
+            
+            # Step 4: Expand timeline row and recreate content
+            timeline_row_size[] = Bas3GLMakie.GLMakie.Auto()
+            timeline_toggle_btn.label = "▼ Timeline"
+            
+            # Recreate timeline if we have data
+            if !isempty(lch_polygon_data) && !isnothing(current_entries[]) && !isempty(current_entries[])
+                if !isnothing(timeline_grid_lch[])
+                    delete_gridlayout_contents!(timeline_grid_lch[])
+                    timeline_axis_lch[] = create_lch_timeline!(
+                        timeline_grid_lch[], 
+                        current_entries[], 
+                        lch_polygon_data
+                    )
+                    println("[TIMELINE-TOGGLE] Timeline recreated")
+                end
+            end
+        else
+            # HIDE timeline - shrink sidebar
+            println("[TIMELINE-TOGGLE] Hiding timeline...")
+            
+            # Step 1: Clear timeline content first
+            if !isnothing(timeline_grid_lch[])
+                delete_gridlayout_contents!(timeline_grid_lch[])
+            end
+            timeline_axis_lch[] = nothing
+            
+            timeline_row_size[] = Bas3GLMakie.GLMakie.Fixed(0)
+            timeline_toggle_btn.label = "▶ Timeline"
+            
+            # Step 2: Change column proportions  
+            Bas3GLMakie.GLMakie.colsize!(fgr.layout, 1, Bas3GLMakie.GLMakie.Relative(0.08))  # 15% → 8%
+            Bas3GLMakie.GLMakie.colsize!(fgr.layout, 2, Bas3GLMakie.GLMakie.Relative(0.92))  # 85% → 92%
+            
+            # Step 3: Let layout solver process changes
+            yield()
+            
+            # Step 4: Rebuild images to pick up new column width
+            println("[TIMELINE-TOGGLE] Rebuilding images for wider column...")
+            local rebuild_start = time()
+            build_patient_images!(current_patient)
+            println("[TIMELINE-TOGGLE] Images rebuilt in $(round((time() - rebuild_start) * 1000, digits=1))ms - images should be larger!")
+        end
+    end
+    
+    # Apply timeline size observable to row 8
+    Bas3GLMakie.GLMakie.on(timeline_row_size) do size
+        println("[TIMELINE-DEBUG] Setting row 8 size to: $size")
+        Bas3GLMakie.GLMakie.rowsize!(left_column, 8, size)
+    end
+    # Set initial timeline size
+    timeline_row_size[] = Bas3GLMakie.GLMakie.Auto()  # Auto size initially
     
     # ========================================================================
     # PRELOAD CACHE INFRASTRUCTURE
@@ -2150,20 +2261,22 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             content_item = gl.content[1]
             obj = content_item.content
             
-            # If this is a nested GridLayout, recursively clear it first
+            # If this is a nested GridLayout, recursively clear it first, then remove it from parent
             if obj isa Bas3GLMakie.GLMakie.GridLayout
                 delete_gridlayout_contents!(obj)
-            end
-            
-            # Delete the object from the figure
-            try
-                Bas3GLMakie.GLMakie.delete!(obj)
-            catch e
-                # Fallback: remove from content array
+                # Remove GridLayout from its parent
+                deleteat!(gl.content, 1)
+            else
+                # Delete non-GridLayout objects normally
                 try
-                    deleteat!(gl.content, 1)
-                catch
-                    # Skip if already removed
+                    Bas3GLMakie.GLMakie.delete!(obj)
+                catch e
+                    # Fallback: remove from content array
+                    try
+                        deleteat!(gl.content, 1)
+                    catch
+                        # Skip if already removed
+                    end
                 end
             end
         end
@@ -2176,8 +2289,10 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         # Clear the main images_grid recursively
         delete_gridlayout_contents!(images_grid)
         
-        # Clear the LCh timeline_grid
-        delete_gridlayout_contents!(timeline_grid_lch)
+        # Clear the LCh timeline_grid (only if it exists)
+        if !isnothing(timeline_grid_lch[])
+            delete_gridlayout_contents!(timeline_grid_lch[])
+        end
         timeline_axis_lch[] = nothing
         
         # Clear widget arrays
@@ -2186,7 +2301,6 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         empty!(info_textboxes)
         empty!(patient_id_textboxes)
         empty!(save_buttons)
-        empty!(image_labels)
         empty!(image_observables)
         empty!(lch_polygon_data)  # Clear L*C*h polygon data
         
@@ -2284,19 +2398,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         for (col, entry) in enumerate(entries[1:num_images])
             println("[COMPARE-UI] Creating column $col for image $(entry.image_index)")
             
-            # Row 1: Image label (index + date)
-            local img_label = Bas3GLMakie.GLMakie.Label(
-                images_grid[1, col],
-                "Bild $(entry.image_index)",
-                fontsize=14,
-                font=:bold,
-                halign=:center
-            )
-            push!(image_labels, img_label)
+            # Row 1: Image header removed (will be in data section below)
             
-            # Row 2: Image axis
+            # Row 1: Image axis (moved from row 2)
             local ax = Bas3GLMakie.GLMakie.Axis(
-                images_grid[2, col],
+                images_grid[1, col],
                 aspect=Bas3GLMakie.GLMakie.DataAspect(),
                 title=""
             )
@@ -2488,8 +2594,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 ))
             end
             
-            # Row 3: Polygon control buttons - TOP ROW (Mask toggle)
-            local polygon_control_grid_row1 = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
+            # Row 2: Consolidated control buttons (Mask + Polygon controls in single row)
+            local control_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[2, col])
             
             # IMPORTANT: Capture loop variable by VALUE to avoid closure issues
             local col_captured = col
@@ -2506,44 +2612,42 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 initial_visible ? Bas3GLMakie.GLMakie.RGBf(0.9, 0.9, 0.3) : Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Yellow when visible, gray when hidden
             end
             
-            # Create button with static initial values (Button attributes are not reactive)
+            # Create mask toggle button
             local toggle_mask_btn = Bas3GLMakie.GLMakie.Button(
-                polygon_control_grid_row1[1, 1],
+                control_grid[1, 1],
                 label = initial_label,
-                fontsize = 10,
-                width = 120,
+                fontsize = 9,
+                width = 70,
                 buttoncolor = initial_color
             )
             
-            # Row 4: Polygon control buttons - BOTTOM ROW (Drawing controls + Save)
-            local polygon_control_grid_row2 = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
-            
+            # Polygon control buttons (merged into same row)
             local start_poly_btn = Bas3GLMakie.GLMakie.Button(
-                polygon_control_grid_row2[1, 1],
-                label="Polygon",
+                control_grid[1, 2],
+                label="Poly",
                 fontsize=9,
-                width=60
+                width=50
             )
             
             local close_poly_btn = Bas3GLMakie.GLMakie.Button(
-                polygon_control_grid_row2[1, 2],
-                label="Schließen",
-                fontsize=9,
-                width=70
+                control_grid[1, 3],
+                label="✓",
+                fontsize=10,
+                width=35
             )
             
             local clear_poly_btn = Bas3GLMakie.GLMakie.Button(
-                polygon_control_grid_row2[1, 3],
-                label="Löschen",
-                fontsize=9,
-                width=60
+                control_grid[1, 4],
+                label="✗",
+                fontsize=10,
+                width=35
             )
             
             local save_mask_btn = Bas3GLMakie.GLMakie.Button(
-                polygon_control_grid_row2[1, 4],
-                label="PNG speichern",
+                control_grid[1, 5],
+                label="PNG",
                 fontsize=9,
-                width=90
+                width=35
             )
             
             push!(polygon_buttons_per_image, (start_poly_btn, close_poly_btn, clear_poly_btn, save_mask_btn, toggle_mask_btn))
@@ -2581,9 +2685,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                         # Store in lch_polygon_data array
                         lch_polygon_data[col_idx] = lch_result
                         
-                        # Rebuild timeline with new data
-                        delete_gridlayout_contents!(timeline_grid_lch)
-                        timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch, current_entries[], lch_polygon_data)
+                        # Rebuild timeline with new data (only if timeline exists)
+                        if !isnothing(timeline_grid_lch[])
+                            delete_gridlayout_contents!(timeline_grid_lch[])
+                            timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch[], current_entries[], lch_polygon_data)
+                        end
                         
                         status_label.text = "Polygon $(col_idx): $(lch_result.count) Pixel analysiert"
                         status_label.color = :green
@@ -2658,57 +2764,51 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Row 5: Date label + textbox
-            local date_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
+            # Row 3: Patient metadata section with header
+            local data_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
+            
+            # Header: "Bild X" centered and bold
             Bas3GLMakie.GLMakie.Label(
-                date_grid[1, 1],
+                data_grid[1, 1:2],
+                "Bild $(entry.image_index)",
+                fontsize=12,
+                font=:bold,
+                halign=:center
+            )
+            
+            # Date section (row 2)
+            Bas3GLMakie.GLMakie.Label(
+                data_grid[2, 1],
                 "Datum:",
-                fontsize=11,
-                halign=:left
+                fontsize=10,
+                halign=:right
             )
-            local date_tb = Bas3GLMakie.GLMakie.Textbox(
-                date_grid[1, 2],
+            
+            local date_box = Bas3GLMakie.GLMakie.Textbox(
+                data_grid[2, 2],
                 placeholder="YYYY-MM-DD",
-                stored_string=entry.date,
-                width=120
+                stored_string=entry.date
             )
-            push!(date_textboxes, date_tb)
+            push!(date_textboxes, date_box)
             
-            # Row 6: Info label + textbox
-            local info_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[6, col])
+            # Info section (row 3)
             Bas3GLMakie.GLMakie.Label(
-                info_grid[1, 1],
+                data_grid[3, 1],
                 "Info:",
-                fontsize=11,
-                halign=:left
+                fontsize=10,
+                halign=:right
             )
-            local info_tb = Bas3GLMakie.GLMakie.Textbox(
-                info_grid[1, 2],
-                placeholder="Zusatzinfo...",
-                stored_string=entry.info,
-                width=200
-            )
-            push!(info_textboxes, info_tb)
             
-            # Row 7: Patient-ID label + textbox (for reassignment)
-            local pid_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[7, col])
-            Bas3GLMakie.GLMakie.Label(
-                pid_grid[1, 1],
-                "Patient:",
-                fontsize=11,
-                halign=:left
+            local info_box = Bas3GLMakie.GLMakie.Textbox(
+                data_grid[3, 2],
+                placeholder="Zusatzinformationen",
+                stored_string=entry.info
             )
-            local pid_tb = Bas3GLMakie.GLMakie.Textbox(
-                pid_grid[1, 2],
-                placeholder="ID",
-                stored_string=string(patient_id),
-                width=80
-            )
-            push!(patient_id_textboxes, pid_tb)
+            push!(info_textboxes, info_box)
             
-            # Row 8: Save button
+            # Row 4: Save button
             local save_btn = Bas3GLMakie.GLMakie.Button(
-                images_grid[8, col],
+                images_grid[4, col],
                 label="Speichern",
                 fontsize=11
             )
@@ -2726,7 +2826,6 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Get current values from textboxes
                 new_date = something(date_textboxes[col_idx].displayed_string[], "")
                 new_info = something(info_textboxes[col_idx].displayed_string[], "")
-                new_pid_str = something(patient_id_textboxes[col_idx].displayed_string[], "")
                 
                 # Validate date
                 (valid_date, date_msg) = validate_date_compare(new_date)
@@ -2744,41 +2843,32 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     return
                 end
                 
-                # Validate patient ID
-                (valid_pid, pid_msg) = validate_patient_id_compare(new_pid_str)
-                if !valid_pid
-                    status_label.text = "Fehler Bild $entry_idx: $pid_msg"
-                    status_label.color = :red
-                    return
-                end
-                
-                new_patient_id = parse(Int, strip(new_pid_str))
-                patient_id_changed = (new_patient_id != original_patient_id)
-                
-                # Update database
+                # Update database (patient ID reassignment removed - use original patient_id)
                 try
-                    # Always update date and info
-                    update_entry_compare(db_path, entry_row, new_date, new_info)
+                    success = update_image_metadata(db_path, entry_row, new_date, new_info)
                     
-                    # If patient ID changed, update that too
-                    if patient_id_changed
-                        update_patient_id_compare(db_path, entry_row, new_patient_id)
-                        println("[COMPARE-UI] Patient ID changed from $original_patient_id to $new_patient_id")
-                        
-                        status_label.text = "Bild $entry_idx verschoben zu Patient $new_patient_id"
-                        status_label.color = :blue
-                        
-                        # Update patient menu options (in case new patient was created)
-                        new_patient_ids = get_all_patient_ids(db_path)
-                        patient_menu.options = [string(pid) for pid in new_patient_ids]
-                        
-                        # Refresh current patient view (image will disappear from this view)
-                        build_patient_images!(current_patient_id[])
-                    else
+                    if success
                         status_label.text = "Bild $entry_idx gespeichert"
                         status_label.color = :green
+                        
+                        # Update current_entries to reflect changes
+                        updated_entry = (
+                            row = entry_row,
+                            patient_id = original_patient_id,  # Keep original patient ID
+                            image_index = entry_idx,
+                            date = new_date,
+                            info = new_info
+                        )
+                        
+                        local entries = current_entries[]
+                        entries[col_idx] = updated_entry
+                        current_entries[] = entries
+                    else
+                        status_label.text = "Fehler beim Speichern von Bild $entry_idx"
+                        status_label.color = :red
                     end
                 catch e
+                    @warn "[COMPARE-UI] Error saving metadata: $e"
                     status_label.text = "Fehler beim Speichern: $(typeof(e))"
                     status_label.color = :red
                 end
@@ -2799,12 +2889,23 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         end
         println("[PERF-BUILD] LCh computation: $(round(lch_compute_time*1000, digits=2))ms")
         
-        # Create timeline (handles NaN values for missing masks)
+        # Create timeline (handles NaN values for missing masks, ONLY if timeline VISIBLE)
         local timeline_create_time = @elapsed begin
-            delete_gridlayout_contents!(timeline_grid_lch)
-            timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch, entries[1:num_images], lch_polygon_data)
+            if !isnothing(timeline_grid_lch[]) && timeline_visible[]
+                # Timeline is visible - create/update it
+                delete_gridlayout_contents!(timeline_grid_lch[])
+                timeline_axis_lch[] = create_lch_timeline!(timeline_grid_lch[], entries[1:num_images], lch_polygon_data)
+                println("[PERF-BUILD] Timeline created (visible)")
+            elseif !timeline_visible[]
+                # Timeline is hidden - ensure it stays empty
+                if !isnothing(timeline_grid_lch[])
+                    delete_gridlayout_contents!(timeline_grid_lch[])
+                end
+                timeline_axis_lch[] = nothing
+                println("[PERF-BUILD] Timeline skipped (hidden)")
+            end
         end
-        println("[PERF-BUILD] Timeline creation: $(round(timeline_create_time*1000, digits=2))ms")
+        println("[PERF-BUILD] Timeline operation: $(round(timeline_create_time*1000, digits=2))ms")
         
         # Show message if more images exist
         if length(entries) > max_images_per_row
@@ -2817,20 +2918,16 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
         end
         
-        # Set column sizes
+        # Set column widths (responsive - equal distribution)
         for col in 1:num_images
-            Bas3GLMakie.GLMakie.colsize!(images_grid, col, Bas3GLMakie.GLMakie.Fixed(350))
+            Bas3GLMakie.GLMakie.colsize!(images_grid, col, Bas3GLMakie.GLMakie.Relative(1.0 / num_images))
         end
         
-        # Set row sizes
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 1, Bas3GLMakie.GLMakie.Fixed(30))   # Label
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(400))  # Image (increased - no HSV)
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(35))   # Polygon controls row 1 (mask toggle)
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(35))   # Polygon controls row 2 (drawing + save)
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Fixed(40))   # Date
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Fixed(40))   # Info
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 7, Bas3GLMakie.GLMakie.Fixed(40))   # Patient-ID
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 8, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
+        # Set row sizes (responsive image row with Auto - UPDATED for 5 rows)
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 1, Bas3GLMakie.GLMakie.Auto())      # IMAGE (auto-expanding) ⭐
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Fixed(35))   # Controls (merged)
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Fixed(95))   # Header + Date + Info (3-row section)
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Fixed(40))   # Save button
         
             # Log timing
             local build_elapsed = round((time() - build_start_time) * 1000, digits=1)
@@ -3182,7 +3279,6 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 :info_textboxes => info_textboxes,
                 :patient_id_textboxes => patient_id_textboxes,
                 :save_buttons => save_buttons,
-                :image_labels => image_labels,
                 :image_observables => image_observables,
                 # :hsv_grids => hsv_grids,  # TODO: Not implemented yet
                 # :hsv_class_data => hsv_class_data,  # TODO: Not implemented yet
