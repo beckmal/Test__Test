@@ -13,10 +13,10 @@ Provides German translations and RGB color mappings for classes and channels.
 # ============================================================================
 
 const CLASS_NAMES_DE = Dict(
-    :scar => "Narbe",
-    :redness => "Rötung",
-    :hematoma => "Hämatom",
-    :necrosis => "Nekrose",
+    :scar => "In_Narbe",
+    :redness => "Bei_Narbe",
+    :hematoma => "Umgebung",
+    :necrosis => "Entfernt",
     :background => "Hintergrund"
 )
 
@@ -28,7 +28,7 @@ Convert class symbols to German names.
 # Example
 ```julia
 classes = [:scar, :redness, :hematoma]
-get_german_class_names(classes)  # ["Narbe", "Rötung", "Hämatom"]
+get_german_class_names(classes)  # ["In_Narbe", "Bei_Narbe", "Umgebung"]
 ```
 """
 function get_german_class_names(classes)
@@ -40,10 +40,10 @@ end
 # ============================================================================
 
 const CLASS_COLORS_RGB = [
-    Bas3GLMakie.GLMakie.RGBf(0, 1, 0),      # Scar (Narbe) - Green
-    Bas3GLMakie.GLMakie.RGBf(1, 0, 0),      # Redness (Rötung) - Red
-    :goldenrod,                             # Hematoma (Hämatom) - Goldenrod/Yellow
-    Bas3GLMakie.GLMakie.RGBf(0, 0, 1),      # Necrosis (Nekrose) - Blue
+    Bas3GLMakie.GLMakie.RGBf(0, 1, 0),      # In_Narbe - Green
+    Bas3GLMakie.GLMakie.RGBf(1, 0, 0),      # Bei_Narbe - Red
+    :goldenrod,                             # Umgebung - Goldenrod/Yellow
+    Bas3GLMakie.GLMakie.RGBf(0, 0, 1),      # Entfernt - Blue
     :black                                  # Background (Hintergrund) - Black
 ]
 

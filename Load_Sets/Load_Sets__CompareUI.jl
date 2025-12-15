@@ -2745,10 +2745,27 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     """
     Add new polygon to image column's collection. Returns polygon ID.
     """
-    function add_polygon_to_collection!(col_idx::Int, class::Symbol, class_name::String, sample_number::Int, vertices::Vector{Bas3GLMakie.GLMakie.Point2f})
-        # Generate unique ID
-        polygon_id_counter[] += 1
-        new_id = polygon_id_counter[]
+    function add_polygon_to_collection!(col_idx::Int, class::Symbol, class_name::String, sample_number::Int, vertices::Vector{Bas3GLMakie.GLMakie.Point2f}; manual_id::Union{Nothing, Int}=nothing)
+        # Generate unique ID (auto-increment or use manual ID)
+        new_id = if isnothing(manual_id)
+            # Auto-increment
+            polygon_id_counter[] += 1
+            polygon_id_counter[]
+        else
+            # Validate manual ID
+            current_polygons = polygons_per_image[col_idx][]
+            if any(p -> p.id == manual_id, current_polygons)
+                println("[MULTI-POLYGON] WARNING: Manual ID $manual_id already exists in column $col_idx, auto-incrementing instead")
+                polygon_id_counter[] += 1
+                polygon_id_counter[]
+            else
+                # Use manual ID and update counter if necessary
+                if manual_id > polygon_id_counter[]
+                    polygon_id_counter[] = manual_id
+                end
+                manual_id
+            end
+        end
         
         # Create polygon entry
         poly = PolygonEntry(new_id, class, class_name, sample_number, vertices, false, nothing)
@@ -2758,7 +2775,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         push!(current_polygons, poly)
         polygons_per_image[col_idx][] = current_polygons  # Trigger observable update
         
-        println("[MULTI-POLYGON] Added polygon ID=$new_id, class=$class, name=\"$class_name\", sample=$sample_number to column $col_idx")
+        id_source = isnothing(manual_id) ? "auto" : "manual"
+        println("[MULTI-POLYGON] Added polygon ID=$new_id ($id_source), class=$class, name=\"$class_name\", sample=$sample_number to column $col_idx")
         return new_id
     end
     
@@ -2804,6 +2822,54 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             new_poly = PolygonEntry(poly.id, poly.class, poly.vertices, poly.complete, lch_data)
             update_polygon!(col_idx, polygon_id, new_poly)
         end
+    end
+    
+    """
+    Update polygon ID (for renumbering existing polygons).
+    Returns (success::Bool, message::String)
+    """
+    function update_polygon_id!(col_idx::Int, old_id::Int, new_id::Int)
+        # Validate new_id
+        if new_id <= 0
+            return (false, "ID muss größer als 0 sein")
+        end
+        
+        # Check if new_id already exists (and is not the same polygon)
+        current_polygons = polygons_per_image[col_idx][]
+        if any(p -> p.id == new_id && p.id != old_id, current_polygons)
+            return (false, "ID $new_id bereits vergeben")
+        end
+        
+        # Get the polygon to update
+        poly = get_polygon_by_id(col_idx, old_id)
+        if isnothing(poly)
+            return (false, "Polygon ID=$old_id nicht gefunden")
+        end
+        
+        # Create new polygon with new ID
+        new_poly = PolygonEntry(new_id, poly.class, poly.class_name, poly.sample_number, poly.vertices, poly.complete, poly.lch_data)
+        
+        # Replace in collection
+        idx = findfirst(p -> p.id == old_id, current_polygons)
+        if !isnothing(idx)
+            current_polygons[idx] = new_poly
+            polygons_per_image[col_idx][] = current_polygons
+            
+            # Update global counter if needed
+            if new_id > polygon_id_counter[]
+                polygon_id_counter[] = new_id
+            end
+            
+            # Update active polygon ID if this was the active polygon
+            if active_polygon_id_per_image[col_idx][] == old_id
+                active_polygon_id_per_image[col_idx][] = new_id
+            end
+            
+            println("[ID-UPDATE] Polygon ID updated: $old_id → $new_id in column $col_idx")
+            return (true, "ID aktualisiert: $old_id → $new_id")
+        end
+        
+        return (false, "Aktualisierung fehlgeschlagen")
     end
     
     # Build image widgets for current patient
@@ -3092,23 +3158,166 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 ))
             end
             
-            # Row 2: Class selection dropdown (NEW)
+            # Row 2: Create & Select - Class, ID, Create button, Polygon selector (4 columns)
             local class_selector_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[2, col])
             
-            Bas3GLMakie.GLMakie.Label(
-                class_selector_grid[1, 1],
-                "Klasse:",
-                fontsize=FONT_SIZE_LABEL,
-                halign=:right
-            )
-            
+            # Column 1: Class menu (no label)
             local class_menu = Bas3GLMakie.GLMakie.Menu(
-                class_selector_grid[1, 2],
+                class_selector_grid[1, 1],
                 options = [CLASS_NAMES_DE[c] for c in WOUND_CLASSES],
                 default = CLASS_NAMES_DE[:redness]
             )
             
-            # Wire to observable
+            # Column 2: ID textbox (no label)
+            local polygon_id_textbox = Bas3GLMakie.GLMakie.Textbox(
+                class_selector_grid[1, 2],
+                placeholder="auto"
+            )
+            
+            # Textbox on-change callback for automatic ID updates
+            local col_idx_textbox = col
+            Bas3GLMakie.GLMakie.on(polygon_id_textbox.displayed_string) do new_id_str
+                println("[UI-TEXTBOX-ID] Textbox changed to: '$new_id_str'")
+                
+                # Get active polygon ID
+                active_id = active_polygon_id_per_image[col_idx_textbox][]
+                
+                # Only update if there's an active polygon (not in "create new" mode)
+                if isnothing(active_id)
+                    println("[UI-TEXTBOX-ID] No active polygon, value will be used for creation")
+                    return
+                end
+                
+                # Skip if empty (user is clearing)
+                if isempty(new_id_str)
+                    println("[UI-TEXTBOX-ID] Empty textbox")
+                    return
+                end
+                
+                # Parse new ID
+                local new_id
+                try
+                    new_id = parse(Int, new_id_str)
+                catch e
+                    # Silent fail during typing - user might not be done
+                    println("[UI-TEXTBOX-ID] Invalid format (parsing): '$new_id_str'")
+                    return
+                end
+                
+                # Skip if ID unchanged
+                if new_id == active_id
+                    println("[UI-TEXTBOX-ID] ID unchanged ($new_id)")
+                    return
+                end
+                
+                # Attempt to update polygon ID
+                println("[UI-TEXTBOX-ID] Attempting auto-update: $active_id → $new_id")
+                (success, message) = update_polygon_id!(col_idx_textbox, active_id, new_id)
+                
+                if success
+                    println("[UI-TEXTBOX-ID] ✓ Auto-update successful")
+                    status_label.text = message
+                    status_label.color = :green
+                    
+                    # Refresh polygon list to show new ID in dropdown
+                    Bas3GLMakie.GLMakie.notify(polygons_per_image[col_idx_textbox])
+                else
+                    println("[UI-TEXTBOX-ID] ✗ Auto-update failed: $message")
+                    status_label.text = message
+                    status_label.color = :red
+                    
+                    # Revert textbox to original ID
+                    polygon_id_textbox.displayed_string[] = string(active_id)
+                end
+            end
+            
+            # Column 3: Create new polygon button
+            local create_poly_btn = Bas3GLMakie.GLMakie.Button(
+                class_selector_grid[1, 3],
+                label="+ Neu",
+                fontsize=FONT_SIZE_BUTTON
+            )
+            
+            # Column 4: Polygon selector dropdown (no label)
+            local col_idx_list = col
+            local polygon_selector = Bas3GLMakie.GLMakie.Observable{Vector{String}}(["Neu erstellen"])
+            local polygon_selector_menu = Bas3GLMakie.GLMakie.Menu(
+                class_selector_grid[1, 4],
+                options = polygon_selector,
+                default = "Neu erstellen"
+            )
+            
+            # Update selector options when polygon list changes
+            Bas3GLMakie.GLMakie.on(polygons_per_image[col_idx_list]) do polys
+                if isempty(polys)
+                    polygon_selector[] = ["Neu erstellen"]
+                else
+                    options = ["Neu erstellen"]
+                    for poly in polys
+                        display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
+                        push!(options, "ID:$(poly.id) $display_name #$(poly.sample_number)")
+                    end
+                    polygon_selector[] = options
+                end
+            end
+            
+            # When user selects a polygon, set it as active for editing
+            local col_idx_selector = col
+            Bas3GLMakie.GLMakie.on(polygon_selector_menu.selection) do sel
+                # Handle nothing/missing selection (happens when dropdown updates)
+                if isnothing(sel)
+                    return
+                end
+                
+                if sel == "Neu erstellen"
+                    # Clear active polygon - next "+ Neu" will create new one
+                    active_polygon_id_per_image[col_idx_selector][] = nothing
+                    polygon_id_textbox.displayed_string[] = ""  # Clear textbox
+                    polygon_vertices_per_image[col_idx_selector][] = Bas3GLMakie.GLMakie.Point2f[]  # Clear visual overlay
+                    status_label.text = "Bereit für neues Polygon"
+                    status_label.color = :blue
+                else
+                    # Extract polygon ID from selection string "ID:X ..."
+                    m = match(r"ID:(\d+)", sel)
+                    if !isnothing(m)
+                        selected_id = parse(Int, m.captures[1])
+                        active_polygon_id_per_image[col_idx_selector][] = selected_id
+                        
+                        # Populate textbox with current ID
+                        id_str = string(selected_id)
+                        println("[UI-SELECTOR] Populating textbox with ID=$id_str")
+                        polygon_id_textbox.displayed_string[] = id_str
+                        println("[UI-SELECTOR] Textbox value after assignment: '$(polygon_id_textbox.displayed_string[])')")
+                        
+                        # Get polygon details
+                        poly = get_polygon_by_id(col_idx_selector, selected_id)
+                        if !isnothing(poly)
+                            # Update drawing layer to show selected polygon (Option A: Simple visual feedback)
+                            polygon_vertices_per_image[col_idx_selector][] = poly.vertices
+                            polygon_active_per_image[col_idx_selector][] = false  # Not in active drawing mode
+                            polygon_complete_per_image[col_idx_selector][] = poly.complete
+                            
+                            display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
+                            status_label.text = "Ausgewählt: $display_name #$(poly.sample_number)"
+                            status_label.color = get_class_color(poly.class)
+                            println("[UI-SELECTOR] Showing polygon vertices on image: $(length(poly.vertices)) vertices")
+                        end
+                    end
+                end
+            end
+            
+            # Set column proportions for Row 2: 25%, 10%, 15%, 50%
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))  # Class dropdown
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.10))  # ID textbox
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 3, Bas3GLMakie.GLMakie.Relative(0.15))  # + Neu button
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 4, Bas3GLMakie.GLMakie.Relative(0.50))  # Polygon selector
+            
+            # Add visual grouping gaps
+            Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 1, Bas3GLMakie.GLMakie.Relative(0.01))  # Class → ID
+            Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))  # ID → + Neu
+            Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 3, Bas3GLMakie.GLMakie.Relative(0.03))  # + Neu → Selector
+            
+            # Wire class menu to observable
             local col_idx_class = col
             Bas3GLMakie.GLMakie.on(class_menu.selection) do sel
                 for (class_sym, german_name) in CLASS_NAMES_DE
@@ -3120,14 +3329,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Set column sizes FIRST
-            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))
-            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.75))
+            # NOTE: Do NOT set column sizes - let GLMakie auto-size to avoid BoundsError during rebuild
+            # The textbox will auto-size based on its content/placeholder
             
-            # Placeholder for textboxes - DEFERRED due to GLMakie layout issues
-            # Custom class name and sample number will use defaults for now
+            # Placeholder for custom class name textbox - DEFERRED due to GLMakie layout issues
             local custom_class_textbox = (displayed_string = Ref(""),)  # Mock object with empty string
-            local sample_number_textbox = (displayed_string = Ref(""),)  # Mock object with empty string
             
             # Row 3: Consolidated control buttons (Mask + Polygon controls in single row)
             local control_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
@@ -3147,72 +3353,68 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 initial_visible ? Bas3GLMakie.GLMakie.RGBf(0.9, 0.9, 0.3) : Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Yellow when visible, gray when hidden
             end
             
-            # Create mask toggle button
-            local toggle_mask_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 1],
-                label = initial_label,
-                fontsize = FONT_SIZE_BUTTON,
-                buttoncolor = initial_color
-            )
-            
-            # Polygon control buttons (merged into same row) - UPDATED WITH CREATE/EDIT SPLIT
-            local create_poly_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 2],
-                label="+ Neu",
-                fontsize=FONT_SIZE_BUTTON
-            )
-            
+            # Row 3: Actions - Reordered into EDIT / FINALIZE / PERSISTENCE groups
+            # Column 1: Edit button (EDIT ACTIONS group)
             local edit_poly_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 3],
+                control_grid[1, 1],
                 label="Bearb",
                 fontsize=FONT_SIZE_BUTTON,
                 buttoncolor=Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Start grayed out
             )
             
+            # Column 2: Undo button (EDIT ACTIONS group)
+            local undo_vertex_btn = Bas3GLMakie.GLMakie.Button(
+                control_grid[1, 2],
+                label="Zurck",
+                fontsize=FONT_SIZE_BUTTON
+            )
+            
+            # Column 3: Delete button (EDIT ACTIONS group)
+            local delete_poly_btn = Bas3GLMakie.GLMakie.Button(
+                control_grid[1, 3],
+                label="Losch",
+                fontsize=FONT_SIZE_BUTTON,
+                buttoncolor=Bas3GLMakie.GLMakie.RGBf(0.9, 0.3, 0.3)  # Red for destructive action
+            )
+            
+            # Column 4: Close/OK button (FINALIZE group)
             local close_poly_btn = Bas3GLMakie.GLMakie.Button(
                 control_grid[1, 4],
                 label="OK",
                 fontsize=FONT_SIZE_BUTTON
             )
             
-            local undo_vertex_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 5],
-                label="Zurck",
-                fontsize=FONT_SIZE_BUTTON
-            )
-            
-            local delete_poly_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 6],
-                label="Losch",
-                fontsize=FONT_SIZE_BUTTON,
-                buttoncolor=Bas3GLMakie.GLMakie.RGBf(0.9, 0.3, 0.3)  # Red for destructive action
-            )
-            
+            # Column 5: Save PNG button (PERSISTENCE group)
             local save_mask_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 7],
+                control_grid[1, 5],
                 label="PNG",
                 fontsize=FONT_SIZE_BUTTON
             )
             
+            # Column 6: Toggle mask button (PERSISTENCE group)
+            local toggle_mask_btn = Bas3GLMakie.GLMakie.Button(
+                control_grid[1, 6],
+                label = initial_label,
+                fontsize = FONT_SIZE_BUTTON,
+                buttoncolor = initial_color
+            )
+            
             push!(polygon_buttons_per_image, (create_poly_btn, edit_poly_btn, close_poly_btn, undo_vertex_btn, delete_poly_btn, save_mask_btn, toggle_mask_btn))
             
-            # Set column sizing for control_grid (required for Relative() gaps to work)
-            # 7 columns: mask toggle, create, edit, close, undo, delete, save
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.15))  # Mask toggle ~15%
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.12))  # + Neu ~12%
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.12))  # Bearb ~12%
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.12))  # OK ~12%
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.12))  # Zurück ~12%
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 6, Bas3GLMakie.GLMakie.Relative(0.12))  # Löschen ~12%
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 7, Bas3GLMakie.GLMakie.Relative(0.12))  # PNG ~12%
+            # Set column sizing for Row 3: 15%, 15%, 15%, 25%, 15%, 15%
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.15))  # Bearb
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.15))  # Zurck
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.15))  # Losch
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.25))  # OK (larger - FINALIZE)
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.15))  # PNG
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 6, Bas3GLMakie.GLMakie.Relative(0.15))  # Maske
             
-            # Set column gaps AFTER buttons are created (visual grouping: mask | polygon controls) - pure relative
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.03))   # Larger gap after mask toggle ~3%
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))   # Smaller gaps between polygon controls ~1%
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.01))   # ~1%
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.01))   # ~1%
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.01))   # ~1%
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 6, Bas3GLMakie.GLMakie.Relative(0.01))   # ~1%
+            # Set column gaps for visual grouping: EDIT | FINALIZE | PERSISTENCE
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.01))   # Bearb → Zurck (small)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))   # Zurck → Losch (small)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.03))   # Losch → OK (larger - group separator)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.03))   # OK → PNG (larger - group separator)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.01))   # PNG → Maske (small)
             
             # Polygon button callbacks (capture col index for this specific image)
             local col_idx = col
@@ -3232,44 +3434,46 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     println("[UI-BTN-CREATE] Custom class name provided: '$custom_name'")
                 end
                 
-                # Get sample number from textbox (fallback to auto-increment)
-                sample_num_str = something(sample_number_textbox.displayed_string[], "")
-                sample_num = if isempty(sample_num_str)
-                    # Auto-increment logic
-                    current_polygons = polygons_per_image[col_idx][]
-                    max_sample = 0
-                    for p in current_polygons
-                        if p.class == current_class && p.sample_number > max_sample
-                            max_sample = p.sample_number
-                        end
-                    end
-                    auto_num = max_sample + 1
-                    println("[UI-BTN-CREATE] Auto-incrementing sample number: $auto_num (existing polygons of this class: $(count(p -> p.class == current_class, current_polygons)))")
-                    auto_num
+                # Get manual ID from textbox (fallback to auto-increment)
+                polygon_id_str = something(polygon_id_textbox.displayed_string[], "")
+                manual_id = if isempty(polygon_id_str)
+                    println("[UI-BTN-CREATE] No manual ID specified, using auto-increment")
+                    nothing
                 else
                     # Parse user input
                     try
-                        manual_num = parse(Int, sample_num_str)
-                        println("[UI-BTN-CREATE] Manual sample number provided: $manual_num")
-                        manual_num
-                    catch e
-                        # Invalid input, fallback to auto-increment
-                        println("[UI-BTN-CREATE] Invalid sample number input '$sample_num_str', falling back to auto-increment")
-                        current_polygons = polygons_per_image[col_idx][]
-                        max_sample = 0
-                        for p in current_polygons
-                            if p.class == current_class && p.sample_number > max_sample
-                                max_sample = p.sample_number
-                            end
+                        id_val = parse(Int, polygon_id_str)
+                        if id_val <= 0
+                            println("[UI-BTN-CREATE] Invalid ID '$polygon_id_str' (must be > 0), falling back to auto-increment")
+                            nothing
+                        else
+                            println("[UI-BTN-CREATE] Manual ID provided: $id_val")
+                            id_val
                         end
-                        max_sample + 1
+                    catch e
+                        println("[UI-BTN-CREATE] Invalid ID input '$polygon_id_str', falling back to auto-increment")
+                        nothing
                     end
                 end
                 
-                # Create new polygon with empty vertices
-                println("[UI-BTN-CREATE] Creating polygon: class=$current_class, name='$custom_name', sample=$sample_num")
-                new_id = add_polygon_to_collection!(col_idx, current_class, custom_name, sample_num, Bas3GLMakie.GLMakie.Point2f[])
+                # Auto-increment sample number logic (unchanged)
+                current_polygons = polygons_per_image[col_idx][]
+                max_sample = 0
+                for p in current_polygons
+                    if p.class == current_class && p.sample_number > max_sample
+                        max_sample = p.sample_number
+                    end
+                end
+                sample_num = max_sample + 1
+                println("[UI-BTN-CREATE] Auto-incrementing sample number: $sample_num (existing polygons of this class: $(count(p -> p.class == current_class, current_polygons)))")
+                
+                # Create new polygon with empty vertices (pass manual_id if provided)
+                println("[UI-BTN-CREATE] Creating polygon: class=$current_class, name='$custom_name', sample=$sample_num, manual_id=$(isnothing(manual_id) ? "auto" : manual_id)")
+                new_id = add_polygon_to_collection!(col_idx, current_class, custom_name, sample_num, Bas3GLMakie.GLMakie.Point2f[]; manual_id=manual_id)
                 println("[UI-BTN-CREATE] Polygon created with ID=$new_id")
+                
+                # Populate textbox with created ID (so user sees what ID was assigned)
+                polygon_id_textbox.displayed_string[] = string(new_id)
                 
                 # Set as active polygon
                 active_polygon_id_per_image[col_idx][] = new_id
@@ -3282,9 +3486,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 # Build display name
                 display_name = isempty(custom_name) ? CLASS_NAMES_DE[current_class] : custom_name
-                status_label.text = "Polygon starten: $display_name #$sample_num"
+                status_label.text = "Polygon starten: $display_name #$sample_num (ID=$new_id)"
                 status_label.color = get_class_color(current_class)
-                println("[UI-BTN-CREATE] Status updated: '$display_name #$sample_num'")
+                println("[UI-BTN-CREATE] Status updated: '$display_name #$sample_num (ID=$new_id)'")
             end
             
             # Edit existing polygon button - NEW
@@ -3354,7 +3558,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                         poly.vertices,
                         img_data.input_rotated
                     )
-                    println("[UI-BTN-CLOSE] L*C*h extraction complete: $(lch_result.count) pixels, L*=$(round(lch_result.L_median, digits=2)), C*=$(round(lch_result.C_median, digits=2)), h°=$(round(lch_result.h_median, digits=2))")
+                    println("[UI-BTN-CLOSE] L*C*h extraction complete: $(lch_result.count) pixels, L*=$(round(lch_result.median_l, digits=2)), C*=$(round(lch_result.median_c, digits=2)), h°=$(round(lch_result.median_h, digits=2))")
                     
                     # Update polygon with lch_data and mark complete (preserve class_name and sample_number)
                     new_poly = PolygonEntry(poly.id, poly.class, poly.class_name, poly.sample_number, poly.vertices, true, lch_result)
@@ -3516,41 +3720,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Row 4: Polygon list widget (NEW)
-            local polygon_list_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
-            local polygon_list_text = Bas3GLMakie.GLMakie.Observable("")
-            local col_idx_list = col
-            
-            Bas3GLMakie.GLMakie.on(polygons_per_image[col_idx_list]) do polys
-                active_id = active_polygon_id_per_image[col_idx_list][]
-                
-                if isempty(polys)
-                    polygon_list_text[] = "Keine Polygone"
-                else
-                    lines = String[]
-                    for poly in polys
-                        # Use custom name if provided, otherwise default class name
-                        display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
-                        status = poly.complete ? "●" : "○"
-                        
-                        # Highlight active polygon with arrow
-                        if !isnothing(active_id) && poly.id == active_id
-                            prefix = "▶ "  # Arrow indicator
-                        else
-                            prefix = "  "  # Indent non-active
-                        end
-                        
-                        push!(lines, "$(prefix)ID:$(poly.id) $display_name #$(poly.sample_number) $status")
-                    end
-                    polygon_list_text[] = join(lines, "\n")
-                end
-            end
-            
-            # Also update polygon list when active polygon changes
+            # Update edit button state when active polygon changes
             Bas3GLMakie.GLMakie.on(active_polygon_id_per_image[col_idx_list]) do active_id
-                # Re-trigger polygon list update
-                Bas3GLMakie.GLMakie.notify(polygons_per_image[col_idx_list])
-                
                 # Update edit button state
                 if isnothing(active_id)
                     edit_poly_btn.buttoncolor = Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Grayed out
@@ -3559,76 +3730,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            Bas3GLMakie.GLMakie.Label(
-                polygon_list_grid[1, 1],
-                polygon_list_text,
-                fontsize=FONT_SIZE_LABEL - 1,
-                halign=:left,
-                valign=:top
-            )
-            
-            # Add polygon selector dropdown
-            local polygon_selector_label = Bas3GLMakie.GLMakie.Label(
-                polygon_list_grid[2, 1],
-                "Auswahl:",
-                fontsize=FONT_SIZE_LABEL,
-                halign=:left
-            )
-            
-            local polygon_selector = Bas3GLMakie.GLMakie.Observable{Vector{String}}(["Neu erstellen"])
-            local polygon_selector_menu = Bas3GLMakie.GLMakie.Menu(
-                polygon_list_grid[3, 1],
-                options = polygon_selector,
-                default = "Neu erstellen"
-            )
-            
-            # Update selector options when polygon list changes
-            Bas3GLMakie.GLMakie.on(polygons_per_image[col_idx_list]) do polys
-                if isempty(polys)
-                    polygon_selector[] = ["Neu erstellen"]
-                else
-                    options = ["Neu erstellen"]
-                    for poly in polys
-                        display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
-                        push!(options, "ID:$(poly.id) $display_name #$(poly.sample_number)")
-                    end
-                    polygon_selector[] = options
-                end
-            end
-            
-            # When user selects a polygon, set it as active for editing
-            local col_idx_selector = col
-            Bas3GLMakie.GLMakie.on(polygon_selector_menu.selection) do sel
-                # Handle nothing/missing selection (happens when dropdown updates)
-                if isnothing(sel)
-                    return
-                end
-                
-                if sel == "Neu erstellen"
-                    # Clear active polygon - next "+ Neu" will create new one
-                    active_polygon_id_per_image[col_idx_selector][] = nothing
-                    status_label.text = "Bereit für neues Polygon"
-                    status_label.color = :blue
-                else
-                    # Extract polygon ID from selection string "ID:X ..."
-                    m = match(r"ID:(\d+)", sel)
-                    if !isnothing(m)
-                        selected_id = parse(Int, m.captures[1])
-                        active_polygon_id_per_image[col_idx_selector][] = selected_id
-                        
-                        # Get polygon details
-                        poly = get_polygon_by_id(col_idx_selector, selected_id)
-                        if !isnothing(poly)
-                            display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
-                            status_label.text = "Ausgewählt: $display_name #$(poly.sample_number)"
-                            status_label.color = get_class_color(poly.class)
-                        end
-                    end
-                end
-            end
-            
-            # Row 5: Patient metadata section with header
-            local data_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[5, col])
+            # Row 4: Patient metadata section with header (moved from Row 5)
+            local data_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
             
 
             
@@ -3673,23 +3776,9 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             push!(info_textboxes, info_box)
             
-            # Set proportional columns AFTER widgets are created (labels: 25%, textboxes: 75%)
-            Bas3GLMakie.GLMakie.colsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))
-            Bas3GLMakie.GLMakie.colsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.75))
-            
-            # Set relative row sizing for data_grid (required when using Relative() gaps)
-            # Parent row 3 = 12% of images_grid ≈ 108px @ 900px window
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.20))   # Header 20%
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.35))   # Date row 35%
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 3, Bas3GLMakie.GLMakie.Relative(0.35))   # Info row 35%
-            
-            # Set relative row gaps within data_grid (percentage of parent row 3 height)
-            Bas3GLMakie.GLMakie.rowgap!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.05))    # After header (5%)
-            Bas3GLMakie.GLMakie.rowgap!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.025))   # Between inputs (2.5%)
-            
-            # Row 6: Save button
+            # Save button (row 4) - spans both columns for visual prominence
             local save_btn = Bas3GLMakie.GLMakie.Button(
-                images_grid[6, col],
+                data_grid[4, 1:2],
                 label="Speichern",
                 fontsize=FONT_SIZE_BUTTON
             )
@@ -3754,22 +3843,37 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     status_label.color = :red
                 end
             end
+            
+            # Set proportional columns AFTER widgets are created (labels: 25%, textboxes: 75%)
+            Bas3GLMakie.GLMakie.colsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))
+            Bas3GLMakie.GLMakie.colsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.75))
+            
+            # Set relative row sizing for data_grid (required when using Relative() gaps)
+            # Parent row 4 = 12% of images_grid ≈ 108px @ 900px window
+            # Now 4 rows: Header (15%), Date (25%), Info (25%), Save button (25%)
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.15))   # Header 15%
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.25))   # Date row 25%
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 3, Bas3GLMakie.GLMakie.Relative(0.25))   # Info row 25%
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 4, Bas3GLMakie.GLMakie.Relative(0.25))   # Save button 25%
+            
+            # Set relative row gaps within data_grid (percentage of parent row 4 height)
+            Bas3GLMakie.GLMakie.rowgap!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.05))    # After header (5%)
+            Bas3GLMakie.GLMakie.rowgap!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.025))   # Between date and info (2.5%)
+            Bas3GLMakie.GLMakie.rowgap!(data_grid, 3, Bas3GLMakie.GLMakie.Relative(0.025))   # Between info and save (2.5%)
+            
         end
         
-        # Pure relative sizing: Percentage-based rows and gaps (6 rows total for multi-polygon UI)
+        # Pure relative sizing: Percentage-based rows and gaps (5 rows total for streamlined UI)
         # Row heights and gaps scale proportionally with window size
+        # Save button now integrated into Row 4 (metadata section)
         Bas3GLMakie.GLMakie.rowsize!(images_grid, 1, Bas3GLMakie.GLMakie.Relative(0.60))  # Image 60%
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Relative(0.04))  # Class selector 4%
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Relative(0.04))  # Control buttons 4%
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Relative(0.08))  # Polygon list 8%
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 5, Bas3GLMakie.GLMakie.Relative(0.12))  # Metadata 12%
-        Bas3GLMakie.GLMakie.rowsize!(images_grid, 6, Bas3GLMakie.GLMakie.Relative(0.04))  # Save button 4%
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 2, Bas3GLMakie.GLMakie.Relative(0.04))  # Create & Select row 4%
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 3, Bas3GLMakie.GLMakie.Relative(0.04))  # Action buttons row 4%
+        Bas3GLMakie.GLMakie.rowsize!(images_grid, 4, Bas3GLMakie.GLMakie.Relative(0.16))  # Metadata + Save button 16%
         
         Bas3GLMakie.GLMakie.rowgap!(images_grid, 1, Bas3GLMakie.GLMakie.Relative(0.01))   # After image
-        Bas3GLMakie.GLMakie.rowgap!(images_grid, 2, Bas3GLMakie.GLMakie.Relative(0.005))  # After class
-        Bas3GLMakie.GLMakie.rowgap!(images_grid, 3, Bas3GLMakie.GLMakie.Relative(0.005))  # After controls
-        Bas3GLMakie.GLMakie.rowgap!(images_grid, 4, Bas3GLMakie.GLMakie.Relative(0.01))   # After list
-        Bas3GLMakie.GLMakie.rowgap!(images_grid, 5, Bas3GLMakie.GLMakie.Relative(0.01))   # After metadata
+        Bas3GLMakie.GLMakie.rowgap!(images_grid, 2, Bas3GLMakie.GLMakie.Relative(0.005))  # After Create & Select
+        Bas3GLMakie.GLMakie.rowgap!(images_grid, 3, Bas3GLMakie.GLMakie.Relative(0.01))   # After Action buttons
         
         local widget_creation_time = time() - widget_creation_start
         println("[PERF-BUILD] Widget creation ($(num_images) images): $(round(widget_creation_time*1000, digits=2))ms")
