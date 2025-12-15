@@ -1273,6 +1273,108 @@ function load_polygon_mask_mmap(image_index::Int)
 end
 
 """
+    load_class_mask_for_display(image_index::Int, target_size::Union{Tuple{Int,Int}, Nothing}=nothing, sets_index_map::Dict{Int,Int}=Dict{Int,Int}()) -> Union{Matrix{RGB{Float32}}, Nothing}
+
+Load class segmentation mask from sets[image_index][2] (output) for display.
+
+# Arguments
+- `image_index::Int`: Image index (1-306)
+- `target_size::Union{Tuple{Int,Int}, Nothing}`: Target display size (H×W) for resizing
+- `sets_index_map::Dict{Int,Int}`: Map from image_index to array position in sets
+
+# Returns
+- `Matrix{RGB{Float32}}`: Class mask as RGB visualization OR
+- `nothing`: If mask doesn't exist
+
+# Process
+1. Lookup image in sets using index map
+2. Extract output_img (class segmentation mask)
+3. Convert class probabilities to RGB using class colors
+4. Rotate to landscape orientation (rotr90)
+5. Resize to target display size if provided
+"""
+function load_class_mask_for_display(image_index::Int, target_size::Union{Tuple{Int,Int}, Nothing}=nothing, sets_index_map::Dict{Int,Int}=Dict{Int,Int}())
+    # Lookup image in sets
+    local array_pos = get(sets_index_map, image_index, nothing)
+    if isnothing(array_pos)
+        return nothing
+    end
+    
+    # Get output mask (class segmentation)
+    local output_img = sets[array_pos][2]
+    if isnothing(output_img)
+        return nothing
+    end
+    
+    # Get mask data and dimensions
+    local mask_data = data(output_img)  # Should be H × W × C (portrait orientation)
+    local h, w, num_classes = size(mask_data)
+    
+    # Convert class probabilities to RGB visualization
+    # Use class colors from CLASS_COLORS_RGB
+    local rgb_mask = fill(Bas3ImageSegmentation.RGB{Float32}(0, 0, 0), h, w)
+    
+    for i in 1:h
+        for j in 1:w
+            # Find dominant class for this pixel
+            local max_prob = 0.0f0
+            local max_class_idx = 0
+            
+            for c in 1:num_classes
+                if mask_data[i, j, c] > max_prob
+                    max_prob = mask_data[i, j, c]
+                    max_class_idx = c
+                end
+            end
+            
+            # Apply class color if probability > threshold
+            if max_prob > 0.5f0 && max_class_idx > 0 && max_class_idx <= length(CLASS_COLORS_RGB)
+                # Get class color by index (CLASS_COLORS_RGB is an array)
+                local class_color = CLASS_COLORS_RGB[max_class_idx]
+                
+                # Convert color to RGB{Float32}
+                if class_color isa Symbol
+                    # Symbol color (like :goldenrod, :black) - convert using GLMakie
+                    local rgb_parsed = Bas3GLMakie.GLMakie.to_color(class_color)
+                    rgb_mask[i, j] = Bas3ImageSegmentation.RGB{Float32}(rgb_parsed.r, rgb_parsed.g, rgb_parsed.b)
+                else
+                    # Already an RGBf - extract components
+                    rgb_mask[i, j] = Bas3ImageSegmentation.RGB{Float32}(class_color.r, class_color.g, class_color.b)
+                end
+            end
+        end
+    end
+    
+    # Rotate to landscape orientation (rotr90)
+    local rotated_mask = rotr90(rgb_mask)
+    
+    # Resize if target size provided
+    if !isnothing(target_size)
+        local target_h, target_w = target_size
+        local current_h, current_w = size(rotated_mask)
+        
+        if (target_h, target_w) != (current_h, current_w)
+            # Simple nearest-neighbor resize
+            local resized = fill(Bas3ImageSegmentation.RGB{Float32}(0, 0, 0), target_h, target_w)
+            local scale_h = current_h / target_h
+            local scale_w = current_w / target_w
+            
+            for i in 1:target_h
+                for j in 1:target_w
+                    local src_i = min(current_h, max(1, round(Int, i * scale_h)))
+                    local src_j = min(current_w, max(1, round(Int, j * scale_w)))
+                    resized[i, j] = rotated_mask[src_i, src_j]
+                end
+            end
+            
+            return resized
+        end
+    end
+    
+    return rotated_mask
+end
+
+"""
     load_mask_for_display(image_index::Int, target_size::Union{Tuple{Int,Int}, Nothing}=nothing) -> Union{Matrix, Nothing}
 
 Load polygon mask for display, trying .bin first (fast), then PNG fallback (slow).
@@ -3639,32 +3741,22 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Layer 1: Display input image (base layer)
                 Bas3GLMakie.GLMakie.image!(ax, img_obs)
                 
-                # Layer 2: SAVED MASK OVERLAY (display existing polygon masks)
-                # Use cached mask data if available, otherwise load from disk
-                # Accept both RGB{N0f8} (UInt8-backed) and RGB{Float32}
+                # Layer 2: SAVED MASK OVERLAY (display class segmentation mask)
+                # Load class mask from sets[array_pos][2] (output segmentation)
                 local mask_rgb_obs = Bas3GLMakie.GLMakie.Observable{Union{Matrix, Nothing}}(nothing)
                 local mask_visible_obs = Bas3GLMakie.GLMakie.Observable(true)  # Visible by default
                 
-                if haskey(img_data, :mask_exists) && img_data.mask_exists
-                    # USE CACHED MASK DATA
-                    mask_rgb_obs[] = img_data.mask_resized
+                # Load class segmentation mask
+                local display_height, display_width = size(img_data.input_rotated)
+                local class_mask = load_class_mask_for_display(entry.image_index, (display_height, display_width), sets_index_map)
+                
+                if !isnothing(class_mask)
+                    mask_rgb_obs[] = class_mask
                     push!(saved_mask_exists, true)
-                    
-                    println("[MASK-OVERLAY] Loaded mask from cache for image $(entry.image_index)")
+                    println("[MASK-OVERLAY] Loaded class segmentation mask for image $(entry.image_index)")
                 else
-                    # FALLBACK: Load from disk if not in cache
-                    local display_height, display_width = size(img_data.input_rotated)
-                    local mask_resized = load_mask_for_display(entry.image_index, (display_height, display_width))
-                    
-                    if !isnothing(mask_resized)
-                        mask_rgb_obs[] = mask_resized
-                        push!(saved_mask_exists, true)
-                        
-                        println("[MASK-OVERLAY] Loaded mask from disk for image $(entry.image_index)")
-                    else
-                        push!(saved_mask_exists, false)
-                        println("[MASK-OVERLAY] No saved mask for image $(entry.image_index)")
-                    end
+                    push!(saved_mask_exists, false)
+                    println("[MASK-OVERLAY] No class segmentation mask for image $(entry.image_index)")
                 end
                 
                 push!(saved_mask_overlays, mask_rgb_obs)
@@ -3741,22 +3833,21 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Layer 1: Display input image (base layer)
                 Bas3GLMakie.GLMakie.image!(ax, img_obs)
                 
-                # Layer 2: SAVED MASK OVERLAY (display existing polygon masks)
-                # Load existing mask if available (try .bin first, then PNG)
+                # Layer 2: SAVED MASK OVERLAY (display class segmentation mask)
+                # Load class mask from sets[array_pos][2] (output segmentation)
                 local display_height, display_width = size(images.input)
-                local mask_resized = load_mask_for_display(entry.image_index, (display_height, display_width))
-                # Accept both RGB{N0f8} (UInt8-backed) and RGB{Float32}
+                local class_mask = load_class_mask_for_display(entry.image_index, (display_height, display_width), sets_index_map)
+                
                 local mask_rgb_obs = Bas3GLMakie.GLMakie.Observable{Union{Matrix, Nothing}}(nothing)
                 local mask_visible_obs = Bas3GLMakie.GLMakie.Observable(true)  # Visible by default
                 
-                if !isnothing(mask_resized)
-                    mask_rgb_obs[] = mask_resized
+                if !isnothing(class_mask)
+                    mask_rgb_obs[] = class_mask
                     push!(saved_mask_exists, true)
-                    
-                    println("[MASK-OVERLAY] Loaded mask for image $(entry.image_index) (fallback)")
+                    println("[MASK-OVERLAY] Loaded class segmentation mask for image $(entry.image_index) (fallback)")
                 else
                     push!(saved_mask_exists, false)
-                    println("[MASK-OVERLAY] No saved mask for image $(entry.image_index) (fallback)")
+                    println("[MASK-OVERLAY] No class segmentation mask for image $(entry.image_index) (fallback)")
                 end
                 
                 push!(saved_mask_overlays, mask_rgb_obs)
