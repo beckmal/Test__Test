@@ -479,43 +479,30 @@ function filter_patients_by_exact_count(patient_ids::Vector{Int},
 end
 
 """
-    update_entry_compare(db_path::String, row::Int, date::String, info::String)
+    update_image_metadata(db_path::String, row::Int, date::String, info::String) -> Bool
 
 Updates date and info fields for an entry at given row.
+Returns true if successful, false on error.
 """
-function update_entry_compare(db_path::String, row::Int, date::String, info::String)
-    XLSX.openxlsx(db_path, mode="rw") do xf
-        sheet = xf["Metadata"]
+function update_image_metadata(db_path::String, row::Int, date::String, info::String)
+    try
+        XLSX.openxlsx(db_path, mode="rw") do xf
+            sheet = xf["Metadata"]
+            
+            timestamp = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
+            
+            sheet[row, 3] = date   # Column C = Date
+            sheet[row, 5] = info   # Column E = Info
+            sheet[row, 7] = timestamp  # Column G = Updated_At
+        end
         
-        timestamp = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
-        
-        sheet[row, 3] = date   # Column C = Date
-        sheet[row, 5] = info   # Column E = Info
-        sheet[row, 7] = timestamp  # Column G = Updated_At
+        println("[COMPARE-DB] Updated entry at row $row")
+        return true
+    catch e
+        @warn "[COMPARE-DB] Failed to update entry at row $row: $e"
+        return false
     end
-    
-    println("[COMPARE-DB] Updated entry at row $row")
 end
-
-"""
-    update_patient_id_compare(db_path::String, row::Int, new_patient_id::Int)
-
-Updates patient ID for an entry at given row.
-Used when reassigning an image to a different patient.
-"""
-function update_patient_id_compare(db_path::String, row::Int, new_patient_id::Int)
-    XLSX.openxlsx(db_path, mode="rw") do xf
-        sheet = xf["Metadata"]
-        
-        timestamp = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
-        
-        sheet[row, 4] = new_patient_id  # Column D = Patient_ID
-        sheet[row, 7] = timestamp       # Column G = Updated_At
-    end
-    
-    println("[COMPARE-DB] Updated patient ID to $new_patient_id at row $row")
-end
-
 # ============================================================================
 # POLYGON MASK EXPORT FUNCTIONS
 # ============================================================================
@@ -1964,172 +1951,7 @@ function extract_class_lch_values(input_img, output_img, classes)
     return results
 end
 
-"""
-    extract_lch_from_polygon_mask(input_img, mask_rgb::Matrix{RGB{Float32}})
 
-Extract L*C*h color values from a saved polygon mask file.
-Similar to extract_polygon_lch_values but uses a saved mask instead of polygon vertices.
-
-# Arguments
-- `input_img`: Input image (portrait orientation, 1008×756×3)
-- `mask_rgb`: RGB polygon mask (landscape orientation from load_polygon_mask_mmap)
-
-# Returns
-NamedTuple with:
-- `l_values`: Vector of L* values (0-100) for all mask pixels
-- `c_values`: Vector of C* values (0-150+) for all mask pixels
-- `h_values`: Vector of h° values (0-360) for all mask pixels
-- `median_l`, `median_c`, `median_h`: Median values
-- `count`: Number of pixels in mask
-
-# Example
-```julia
-mask_rgb = load_polygon_mask_mmap(1)
-lch_data = extract_lch_from_polygon_mask(input_img, mask_rgb)
-println("Median L*: ", lch_data.median_l)
-```
-"""
-function extract_lch_from_polygon_mask(input_img, mask_rgb)
-    # Reverse rotation: mask is landscape, input is portrait
-    # mask is rotl90(portrait), so inverse is rotr90(landscape)
-    local mask_portrait = rotr90(mask_rgb)
-    
-    # Get input data (portrait orientation: 1008×756×3)
-    local input_data = data(input_img)
-    local h, w = size(mask_portrait)
-    
-    # Find mask pixels (threshold to identify white/colored pixels vs black)
-    local mask_pixels = findall(mask_portrait) do pixel
-        # Consider pixel part of mask if any channel > threshold
-        pixel.r > 0.1 || pixel.g > 0.1 || pixel.b > 0.1
-    end
-    
-    local n_pixels = length(mask_pixels)
-    
-    if n_pixels == 0
-        return (
-            l_values = Float64[],
-            c_values = Float64[],
-            h_values = Float64[],
-            median_l = NaN,
-            median_c = NaN,
-            median_h = NaN,
-            count = 0
-        )
-    end
-    
-    # Pre-allocate arrays
-    local l_values = Vector{Float64}(undef, n_pixels)
-    local c_values = Vector{Float64}(undef, n_pixels)
-    local h_values = Vector{Float64}(undef, n_pixels)
-    
-    # Extract L*C*h values
-    @inbounds for (i, idx) in enumerate(mask_pixels)
-        local r, c = idx[1], idx[2]
-        
-        # Get RGB from input image
-        local red = input_data[r, c, 1]
-        local green = input_data[r, c, 2]
-        local blue = input_data[r, c, 3]
-        local rgb_pixel = RGB(red, green, blue)
-        
-        # Convert to L*C*h
-        local lch_pixel = LCHab(rgb_pixel)
-        
-        l_values[i] = lch_pixel.l   # 0-100
-        c_values[i] = lch_pixel.c   # 0-150+
-        h_values[i] = lch_pixel.h   # 0-360°
-    end
-    
-    # Compute statistics
-    local median_l = median(l_values)
-    local median_c = median(c_values)
-    local median_h = median(h_values)
-    
-    return (
-        l_values = l_values,
-        c_values = c_values,
-        h_values = h_values,
-        median_l = median_l,
-        median_c = median_c,
-        median_h = median_h,
-        count = n_pixels
-    )
-end
-
-"""
-    compute_lch_from_saved_masks(entries, cached_lookup::Dict)
-
-Compute L*C*h values from saved polygon mask .bin files for all patient images.
-Automatically loads masks and extracts color data. Returns NaN for images without masks.
-
-# Arguments
-- `entries`: Vector of patient entries (from database)
-- `cached_lookup`: Dict mapping image_index to (input_raw, output_raw, input_rotated)
-
-# Returns
-- Vector of NamedTuples (one per entry, NaN values if no mask exists)
-
-# Example
-```julia
-lch_data = compute_lch_from_saved_masks(current_entries[], patient_image_cache[patient_id])
-```
-"""
-function compute_lch_from_saved_masks(entries, cached_lookup::Dict)
-    local results = []
-    local total_extract_time = 0.0
-    local total_mask_load_time = 0.0
-    
-    for entry in entries
-        # Load mask .bin file
-        local mask_load_start = time()
-        local mask_rgb = load_polygon_mask_mmap(entry.image_index)
-        total_mask_load_time += (time() - mask_load_start)
-        
-        if !isnothing(mask_rgb)
-            # Get input image from cache
-            local img_data = get(cached_lookup, entry.image_index, nothing)
-            
-            if !isnothing(img_data) && !isnothing(img_data.input_raw)
-                # Extract L*C*h from mask
-                local extract_start = time()
-                local lch_result = extract_lch_from_polygon_mask(img_data.input_raw, mask_rgb)
-                total_extract_time += (time() - extract_start)
-                
-                push!(results, lch_result)
-                println("[MASK-COMPUTE] Image $(entry.image_index): $(lch_result.count) pixels, L*=$(round(lch_result.median_l, digits=1))")
-            else
-                # No image data in cache
-                push!(results, (
-                    l_values = Float64[],
-                    c_values = Float64[],
-                    h_values = Float64[],
-                    median_l = NaN,
-                    median_c = NaN,
-                    median_h = NaN,
-                    count = 0
-                ))
-                println("[MASK-COMPUTE] Image $(entry.image_index): No image data in cache")
-            end
-        else
-            # No mask file exists
-            push!(results, (
-                l_values = Float64[],
-                c_values = Float64[],
-                h_values = Float64[],
-                median_l = NaN,
-                median_c = NaN,
-                median_h = NaN,
-                count = 0
-            ))
-            println("[MASK-COMPUTE] Image $(entry.image_index): No saved mask")
-        end
-    end
-    
-    println("[PERF-LCH-COMPUTE] Total mask load: $(round(total_mask_load_time*1000, digits=2))ms, Total extract: $(round(total_extract_time*1000, digits=2))ms")
-    
-    return results
-end
 
 """
     compute_lch_from_saved_masks_multiclass(entries, cached_lookup::Dict)
@@ -2175,243 +1997,6 @@ end
 
 # H/S timeline and mini histograms removed - now using polygon-based L*C*h analysis
 
-"""
-    create_lch_timeline!(timeline_grid, entries, lch_data_list)
-
-Create L*C*h timeline plot showing color evolution over time from polygon regions.
-Displays three vertically stacked axes (L*, C*, h°) for clear separation.
-
-L*C*h is a perceptually uniform color space based on L*a*b*.
-- L* (Lightness): 0-100, whether wound becomes paler
-- C* (Chroma): 0-100+, intensity of color
-- h° (Hue): 0-360°, actual color tone
-
-# Arguments
-- `timeline_grid`: GridLayout to place the plot
-- `entries`: Vector of entry dictionaries with date field
-- `lch_data_list`: Vector of NamedTuple with L*C*h data per polygon
-
-# Returns
-- Tuple of three Axis objects (ax_l, ax_c, ax_h) or nothing if no data
-"""
-function create_lch_timeline!(timeline_grid, entries, lch_data_list)
-    # Skip if no data
-    if isempty(entries) || isempty(lch_data_list)
-        Bas3GLMakie.GLMakie.Label(
-            timeline_grid[1, 1],
-            "Keine Polygondaten\n\nBitte Polygone zeichnen",
-            fontsize=12,
-            color=:gray,
-            halign=:center
-        )
-        return nothing
-    end
-    
-    # Extract L, C, h values from polygon data across all images
-    # Keep NaN for missing data to show all timepoints
-    local l_values = Float64[]
-    local c_values = Float64[]
-    local h_values = Float64[]
-    local all_indices = Int[]
-    
-    for (i, lch_data) in enumerate(lch_data_list)
-        # lch_data is now a NamedTuple (not Dict)
-        push!(all_indices, i)
-        
-        if !isnothing(lch_data) && lch_data.count > 0 && !isnan(lch_data.median_l)
-            # Normalize L from 0-100 to 0-1
-            push!(l_values, lch_data.median_l / 100.0)
-            # Normalize C from 0-150 to 0-1 (assume max chroma ~150)
-            push!(c_values, lch_data.median_c / 150.0)
-            # Normalize h from 0-360 to 0-1
-            push!(h_values, lch_data.median_h / 360.0)
-        else
-            # Keep NaN for missing data (will create gaps in plot)
-            push!(l_values, NaN)
-            push!(c_values, NaN)
-            push!(h_values, NaN)
-        end
-    end
-    
-    # Check if we have ANY valid data
-    local has_valid_data = any(!isnan, l_values)
-    
-    # Skip if no valid data - show THREE EMPTY AXES with placeholder text
-    if !has_valid_data
-        println("[LCH-TIMELINE] No valid polygon data, showing three empty axes")
-        
-        # Create empty L* axis (top)
-        local ax_l = Bas3GLMakie.GLMakie.Axis(
-            timeline_grid[1, 1],
-            title = "L*C*h Verlauf (Polygonregion)",
-            titlesize = 12,
-            xlabel = "",
-            ylabel = "L* (0-1)",
-            xlabelsize = 9,
-            ylabelsize = 9,
-            xticklabelsize = 7,
-            yticklabelsize = 7,
-            xticklabelsvisible = false
-        )
-        Bas3GLMakie.GLMakie.ylims!(ax_l, 0, 1)
-        Bas3GLMakie.GLMakie.xlims!(ax_l, 0, 1)
-        
-        # Create empty C* axis (middle)
-        local ax_c = Bas3GLMakie.GLMakie.Axis(
-            timeline_grid[2, 1],
-            xlabel = "",
-            ylabel = "C* (0-1)",
-            xlabelsize = 9,
-            ylabelsize = 9,
-            xticklabelsize = 7,
-            yticklabelsize = 7,
-            xticklabelsvisible = false
-        )
-        Bas3GLMakie.GLMakie.ylims!(ax_c, 0, 1)
-        Bas3GLMakie.GLMakie.xlims!(ax_c, 0, 1)
-        
-        # Create empty h° axis (bottom)
-        local ax_h = Bas3GLMakie.GLMakie.Axis(
-            timeline_grid[3, 1],
-            xlabel = "Zeitpunkt",
-            ylabel = "h° (0-1)",
-            xlabelsize = 9,
-            ylabelsize = 9,
-            xticklabelsize = 7,
-            yticklabelsize = 7
-        )
-        Bas3GLMakie.GLMakie.ylims!(ax_h, 0, 1)
-        Bas3GLMakie.GLMakie.xlims!(ax_h, 0, 1)
-        
-        # Add centered placeholder text to middle axis
-        Bas3GLMakie.GLMakie.text!(
-            ax_c,
-            0.5, 0.5,
-            text = "Keine Polygondaten\n\nBitte Polygone zeichnen und schließen",
-            align = (:center, :center),
-            fontsize = 12,
-            color = :gray
-        )
-        
-        # Link X-axes
-        Bas3GLMakie.GLMakie.linkxaxes!(ax_l, ax_c, ax_h)
-        
-        # Set row sizes: equal space for three axes
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, 180)
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, 180)
-        Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 3, 180)
-        
-        return (ax_l, ax_c, ax_h)
-    end
-    
-    # Data is in order by image index (left to right in UI)
-    # Use timepoint-based X-axis (T1, T2, T3, ...) like CompareStatisticsUI
-    local timepoints = collect(1:length(all_indices))
-    local timepoint_labels = ["T$i" for i in timepoints]
-    
-    # Fixed Y-axis limits 0-1 for all axes (no dynamic scaling)
-    local l_ylim_min = 0.0
-    local l_ylim_max = 1.0
-    
-    local c_ylim_min = 0.0
-    local c_ylim_max = 1.0
-    
-    local h_ylim_min = 0.0
-    local h_ylim_max = 1.0
-    
-    # ========================================================================
-    # THREE VERTICALLY STACKED AXES (L*, C*, h°)
-    # ========================================================================
-    
-    # Create L* axis (top)
-    local ax_l = Bas3GLMakie.GLMakie.Axis(
-        timeline_grid[1, 1],
-        title = "L*C*h Verlauf (Polygonregion)",
-        titlesize = 12,
-        xlabel = "",  # No label on top axis
-        ylabel = "L* (0-1)",
-        xlabelsize = 9,
-        ylabelsize = 9,
-        xticklabelsize = 7,
-        yticklabelsize = 7,
-        xticklabelsvisible = false,  # Hide X tick labels on top axis
-        xticks = (timepoints, timepoint_labels)
-    )
-    Bas3GLMakie.GLMakie.ylims!(ax_l, l_ylim_min, l_ylim_max)
-    
-    # Plot L* (blue, solid, circle markers) - NaN values create gaps
-    Bas3GLMakie.GLMakie.scatterlines!(
-        ax_l, 
-        timepoints, 
-        l_values;
-        color = :blue,
-        linewidth = 2,
-        linestyle = :solid,
-        marker = :circle,
-        markersize = 10
-    )
-    
-    # Create C* axis (middle)
-    local ax_c = Bas3GLMakie.GLMakie.Axis(
-        timeline_grid[2, 1],
-        xlabel = "",  # No label on middle axis
-        ylabel = "C* (0-1)",
-        xlabelsize = 9,
-        ylabelsize = 9,
-        xticklabelsize = 7,
-        yticklabelsize = 7,
-        xticklabelsvisible = false,  # Hide X tick labels on middle axis
-        xticks = (timepoints, timepoint_labels)
-    )
-    Bas3GLMakie.GLMakie.ylims!(ax_c, c_ylim_min, c_ylim_max)
-    
-    # Plot C* (red, solid, diamond markers) - NaN values create gaps
-    Bas3GLMakie.GLMakie.scatterlines!(
-        ax_c,
-        timepoints,
-        c_values;
-        color = :red,
-        linewidth = 2,
-        linestyle = :solid,
-        marker = :diamond,
-        markersize = 10
-    )
-    
-    # Create h° axis (bottom)
-    local ax_h = Bas3GLMakie.GLMakie.Axis(
-        timeline_grid[3, 1],
-        xlabel = "Zeitpunkt",  # Only bottom axis shows xlabel
-        ylabel = "h° (0-1)",
-        xlabelsize = 9,
-        ylabelsize = 9,
-        xticklabelsize = 7,
-        yticklabelsize = 7,
-        xticks = (timepoints, timepoint_labels)
-    )
-    Bas3GLMakie.GLMakie.ylims!(ax_h, h_ylim_min, h_ylim_max)
-    
-    # Plot h° (green, solid, rectangle markers) - NaN values create gaps
-    Bas3GLMakie.GLMakie.scatterlines!(
-        ax_h,
-        timepoints,
-        h_values;
-        color = :green,
-        linewidth = 2,
-        linestyle = :solid,
-        marker = :rect,
-        markersize = 9
-    )
-    
-    # Link X-axes for synchronized zooming/panning
-    Bas3GLMakie.GLMakie.linkxaxes!(ax_l, ax_c, ax_h)
-    
-    # Set row sizes: equal space for three axes (180px each = 540px total)
-    Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 1, 180)
-    Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 2, 180)
-    Bas3GLMakie.GLMakie.rowsize!(timeline_grid, 3, 180)
-    
-    return (ax_l, ax_c, ax_h)
-end
 
 """
     create_multiclass_lch_timeline!(grid, entries, lch_data_per_class)
@@ -2714,24 +2299,17 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         fontsize = FONT_SIZE_BUTTON
     )
     
-    # Row 5: Clear all polygons button
-    local clear_polygons_button = Bas3GLMakie.GLMakie.Button(
-        left_column[5, 1],
-        label = "Polygone löschen",
-        fontsize = FONT_SIZE_BUTTON
-    )
-    
-    # Row 6: Status label
+    # Row 5: Status label
     local status_label = Bas3GLMakie.GLMakie.Label(
-        left_column[6, 1],
+        left_column[5, 1],
         "",
         fontsize=FONT_SIZE_STATUS,
         halign=:center,
         color=:gray
     )
     
-    # Row 7: Timeline section (toggle button + plot in nested GridLayout)
-    local timeline_section = Bas3GLMakie.GLMakie.GridLayout(left_column[7, 1])
+    # Row 6: Timeline section (toggle button + plot in nested GridLayout)
+    local timeline_section = Bas3GLMakie.GLMakie.GridLayout(left_column[6, 1])
     
     # Timeline toggle button (row 1 of timeline_section)
     local timeline_toggle_btn = Bas3GLMakie.GLMakie.Button(
@@ -2755,36 +2333,34 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     # Set gap between toggle button and timeline plot (pure relative)
     Bas3GLMakie.GLMakie.rowgap!(timeline_section, 1, Bas3GLMakie.GLMakie.Relative(0.02))  # ~2%
     
-    # Row 8: Expandable spacer (absorbs unused vertical space when timeline hidden)
+    # Row 7: Expandable spacer (absorbs unused vertical space when timeline hidden)
     # Empty Label acts as flexible spacer
     local spacer_label = Bas3GLMakie.GLMakie.Label(
-        left_column[8, 1],
+        left_column[7, 1],
         "",
         fontsize = 1
     )
     
     # Set left column row sizes (content-driven + responsive timeline with dynamic sizing)
-    # Rows 1-6: Auto-sized to content (no explicit rowsize needed)
-    # Row 7: Timeline section (toggle + plot) - size controlled by timeline_row_size observable
+    # Rows 1-5: Auto-sized to content (no explicit rowsize needed)
+    # Row 6: Timeline section (toggle + plot) - size controlled by timeline_row_size observable
     # Set left_column row sizing (required for Relative() gaps to work)
-    # left_column has 8 rows: title, selector, nav, refresh, clear, status, timeline_section, spacer
+    # left_column has 7 rows: title, selector, nav, refresh, status, timeline_section, spacer
     Bas3GLMakie.GLMakie.rowsize!(left_column, 1, Bas3GLMakie.GLMakie.Relative(0.05))   # Title ~5%
     Bas3GLMakie.GLMakie.rowsize!(left_column, 2, Bas3GLMakie.GLMakie.Relative(0.12))   # Selector ~12%
     Bas3GLMakie.GLMakie.rowsize!(left_column, 3, Bas3GLMakie.GLMakie.Relative(0.05))   # Nav buttons ~5%
     Bas3GLMakie.GLMakie.rowsize!(left_column, 4, Bas3GLMakie.GLMakie.Relative(0.05))   # Refresh ~5%
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Relative(0.05))   # Clear ~5%
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Relative(0.04))   # Status ~4%
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Relative(0.45))   # Timeline section ~45%
-    Bas3GLMakie.GLMakie.rowsize!(left_column, 8, Bas3GLMakie.GLMakie.Relative(0.15))   # Expandable spacer ~15%
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 5, Bas3GLMakie.GLMakie.Relative(0.04))   # Status ~4%
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 6, Bas3GLMakie.GLMakie.Relative(0.50))   # Timeline section ~50% (more space now)
+    Bas3GLMakie.GLMakie.rowsize!(left_column, 7, Bas3GLMakie.GLMakie.Relative(0.15))   # Expandable spacer ~15%
     
     # Set row gaps for visual grouping using rowgap! function (pure relative)
     Bas3GLMakie.GLMakie.rowgap!(left_column, 1, Bas3GLMakie.GLMakie.Relative(0.005))   # After title - small gap ~0.5%
     Bas3GLMakie.GLMakie.rowgap!(left_column, 2, Bas3GLMakie.GLMakie.Relative(0.015))   # After patient selector - larger gap ~1.5%
     Bas3GLMakie.GLMakie.rowgap!(left_column, 3, Bas3GLMakie.GLMakie.Relative(0.005))   # After nav buttons - small gap ~0.5%
-    Bas3GLMakie.GLMakie.rowgap!(left_column, 4, Bas3GLMakie.GLMakie.Relative(0.005))   # After refresh - small gap ~0.5%
-    Bas3GLMakie.GLMakie.rowgap!(left_column, 5, Bas3GLMakie.GLMakie.Relative(0.015))   # After clear polygons - larger gap ~1.5%
-    Bas3GLMakie.GLMakie.rowgap!(left_column, 6, Bas3GLMakie.GLMakie.Relative(0.005))   # After status - small gap ~0.5%
-    Bas3GLMakie.GLMakie.rowgap!(left_column, 7, Bas3GLMakie.GLMakie.Relative(0.0))     # After timeline section - no gap
+    Bas3GLMakie.GLMakie.rowgap!(left_column, 4, Bas3GLMakie.GLMakie.Relative(0.015))   # After refresh - larger gap ~1.5%
+    Bas3GLMakie.GLMakie.rowgap!(left_column, 5, Bas3GLMakie.GLMakie.Relative(0.005))   # After status - small gap ~0.5%
+    Bas3GLMakie.GLMakie.rowgap!(left_column, 6, Bas3GLMakie.GLMakie.Relative(0.0))     # After timeline section - no gap
     
     # ========================================================================
     # RIGHT COLUMN: Images Container (fills entire right column height)
@@ -3724,11 +3300,13 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         local widget_creation_start = time()
         
         for (col, entry) in enumerate(entries[1:num_images])
+            local col_start_time = time()
             println("[COMPARE-UI] Creating column $col for image $(entry.image_index)")
             
             # Row 1: Image header removed (will be in data section below)
             
             # Row 1: Image axis (moved from row 2)
+            local axis_start = time()
             local ax = Bas3GLMakie.GLMakie.Axis(
                 images_grid[1, col],
                 aspect=Bas3GLMakie.GLMakie.DataAspect(),
@@ -3736,12 +3314,16 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             )
             Bas3GLMakie.GLMakie.hidedecorations!(ax)
             push!(image_axes, ax)
+            local axis_time = (time() - axis_start) * 1000
+            println("[PERF-WIDGET] Column $col: Axis creation: $(round(axis_time, digits=2))ms")
             
             # Get image data from cache or compute fresh
             local img_data = get(cached_lookup, entry.image_index, nothing)
             
             if !isnothing(img_data)
                 # USE CACHED DATA
+                local layers_start = time()
+                
                 # Create observable for input image
                 local img_obs = Bas3GLMakie.GLMakie.Observable(img_data.input_rotated)
                 push!(image_observables, img_obs)
@@ -3749,7 +3331,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Layer 1: Display input image (base layer)
                 Bas3GLMakie.GLMakie.image!(ax, img_obs)
                 
+                local layer1_time = (time() - layers_start) * 1000
+                println("[PERF-WIDGET] Column $col: Layer 1 (base image): $(round(layer1_time, digits=2))ms")
+                
                 # Layer 2: SAVED MASK OVERLAY (display class segmentation mask)
+                local mask_start = time()
                 # Load class mask from sets[array_pos][2] (output segmentation)
                 local mask_rgb_obs = Bas3GLMakie.GLMakie.Observable{Union{Matrix, Nothing}}(nothing)
                 local mask_visible_obs = Bas3GLMakie.GLMakie.Observable(true)  # Visible by default
@@ -3782,8 +3368,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     alpha = 0.5,
                     visible = Bas3GLMakie.GLMakie.@lift($mask_visible_obs && !isnothing($mask_rgb_obs))
                 )
+                local layer2_time = (time() - mask_start) * 1000
+                println("[PERF-WIDGET] Column $col: Layer 2 (mask overlay): $(round(layer2_time, digits=2))ms")
                 
                 # Layer 3: POLYGON OVERLAY (per-image polygon selection)
+                local polygon_start = time()
                 # Initialize polygon state for this image
                 local poly_verts = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
                 local poly_active = Bas3GLMakie.GLMakie.Observable(false)
@@ -3818,6 +3407,34 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 push!(active_polygon_id_per_image, Bas3GLMakie.GLMakie.Observable{Union{Int, Nothing}}(nothing))
                 push!(selected_class_per_image, Bas3GLMakie.GLMakie.Observable(:redness))  # Default class
                 
+                # PHASE 1: Load existing polygons from JSON metadata
+                local polygon_load_start = time()
+                local saved_polygons = load_multiclass_metadata(entry.image_index)
+                local polygon_load_time = (time() - polygon_load_start) * 1000
+                println("[PERF-POLYGON-LOAD] Column $col: Loaded $(length(saved_polygons)) polygons in $(round(polygon_load_time, digits=2))ms")
+                
+                if !isempty(saved_polygons)
+                    polygons_per_image[col][] = saved_polygons
+                    println("[POLYGON-LOAD] Loaded $(length(saved_polygons)) existing polygons for image $(entry.image_index)")
+                    println("[POLYGON-LOAD] Column $col: Observable now contains $(length(polygons_per_image[col][])) polygons")
+                    for (idx, poly) in enumerate(saved_polygons)
+                        println("[POLYGON-LOAD]   [$idx] ID=$(poly.id), class=$(poly.class), vertices=$(length(poly.vertices))")
+                    end
+                    
+                    # Update polygon ID counter to avoid conflicts with existing IDs
+                    local max_id = maximum(p.id for p in saved_polygons; init=0)
+                    if max_id > polygon_id_counter[]
+                        polygon_id_counter[] = max_id
+                        println("[POLYGON-LOAD] Updated ID counter to $max_id")
+                    end
+                else
+                    println("[POLYGON-LOAD] No existing polygons for image $(entry.image_index)")
+                end
+                
+                # NOTE: Polygons are loaded from JSON but NOT displayed as overlays
+                # Only the actively selected/editing polygon is shown (in cyan)
+                # All loaded polygons are available in the polygon selector dropdown
+                
                 # Initialize empty L*C*h data (will be populated when polygon is closed)
                 push!(lch_polygon_data, (
                     l_values = Float64[],
@@ -3828,6 +3445,8 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     median_h = NaN,
                     count = 0
                 ))
+                local layer3_time = (time() - polygon_start) * 1000
+                println("[PERF-WIDGET] Column $col: Layer 3 (polygon overlay + loading): $(round(layer3_time, digits=2))ms")
             else
                 # FALLBACK: Compute fresh (should rarely happen)
                 println("[COMPARE-UI] WARNING: Image $(entry.image_index) not in cache, computing fresh")
@@ -3873,8 +3492,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     alpha = 0.5,
                     visible = Bas3GLMakie.GLMakie.@lift($mask_visible_obs && !isnothing($mask_rgb_obs))
                 )
+                local layer2_time = (time() - mask_start) * 1000
+                println("[PERF-WIDGET] Column $col: Layer 2 (mask overlay): $(round(layer2_time, digits=2))ms")
                 
                 # Layer 3: POLYGON OVERLAY (per-image polygon selection)
+                local polygon_start = time()
                 # Initialize polygon state for this image
                 local poly_verts = Bas3GLMakie.GLMakie.Observable(Bas3GLMakie.GLMakie.Point2f[])
                 local poly_active = Bas3GLMakie.GLMakie.Observable(false)
@@ -3909,6 +3531,30 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 push!(active_polygon_id_per_image, Bas3GLMakie.GLMakie.Observable{Union{Int, Nothing}}(nothing))
                 push!(selected_class_per_image, Bas3GLMakie.GLMakie.Observable(:redness))  # Default class
                 
+                # PHASE 1: Load existing polygons from JSON metadata - FALLBACK PATH
+                local saved_polygons_fallback = load_multiclass_metadata(entry.image_index)
+                if !isempty(saved_polygons_fallback)
+                    polygons_per_image[col][] = saved_polygons_fallback
+                    println("[POLYGON-LOAD] Loaded $(length(saved_polygons_fallback)) existing polygons for image $(entry.image_index) (fallback)")
+                    println("[POLYGON-LOAD] Column $col: Observable now contains $(length(polygons_per_image[col][])) polygons (fallback)")
+                    for (idx, poly) in enumerate(saved_polygons_fallback)
+                        println("[POLYGON-LOAD]   [$idx] ID=$(poly.id), class=$(poly.class), vertices=$(length(poly.vertices)) (fallback)")
+                    end
+                    
+                    # Update polygon ID counter to avoid conflicts with existing IDs
+                    local max_id_fallback = maximum(p.id for p in saved_polygons_fallback; init=0)
+                    if max_id_fallback > polygon_id_counter[]
+                        polygon_id_counter[] = max_id_fallback
+                        println("[POLYGON-LOAD] Updated ID counter to $max_id_fallback (fallback)")
+                    end
+                else
+                    println("[POLYGON-LOAD] No existing polygons for image $(entry.image_index) (fallback)")
+                end
+                
+                # NOTE: Polygons are loaded from JSON but NOT displayed as overlays - FALLBACK PATH
+                # Only the actively selected/editing polygon is shown (in cyan)
+                # All loaded polygons are available in the polygon selector dropdown
+                
                 # Initialize empty L*C*h data (will be populated when polygon is closed)
                 push!(lch_polygon_data, (
                     l_values = Float64[],
@@ -3919,9 +3565,12 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     median_h = NaN,
                     count = 0
                 ))
+                local layer3_time = (time() - polygon_start) * 1000
+                println("[PERF-WIDGET] Column $col: Layer 3 (polygon overlay + loading): $(round(layer3_time, digits=2))ms")
             end
             
             # Row 2: Create & Select - Class, ID, Polygon selector (3 columns)
+            local controls_start = time()
             local class_selector_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[2, col])
             
             # Column 1: Class menu (no label)
@@ -4010,17 +3659,28 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             
             # Update selector options when polygon list changes
             Bas3GLMakie.GLMakie.on(polygons_per_image[col_idx_list]) do polys
+                println("[SELECTOR-UPDATE] Column $col_idx_list: Polygon list changed, count=$(length(polys))")
                 if isempty(polys)
+                    println("[SELECTOR-UPDATE] Column $col_idx_list: No polygons, setting to ['Neu erstellen']")
                     polygon_selector[] = ["Neu erstellen"]
                 else
                     options = ["Neu erstellen"]
                     for poly in polys
                         display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
-                        push!(options, "ID:$(poly.id) $display_name #$(poly.sample_number)")
+                        option_str = "ID:$(poly.id) $display_name #$(poly.sample_number)"
+                        push!(options, option_str)
+                        println("[SELECTOR-UPDATE] Column $col_idx_list: Added option: '$option_str'")
                     end
                     polygon_selector[] = options
+                    println("[SELECTOR-UPDATE] Column $col_idx_list: Selector updated with $(length(options)) options")
                 end
             end
+            
+            # Manually trigger initial update for any pre-loaded polygons
+            # (The callback above is registered now, so we can trigger it)
+            println("[SELECTOR-INIT] Column $col_idx_list: Triggering initial selector update")
+            Bas3GLMakie.GLMakie.notify(polygons_per_image[col_idx_list])
+
             
             # When user selects a polygon, set it as active for editing
             local col_idx_selector = col
@@ -4572,8 +4232,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     edit_poly_btn.buttoncolor = Bas3GLMakie.GLMakie.RGBf(0.3, 0.7, 0.9)  # Blue when polygon selected
                 end
             end
+            local controls_time = (time() - controls_start) * 1000
+            println("[PERF-WIDGET] Column $col: UI controls (Row 2 + Row 3): $(round(controls_time, digits=2))ms")
             
             # Row 4: Patient metadata section with header (moved from Row 5)
+            local metadata_start = time()
             local data_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[4, col])
             
 
@@ -4702,6 +4365,12 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             # Set relative row gaps within data_grid (percentage of parent row 4 height)
             Bas3GLMakie.GLMakie.rowgap!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.02))    # After header (2%)
             Bas3GLMakie.GLMakie.rowgap!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.03))   # Between date and info (3%)
+            
+            local metadata_time = (time() - metadata_start) * 1000
+            println("[PERF-WIDGET] Column $col: Metadata section (Row 4): $(round(metadata_time, digits=2))ms")
+            
+            local col_total_time = (time() - col_start_time) * 1000
+            println("[PERF-WIDGET] Column $col: TOTAL COLUMN TIME: $(round(col_total_time, digits=2))ms")
             
         end
         
@@ -4932,18 +4601,6 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         status_label.color = :green
     end
     
-    # Clear all polygons button callback
-    Bas3GLMakie.GLMakie.on(clear_polygons_button.clicks) do n
-        println("[POLYGON] Clearing all polygons ($(length(polygon_vertices_per_image)) images)")
-        for i in 1:length(polygon_vertices_per_image)
-            polygon_vertices_per_image[i][] = Bas3GLMakie.GLMakie.Point2f[]
-            polygon_active_per_image[i][] = false
-            polygon_complete_per_image[i][] = false
-        end
-        status_label.text = "Alle Polygone gelöscht"
-        status_label.color = :green
-    end
-    
     # Mouse click handler for polygon vertex placement
     Bas3GLMakie.GLMakie.on(Bas3GLMakie.GLMakie.events(fgr).mousebutton) do event
         if event.button == Bas3GLMakie.GLMakie.Mouse.left && 
@@ -5117,7 +4774,6 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 :patient_menu => patient_menu,
                 :filter_menu => filter_menu,       # NEW: Filter menu for testing
                 :refresh_button => refresh_button,
-                :clear_polygons_button => clear_polygons_button,  # NEW: Clear all polygons
                 :prev_button => prev_button,      # NEW: Navigation buttons
                 :next_button => next_button,      # NEW: Navigation buttons
                 :status_label => status_label,
