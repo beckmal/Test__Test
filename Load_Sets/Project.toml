@@ -1,9 +1,6 @@
 [deps]
 Bas3 = "af0a1cfc-538f-4bb2-b0da-fbf558d56e16"
-Conda = "8f4d0f93-b110-5947-807f-2305c1781a2d"
-PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
 Bas3GLMakie = "d16222db-2f2f-4a9a-b34f-5182c38affff"
-XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 Bas3GaussianProcess = "da6bd249-5024-4c5b-8608-84122d6c82d7"
 Bas3GradientOptimization = "768800b6-af41-427f-aca6-6c9b3ebc2520"
 Bas3IGABOptimization = "5757303b-19cd-48cf-8d22-d1bf9b5c0aff"
@@ -19,7 +16,11 @@ Bas3Surrogates_Core = "70bcee1d-9057-4541-adf8-a8048c9d7e10"
 Bas3_Core = "47442969-1adf-4deb-abf7-d4e7b88cce4f"
 Bas3_EnvironmentTools = "ef8c486a-83de-4ef9-b2e3-bb6b307e1ff0"
 Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
+Conda = "8f4d0f93-b110-5947-807f-2305c1781a2d"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 
 [sources]
 Bas3 = {path = "../../Bas3"}
