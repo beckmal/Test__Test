@@ -2486,7 +2486,15 @@ function create_multiclass_lch_timeline!(
     
     # Add legend only if we have plots
     if has_plots
-        Bas3GLMakie.GLMakie.Legend(grid[1:3, 2], ax_L, "Klassen", framevisible=true)
+        Bas3GLMakie.GLMakie.Legend(
+            grid[4, 1],              # Row 4, below all axes
+            ax_L, 
+            "Klassen", 
+            framevisible=true,
+            orientation=:horizontal, # Horizontal layout for better space usage
+            tellheight=false,        # Let grid manage height
+            tellwidth=false          # Let grid manage width
+        )
     end
     
     return (ax_L, ax_C, ax_h)
@@ -4570,56 +4578,24 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             
 
             
-            # Header: "Bild X" centered and bold
+            # Header row: "Bild X" label + Save button
             Bas3GLMakie.GLMakie.Label(
-                data_grid[1, 1:2],
+                data_grid[1, 1],
                 "Bild $(entry.image_index)",
                 fontsize=FONT_SIZE_SECTION,
                 font=:bold,
-                halign=:center
-            )
-            
-            # Date section (row 2)
-            Bas3GLMakie.GLMakie.Label(
-                data_grid[2, 1],
-                "Datum:",
-                fontsize=FONT_SIZE_LABEL,
-                halign=:right,
+                halign=:left,
                 valign=:center
             )
             
-            local date_box = Bas3GLMakie.GLMakie.Textbox(
-                data_grid[2, 2],
-                placeholder="YYYY-MM-DD",
-                stored_string=entry.date
-            )
-            push!(date_textboxes, date_box)
-            
-            # Info section (row 3)
-            Bas3GLMakie.GLMakie.Label(
-                data_grid[3, 1],
-                "Info:",
-                fontsize=FONT_SIZE_LABEL,
-                halign=:right,
-                valign=:top
-            )
-            
-            local info_box = Bas3GLMakie.GLMakie.Textbox(
-                data_grid[3, 2],
-                placeholder="Zusatzinformationen",
-                stored_string=entry.info
-            )
-            push!(info_textboxes, info_box)
-            
-            # Save button (row 4) - spans both columns for visual prominence
             local save_btn = Bas3GLMakie.GLMakie.Button(
-                data_grid[4, 1:2],
+                data_grid[1, 2],
                 label="Speichern",
                 fontsize=FONT_SIZE_BUTTON
             )
             push!(save_buttons, save_btn)
             
-            # Save button callback
+            # Save button callback (capture variables for closure)
             local entry_row = entry.row
             local entry_idx = entry.image_index
             local col_idx = col
@@ -4679,22 +4655,53 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Set proportional columns AFTER widgets are created (labels: 25%, textboxes: 75%)
-            Bas3GLMakie.GLMakie.colsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))
-            Bas3GLMakie.GLMakie.colsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.75))
+            # Date section (row 2)
+            Bas3GLMakie.GLMakie.Label(
+                data_grid[2, 1],
+                "Datum:",
+                fontsize=FONT_SIZE_LABEL,
+                halign=:right,
+                valign=:center
+            )
+            
+            local date_box = Bas3GLMakie.GLMakie.Textbox(
+                data_grid[2, 2],
+                placeholder="YYYY-MM-DD",
+                stored_string=entry.date
+            )
+            push!(date_textboxes, date_box)
+            
+            # Info section (row 3)
+            Bas3GLMakie.GLMakie.Label(
+                data_grid[3, 1],
+                "Info:",
+                fontsize=FONT_SIZE_LABEL,
+                halign=:right,
+                valign=:top
+            )
+            
+            local info_box = Bas3GLMakie.GLMakie.Textbox(
+                data_grid[3, 2],
+                placeholder="Zusatzinformationen",
+                stored_string=entry.info
+            )
+            push!(info_textboxes, info_box)
+            
+            # Set proportional columns AFTER widgets are created
+            # Column 1: 50% (for "Bild X" label), Column 2: 50% (for save button)
+            Bas3GLMakie.GLMakie.colsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.50))
+            Bas3GLMakie.GLMakie.colsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.50))
             
             # Set relative row sizing for data_grid (required when using Relative() gaps)
             # Parent row 4 = 12% of images_grid ≈ 108px @ 900px window
-            # Now 4 rows: Header (15%), Date (25%), Info (25%), Save button (25%)
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.15))   # Header 15%
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.25))   # Date row 25%
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 3, Bas3GLMakie.GLMakie.Relative(0.25))   # Info row 25%
-            Bas3GLMakie.GLMakie.rowsize!(data_grid, 4, Bas3GLMakie.GLMakie.Relative(0.25))   # Save button 25%
+            # Now 3 rows: Header+Button (25%), Date (35%), Info (35%)
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))   # Header+Button 25%
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.35))   # Date row 35%
+            Bas3GLMakie.GLMakie.rowsize!(data_grid, 3, Bas3GLMakie.GLMakie.Relative(0.35))   # Info row 35%
             
             # Set relative row gaps within data_grid (percentage of parent row 4 height)
-            Bas3GLMakie.GLMakie.rowgap!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.05))    # After header (5%)
-            Bas3GLMakie.GLMakie.rowgap!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.025))   # Between date and info (2.5%)
-            Bas3GLMakie.GLMakie.rowgap!(data_grid, 3, Bas3GLMakie.GLMakie.Relative(0.025))   # Between info and save (2.5%)
+            Bas3GLMakie.GLMakie.rowgap!(data_grid, 1, Bas3GLMakie.GLMakie.Relative(0.02))    # After header (2%)
+            Bas3GLMakie.GLMakie.rowgap!(data_grid, 2, Bas3GLMakie.GLMakie.Relative(0.03))   # Between date and info (3%)
             
         end
         
