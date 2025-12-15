@@ -119,6 +119,87 @@ end
 const WOUND_CLASSES = [:scar, :redness, :hematoma, :necrosis, :background]
 
 # ============================================================================
+# HELPER FUNCTIONS FOR POLYGON MASK FILENAME MANAGEMENT
+# ============================================================================
+
+"""
+    construct_polygon_mask_filename(image_index::Int, polygon::PolygonEntry) -> String
+
+Construct standardized filename for individual polygon mask.
+
+# Format
+`MuHa_{patient_num}_polygon_{class_name}_{polygon_id}.png`
+
+# Arguments
+- `image_index::Int`: Patient image index (1-306)
+- `polygon::PolygonEntry`: Polygon with class_name and id
+
+# Returns
+- `String`: Filename (not full path)
+
+# Examples
+```julia
+polygon = PolygonEntry(id=1, class=:scar, class_name="In_Narbe", ...)
+construct_polygon_mask_filename(1, polygon)
+# → "MuHa_001_polygon_In_Narbe_1.png"
+
+polygon = PolygonEntry(id=15, class=:hematoma, class_name="Umgebung", ...)
+construct_polygon_mask_filename(23, polygon)
+# → "MuHa_023_polygon_Umgebung_15.png"
+```
+"""
+function construct_polygon_mask_filename(image_index::Int, polygon::PolygonEntry)
+    local patient_num = lpad(image_index, 3, '0')
+    local class_name = polygon.class_name  # German name from CLASS_NAMES_DE
+    local polygon_id = polygon.id
+    
+    return "MuHa_$(patient_num)_polygon_$(class_name)_$(polygon_id).png"
+end
+
+"""
+    parse_polygon_mask_filename(filename::String) -> Union{NamedTuple, Nothing}
+
+Parse polygon mask filename to extract metadata.
+
+# Arguments
+- `filename::String`: Filename like "MuHa_001_polygon_In_Narbe_15.png"
+
+# Returns
+- `(patient_num=1, class_name="In_Narbe", polygon_id=15)` if valid
+- `nothing` if filename doesn't match pattern
+
+# Pattern
+`MuHa_{patient_num}_polygon_{class_name}_{polygon_id}.png`
+
+# Examples
+```julia
+parse_polygon_mask_filename("MuHa_001_polygon_In_Narbe_1.png")
+# → (patient_num=1, class_name="In_Narbe", polygon_id=1)
+
+parse_polygon_mask_filename("MuHa_023_polygon_Umgebung_15.png")
+# → (patient_num=23, class_name="Umgebung", polygon_id=15)
+
+parse_polygon_mask_filename("invalid_file.png")
+# → nothing
+```
+"""
+function parse_polygon_mask_filename(filename::String)
+    # Pattern: MuHa_{NNN}_polygon_{class_name}_{id}.png
+    local pattern = r"^MuHa_(\d{3})_polygon_([^_]+)_(\d+)\.png$"
+    local m = match(pattern, filename)
+    
+    if isnothing(m)
+        return nothing
+    end
+    
+    return (
+        patient_num = parse(Int, m.captures[1]),
+        class_name = m.captures[2],
+        polygon_id = parse(Int, m.captures[3])
+    )
+end
+
+# ============================================================================
 # DATABASE FUNCTIONS FOR MUHA.XLSX (Shared with InteractiveUI)
 # ============================================================================
 
@@ -525,6 +606,94 @@ function save_polygon_mask_png(mask::BitMatrix, output_path::String)
     end
 end
 
+"""
+    save_polygon_mask_individual(
+        image_index::Int,
+        polygon::PolygonEntry,
+        mask::BitMatrix,
+        patient_folder::String
+    ) -> (Bool, String)
+
+Save individual polygon mask to separate PNG file with class name in filename.
+
+# Arguments
+- `image_index::Int`: Patient image index (1-306)
+- `polygon::PolygonEntry`: Polygon with id and class_name
+- `mask::BitMatrix`: Binary mask for this polygon only
+- `patient_folder::String`: Path to MuHa_XXX folder
+
+# Returns
+- `(true, filename)`: Success with filename
+- `(false, error_msg)`: Failure with error message
+
+# File naming
+- Format: MuHa_{patient_num}_polygon_{class_name}_{polygon_id}.png
+- Example: MuHa_001_polygon_In_Narbe_1.png
+"""
+function save_polygon_mask_individual(
+    image_index::Int,
+    polygon::PolygonEntry,
+    mask::BitMatrix,
+    patient_folder::String
+)
+    local total_time = 0.0
+    local filename_time = 0.0
+    local rotate_time = 0.0
+    local flip_time = 0.0
+    local convert_time = 0.0
+    local save_time = 0.0
+    
+    try
+        total_time = @elapsed begin
+            # Construct filename using helper (includes class name)
+            local filename = ""
+            filename_time = @elapsed begin
+                filename = construct_polygon_mask_filename(image_index, polygon)
+            end
+            local output_path = joinpath(patient_folder, filename)
+            
+            # IMPORTANT: Mask is in landscape orientation (H×W after rotr90)
+            # Need to rotate back to portrait to match original files (rotl90 inverts rotr90)
+            local mask_portrait = nothing
+            rotate_time = @elapsed begin
+                mask_portrait = rotl90(mask)
+            end
+            
+            # Flip vertically (around horizontal axis) to match image coordinate system
+            local mask_flipped = nothing
+            flip_time = @elapsed begin
+                mask_flipped = reverse(mask_portrait, dims=1)
+            end
+            
+            # Convert BitMatrix to RGB (using portrait orientation)
+            local h, w = size(mask_flipped)
+            local img_rgb = nothing
+            convert_time = @elapsed begin
+                img_rgb = Matrix{Bas3ImageSegmentation.v_RGB}(undef, h, w)
+                for i in 1:h, j in 1:w
+                    img_rgb[i, j] = mask_flipped[i, j] ? 
+                        Bas3ImageSegmentation.v_RGB(1, 1, 1) : 
+                        Bas3ImageSegmentation.v_RGB(0, 0, 0)
+                end
+            end
+            
+            # Save as PNG in portrait orientation
+            save_time = @elapsed begin
+                Bas3GLMakie.GLMakie.save(output_path, img_rgb)
+            end
+            
+            println("[PERF-POLYGON-SAVE] ID=$(polygon.id) class=$(polygon.class_name): total=$(round(total_time*1000, digits=1))ms, rotate=$(round(rotate_time*1000, digits=1))ms, flip=$(round(flip_time*1000, digits=1))ms, convert=$(round(convert_time*1000, digits=1))ms, save=$(round(save_time*1000, digits=1))ms")
+            println("[MASK-EXPORT] Saved polygon $(polygon.id) ($(polygon.class_name)): $filename ($(h)×$(w) portrait, flipped)")
+            
+            return (true, filename)
+        end
+    catch e
+        local error_msg = "Failed to save polygon $(polygon.id): $(typeof(e))"
+        @warn "[MASK-EXPORT] $error_msg: $e"
+        return (false, error_msg)
+    end
+end
+
 # ============================================================================
 # MASK OVERLAY FUNCTIONS (for displaying saved polygon masks)
 # ============================================================================
@@ -556,57 +725,458 @@ function load_polygon_mask_if_exists(image_index::Int)
     local file_check_time = 0.0
     local png_load_time = 0.0
     local convert_time = 0.0
-    local rotation_time = 0.0
+    local composite_time = 0.0
     
     total_time = @elapsed begin
         local base_dir = dirname(get_database_path())
         local patient_num = lpad(image_index, 3, '0')
-        local mask_path = joinpath(base_dir, "MuHa_$(patient_num)", 
-                                   "MuHa_$(patient_num)_polygon_mask.png")
+        local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+        
+        # Try loading composite mask first (NEW: fast path for v3 format)
+        local composite_mask_path = joinpath(patient_folder, "MuHa_$(patient_num)_composite_mask.png")
         
         file_check_time = @elapsed begin
-            if !isfile(mask_path)
-                return nothing
+            if isfile(composite_mask_path)
+                # Load pre-generated composite (fast!)
+                try
+                    local img = Bas3GLMakie.GLMakie.FileIO.load(composite_mask_path)
+                    local h, w = size(img)
+                    local mask_rgb = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
+                    
+                    for i in 1:h, j in 1:w
+                        local rgb_val = Bas3ImageSegmentation.RGB(img[i, j])
+                        mask_rgb[i, j] = Bas3ImageSegmentation.RGB{Float32}(
+                            Float32(rgb_val.r), 
+                            Float32(rgb_val.g), 
+                            Float32(rgb_val.b)
+                        )
+                    end
+                    
+                    println("[MASK-LOAD] Loaded composite mask (v3 format): $(size(mask_rgb))")
+                    return mask_rgb
+                catch e
+                    @warn "[MASK-LOAD] Failed to load composite mask: $e"
+                end
             end
+        end
+        
+        # Fallback 1: Try old single mask format (backward compatibility)
+        local single_mask_path = joinpath(patient_folder, "MuHa_$(patient_num)_polygon_mask.png")
+        
+        if isfile(single_mask_path)
+            try
+                png_load_time = @elapsed begin
+                    local img = Bas3GLMakie.GLMakie.FileIO.load(single_mask_path)
+                    local h, w = size(img)
+                    local mask_rgb = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
+                    
+                    for i in 1:h, j in 1:w
+                        local rgb_val = Bas3ImageSegmentation.RGB(img[i, j])
+                        mask_rgb[i, j] = Bas3ImageSegmentation.RGB{Float32}(
+                            Float32(rgb_val.r), 
+                            Float32(rgb_val.g), 
+                            Float32(rgb_val.b)
+                        )
+                    end
+                    
+                    println("[MASK-LOAD] Loaded single mask (v2 format): $(size(mask_rgb))")
+                    return mask_rgb
+                end
+            catch e
+                @warn "[MASK-LOAD] Failed to load single mask: $e"
+            end
+        end
+        
+        # Fallback 2: Try loading individual masks and reconstruct composite (NEW)
+        println("[MASK-LOAD] No composite or single mask found, trying individual masks...")
+        
+        composite_time = @elapsed begin
+            local individual_masks = load_polygon_masks_individual(image_index)
+            
+            if length(individual_masks) > 0
+                local polygons = load_multiclass_metadata(image_index)
+                local composite = reconstruct_composite_mask(individual_masks, polygons)
+                
+                if size(composite) != (0, 0)
+                    println("[MASK-LOAD] Reconstructed composite from $(length(individual_masks)) individual masks")
+                    return composite
+                end
+            end
+        end
+        
+        # No masks found
+        println("[MASK-LOAD] No masks found for image $image_index")
+        return nothing
+    end
+    
+    println("[PERF-MASK-PNG] Image $image_index: total=$(round(total_time*1000, digits=2))ms")
+end
+
+"""
+    load_polygon_masks_individual(image_index::Int) -> Dict{Int, Matrix{RGB{Float32}}}
+
+Load all individual polygon masks for an image using class-based filenames.
+
+# Arguments
+- `image_index::Int`: Patient image index (1-306)
+
+# Returns
+- `Dict{polygon_id => mask}`: Dictionary mapping polygon IDs to their masks
+- Empty dict if no masks found
+
+# Process
+1. Load metadata JSON to get polygon IDs and class names
+2. Construct filename using construct_polygon_mask_filename()
+3. Load each MuHa_XXX_polygon_{class_name}_{id}.png file
+4. Return dictionary of masks by polygon ID
+"""
+function load_polygon_masks_individual(image_index::Int)
+    local masks = Dict{Int, Matrix{Bas3ImageSegmentation.RGB{Float32}}}()
+    
+    # Load metadata to get polygon IDs and class names
+    local metadata_polygons = load_multiclass_metadata(image_index)
+    
+    if length(metadata_polygons) == 0
+        return masks
+    end
+    
+    # Load each polygon's mask file
+    local base_dir = dirname(get_database_path())
+    local patient_num = lpad(image_index, 3, '0')
+    local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+    
+    for polygon in metadata_polygons
+        # Construct filename using helper (includes class name)
+        local filename = construct_polygon_mask_filename(image_index, polygon)
+        local mask_path = joinpath(patient_folder, filename)
+        
+        # Fallback: If mask_file field exists in polygon, try that first
+        if hasfield(typeof(polygon), :mask_file) && !isnothing(polygon.mask_file)
+            local json_filename = polygon.mask_file
+            local json_mask_path = joinpath(patient_folder, json_filename)
+            
+            if isfile(json_mask_path)
+                mask_path = json_mask_path
+                filename = json_filename
+            elseif !isfile(mask_path)
+                @warn "[MASK-LOAD] Neither JSON filename ($json_filename) nor reconstructed filename ($filename) found"
+                continue
+            end
+        end
+        
+        if !isfile(mask_path)
+            @warn "[MASK-LOAD] Missing mask file: $filename (polygon $(polygon.id), class $(polygon.class_name))"
+            continue
         end
         
         try
-            # Load PNG directly with FileIO
-            local img = nothing
-            png_load_time = @elapsed begin
-                img = Bas3GLMakie.GLMakie.FileIO.load(mask_path)
-            end
+            # Load PNG
+            local img = Bas3GLMakie.GLMakie.FileIO.load(mask_path)
+            
+            # Flip back (undo the vertical flip from save)
+            local img_unflipped = reverse(img, dims=1)
+            
+            local h, w = size(img_unflipped)
             
             # Convert to RGB{Float32}
-            # FIX: PNG is already in LANDSCAPE orientation (saved that way by save_polygon_mask_for_column)
-            # Do NOT apply rotr90 - PNG matches UI display orientation directly!
-            local h, w = size(img)
-            local mask_rgb = nothing
-            
-            convert_time = @elapsed begin
-                mask_rgb = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
-                
-                for i in 1:h, j in 1:w
-                    local rgb_val = Bas3ImageSegmentation.RGB(img[i, j])
-                    mask_rgb[i, j] = Bas3ImageSegmentation.RGB{Float32}(Float32(rgb_val.r), Float32(rgb_val.g), Float32(rgb_val.b))
-                end
+            local mask_rgb = Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, h, w)
+            for i in 1:h, j in 1:w
+                local rgb_val = Bas3ImageSegmentation.RGB(img_unflipped[i, j])
+                mask_rgb[i, j] = Bas3ImageSegmentation.RGB{Float32}(
+                    Float32(rgb_val.r), 
+                    Float32(rgb_val.g), 
+                    Float32(rgb_val.b)
+                )
             end
             
-            # FIXED: Remove rotr90 rotation
-            # PNG is saved in landscape orientation (see save_polygon_mask_for_column:1588)
-            # PNG already matches base image orientation (both landscape)
-            # OLD BUG: Applied rotr90 which rotated landscape → portrait (WRONG!)
-            # NEW: Direct return without rotation (CORRECT!)
-            println("[MASK-LOAD-DEBUG] PNG loaded in landscape: $(size(mask_rgb)) - NO ROTATION NEEDED")
-            
-            println("[PERF-MASK-PNG] Image $image_index: total=$(round(total_time*1000, digits=2))ms, file_check=$(round(file_check_time*1000, digits=2))ms, png_load=$(round(png_load_time*1000, digits=2))ms, convert=$(round(convert_time*1000, digits=2))ms, size=$(size(img))")
-            println("[MASK-LOAD] Loaded existing mask for image $(image_index): $(size(mask_rgb)) [FIXED-V5-NO-ROTATION]")
-            return mask_rgb
+            masks[polygon.id] = mask_rgb
+            println("[MASK-LOAD] ✓ Loaded polygon $(polygon.id) ($(polygon.class_name)): $(h)×$(w) (unflipped)")
         catch e
-            @warn "[MASK-LOAD] Failed to load mask for image $(image_index): $e"
-            return nothing
+            @warn "[MASK-LOAD] ✗ Failed to load polygon $(polygon.id) ($(polygon.class_name)): $e"
         end
     end
+    
+    return masks
+end
+
+"""
+    reconstruct_composite_mask(
+        individual_masks::Dict{Int, Matrix{RGB{Float32}}},
+        polygons::Vector{PolygonEntry}
+    ) -> Matrix{RGB{Float32}}
+
+Reconstruct composite mask from individual polygon masks using class colors.
+
+# Arguments
+- `individual_masks::Dict{Int, Matrix{RGB{Float32}}}`: Individual polygon masks
+- `polygons::Vector{PolygonEntry}`: Polygon metadata (for class info)
+
+# Returns
+- `Matrix{RGB{Float32}}`: Composite mask with class-based coloring
+
+# Process
+1. Create blank canvas (all black)
+2. For each polygon (in order of ID):
+   - Get polygon's class color from get_class_color()
+   - Apply mask pixels using class color
+   - Later polygons overwrite earlier ones (last wins)
+"""
+function reconstruct_composite_mask(
+    individual_masks::Dict{Int, Matrix{Bas3ImageSegmentation.RGB{Float32}}},
+    polygons::Vector{PolygonEntry}
+)
+    local total_time = 0.0
+    local canvas_create_time = 0.0
+    local overlay_time = 0.0
+    
+    total_time = @elapsed begin
+        if length(individual_masks) == 0
+            return Matrix{Bas3ImageSegmentation.RGB{Float32}}(undef, 0, 0)
+        end
+        
+        # Get dimensions from first mask
+        local first_mask = first(values(individual_masks))
+        local h, w = size(first_mask)
+        
+        # Create blank composite (all black)
+        local composite = nothing
+        canvas_create_time = @elapsed begin
+            composite = fill(Bas3ImageSegmentation.RGB{Float32}(0, 0, 0), h, w)
+        end
+        
+        # Apply each polygon mask with its class color
+        overlay_time = @elapsed begin
+            for polygon in polygons
+                if !haskey(individual_masks, polygon.id)
+                    continue
+                end
+                
+                local mask = individual_masks[polygon.id]
+                local class_color_rgbf = get_class_color(polygon.class)
+                local class_color = Bas3ImageSegmentation.RGB{Float32}(
+                    Float32(class_color_rgbf.r),
+                    Float32(class_color_rgbf.g),
+                    Float32(class_color_rgbf.b)
+                )
+                
+                # Apply colored mask (where mask is white, use class color)
+                for i in 1:h, j in 1:w
+                    if mask[i, j].r > 0.5  # White pixel in mask (polygon interior)
+                        composite[i, j] = class_color
+                    end
+                end
+            end
+        end
+        
+        println("[PERF-RECONSTRUCT] total=$(round(total_time*1000, digits=1))ms, canvas=$(round(canvas_create_time*1000, digits=1))ms, overlay=$(round(overlay_time*1000, digits=1))ms, n_polygons=$(length(individual_masks)), size=$(h)×$(w)")
+        println("[MASK-COMPOSITE] Reconstructed composite from $(length(individual_masks)) polygons: $(h)×$(w)")
+        return composite
+    end
+end
+
+"""
+    save_composite_mask_from_individuals(image_index::Int) -> Bool
+
+Generate and save a composite mask from individual polygon PNGs.
+Used for quick visual inspection without loading all individual files.
+
+# Arguments
+- `image_index::Int`: Patient image index (1-306)
+
+# Saves
+- `MuHa_XXX_composite_mask.png`: Combined view with class colors
+
+# Returns
+- `true`: Success
+- `false`: Failure or no masks found
+"""
+function save_composite_mask_from_individuals(image_index::Int)
+    local total_time = 0.0
+    local load_time = 0.0
+    local metadata_load_time = 0.0
+    local reconstruct_time = 0.0
+    local save_time = 0.0
+    
+    total_time = @elapsed begin
+        local individual_masks = nothing
+        load_time = @elapsed begin
+            individual_masks = load_polygon_masks_individual(image_index)
+        end
+        
+        local polygons = nothing
+        metadata_load_time = @elapsed begin
+            polygons = load_multiclass_metadata(image_index)
+        end
+        
+        if length(individual_masks) == 0
+            @warn "[MASK-COMPOSITE] No individual masks found for image $image_index"
+            return false
+        end
+        
+        local composite = nothing
+        reconstruct_time = @elapsed begin
+            composite = reconstruct_composite_mask(individual_masks, polygons)
+        end
+        
+        # Save composite
+        local base_dir = dirname(get_database_path())
+        local patient_num = lpad(image_index, 3, '0')
+        local composite_path = joinpath(
+            base_dir, 
+            "MuHa_$(patient_num)", 
+            "MuHa_$(patient_num)_composite_mask.png"
+        )
+        
+        save_time = @elapsed begin
+            try
+                Bas3GLMakie.GLMakie.save(composite_path, composite)
+                println("[PERF-COMPOSITE] total=$(round(total_time*1000, digits=1))ms, load=$(round(load_time*1000, digits=1))ms, metadata=$(round(metadata_load_time*1000, digits=1))ms, reconstruct=$(round(reconstruct_time*1000, digits=1))ms, save=$(round(save_time*1000, digits=1))ms, n_polygons=$(length(individual_masks))")
+                println("[MASK-COMPOSITE] Saved composite mask from $(length(individual_masks)) polygons: $(basename(composite_path))")
+                return true
+            catch e
+                @warn "[MASK-COMPOSITE] Failed to save composite: $e"
+                return false
+            end
+        end
+    end
+end
+
+"""
+    detect_mask_format(image_index::Int) -> Symbol
+
+Detect which mask format is used for a given image.
+
+# Arguments
+- `image_index::Int`: Patient image index (1-306)
+
+# Returns
+- `:separate_files`: Individual polygon masks with class names
+- `:single_file`: Old single combined mask
+- `:none`: No masks found
+
+# Detection Logic
+1. Check JSON metadata for mask_format field (version 3)
+2. Check for individual polygon mask files (pattern: *_polygon_*_*.png)
+3. Check for old single mask file (*_polygon_mask.png)
+4. Return :none if nothing found
+"""
+function detect_mask_format(image_index::Int)
+    local base_dir = dirname(get_database_path())
+    local patient_num = lpad(image_index, 3, '0')
+    local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+    
+    if !isdir(patient_folder)
+        return :none
+    end
+    
+    # Try loading metadata to check for mask_format field
+    local metadata_polygons = load_multiclass_metadata(image_index)
+    if length(metadata_polygons) > 0
+        # Check if first polygon has mask_file field (indicates version 3)
+        local first_poly = metadata_polygons[1]
+        if hasfield(typeof(first_poly), :mask_file) && !isnothing(first_poly.mask_file)
+            return :separate_files
+        end
+    end
+    
+    # Check for individual polygon mask files
+    local files = readdir(patient_folder)
+    if any(f -> occursin(r"_polygon_[^_]+_\d+\.png$", f), files)
+        return :separate_files
+    end
+    
+    # Check for old single mask
+    local single_mask_path = joinpath(patient_folder, "MuHa_$(patient_num)_polygon_mask.png")
+    if isfile(single_mask_path)
+        return :single_file
+    end
+    
+    return :none
+end
+
+"""
+    migrate_polygon_mask_filenames(image_index::Int) -> Bool
+
+Rename polygon mask files to match current class names in JSON metadata.
+Use this after changing class names in Load_Sets__Colors.jl.
+
+# Arguments
+- `image_index::Int`: Patient image index (1-306)
+
+# Returns
+- `true`: Migration successful or no changes needed
+- `false`: Migration failed
+
+# Process
+1. Load metadata to get current polygon info
+2. For each polygon, compare stored mask_file with expected filename
+3. Rename files if they differ
+4. Update JSON metadata with new filenames
+"""
+function migrate_polygon_mask_filenames(image_index::Int)
+    local polygons = load_multiclass_metadata(image_index)
+    
+    if length(polygons) == 0
+        println("[MIGRATION] No polygons found for image $image_index")
+        return true
+    end
+    
+    local base_dir = dirname(get_database_path())
+    local patient_num = lpad(image_index, 3, '0')
+    local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+    
+    local renamed_count = 0
+    local failed_count = 0
+    
+    for polygon in polygons
+        # Get expected filename from current class name
+        local new_filename = construct_polygon_mask_filename(image_index, polygon)
+        
+        # Get current filename from JSON (if exists)
+        local old_filename = if hasfield(typeof(polygon), :mask_file) && !isnothing(polygon.mask_file)
+            polygon.mask_file
+        else
+            # No mask_file field, assume old filename matches new one
+            new_filename
+        end
+        
+        # Skip if already correct
+        if old_filename == new_filename
+            continue
+        end
+        
+        local old_path = joinpath(patient_folder, old_filename)
+        local new_path = joinpath(patient_folder, new_filename)
+        
+        # Rename file if it exists
+        if isfile(old_path)
+            try
+                mv(old_path, new_path)
+                println("[MIGRATION] Renamed: $old_filename → $new_filename")
+                renamed_count += 1
+                
+                # Update polygon's mask_file field (if it exists)
+                if hasfield(typeof(polygon), :mask_file)
+                    polygon.mask_file = new_filename
+                end
+            catch e
+                @warn "[MIGRATION] Failed to rename $old_filename: $e"
+                failed_count += 1
+            end
+        else
+            @warn "[MIGRATION] File not found: $old_filename (expected for polygon $(polygon.id))"
+            failed_count += 1
+        end
+    end
+    
+    # Save updated metadata if any files were renamed
+    if renamed_count > 0
+        save_multiclass_metadata(image_index, polygons)
+        println("[MIGRATION] Updated metadata with $(renamed_count) new filenames")
+    end
+    
+    println("[MIGRATION] Complete: $(renamed_count) renamed, $(failed_count) failed")
+    return failed_count == 0
 end
 
 """
@@ -984,18 +1554,20 @@ function save_multiclass_metadata(image_index::Int, polygons::Vector{PolygonEntr
                 "sample_number" => poly.sample_number,
                 "vertices" => [[Float64(v[1]), Float64(v[2])] for v in poly.vertices],
                 "complete" => poly.complete,
+                "mask_file" => construct_polygon_mask_filename(image_index, poly),  # NEW: Add mask filename
                 "lch_data" => isnothing(poly.lch_data) ? nothing : Dict(
-                    "L_median" => poly.lch_data.L_median,
-                    "C_median" => poly.lch_data.C_median,
-                    "h_median" => poly.lch_data.h_median,
+                    "L_median" => poly.lch_data.median_l,
+                    "C_median" => poly.lch_data.median_c,
+                    "h_median" => poly.lch_data.median_h,
                     "count" => poly.lch_data.count
                 )
             ))
         end
         
         metadata = Dict(
-            "version" => 2,
+            "version" => 3,  # CHANGED: Version 2 → 3
             "image_index" => image_index,
+            "mask_format" => "separate_files",  # NEW: Indicate mask format
             "polygons" => poly_data
         )
         
@@ -1003,7 +1575,7 @@ function save_multiclass_metadata(image_index::Int, polygons::Vector{PolygonEntr
         json_str = JSON3.write(metadata)
         write(json_path, json_str)
         
-        println("[METADATA] Saved $(length(polygons)) polygons to $json_path")
+        println("[METADATA] Saved $(length(polygons)) polygons to $json_path (version 3)")
         return true
     catch e
         @warn "[METADATA] Failed to save: $e"
@@ -1030,9 +1602,10 @@ function load_multiclass_metadata(image_index::Int)
         json_str = read(json_path, String)
         data = JSON3.read(json_str)
         
-        # Check version
-        if get(data, :version, 1) != 2
-            @warn "[METADATA] Unsupported version: $(get(data, :version, 1))"
+        # Check version (support version 2 and 3)
+        local version = get(data, :version, 1)
+        if version != 2 && version != 3
+            @warn "[METADATA] Unsupported version: $version (expected 2 or 3)"
             return PolygonEntry[]
         end
         
@@ -1044,9 +1617,9 @@ function load_multiclass_metadata(image_index::Int)
             lch_data = nothing
             if !isnothing(poly_data.lch_data)
                 lch_data = (
-                    L_median = Float64(poly_data.lch_data.L_median),
-                    C_median = Float64(poly_data.lch_data.C_median),
-                    h_median = Float64(poly_data.lch_data.h_median),
+                    median_l = Float64(poly_data.lch_data.L_median),
+                    median_c = Float64(poly_data.lch_data.C_median),
+                    median_h = Float64(poly_data.lch_data.h_median),
                     count = Int(poly_data.lch_data.count)
                 )
             end
@@ -1054,6 +1627,11 @@ function load_multiclass_metadata(image_index::Int)
             # Get class_name and sample_number (with defaults for backward compatibility)
             class_name = get(poly_data, :class_name, "")
             sample_number = get(poly_data, :sample_number, 1)
+            
+            # NEW: Get mask_file field (version 3), ignore if missing
+            # Note: PolygonEntry struct doesn't have mask_file field yet,
+            # but we read it for future use in load_polygon_masks_individual()
+            # which checks poly_data directly from JSON
             
             push!(polygons, PolygonEntry(
                 Int(poly_data.id),
@@ -1066,7 +1644,7 @@ function load_multiclass_metadata(image_index::Int)
             ))
         end
         
-        println("[METADATA] Loaded $(length(polygons)) polygons from $json_path")
+        println("[METADATA] Loaded $(length(polygons)) polygons from $json_path (version $version)")
         return polygons
     catch e
         @warn "[METADATA] Failed to load: $e"
@@ -1783,9 +2361,9 @@ function create_multiclass_lch_timeline!(
         
         for (i, d) in enumerate(data)
             if !isnothing(d) && d.count > 0
-                push!(L_vals, Float32(d.L_median))
-                push!(C_vals, Float32(d.C_median))
-                push!(h_vals, Float32(d.h_median))
+                push!(L_vals, Float32(d.median_l))
+                push!(C_vals, Float32(d.median_c))
+                push!(h_vals, Float32(d.median_h))
                 push!(x_vals, i)
             end
         end
@@ -1810,6 +2388,53 @@ function create_multiclass_lch_timeline!(
     end
     
     return (ax_L, ax_C, ax_h)
+end
+
+# ============================================================================
+# POLYGON MASK EXPORT HELPERS (Module-level functions)
+# ============================================================================
+
+"""
+    scale_vertices_to_fullres(
+        vertices_lowres::Vector{Point2f},
+        image_lowres::Matrix,
+        image_fullres::Matrix
+    ) -> Vector{Point2f}
+
+Scale polygon vertices from UI (lowres) coordinate space to fullres image space.
+
+# Arguments
+- `vertices_lowres`: Polygon vertices in UI coordinate space
+- `image_lowres`: UI display image (for size reference)
+- `image_fullres`: Full-resolution rotated image (target coordinate space)
+
+# Returns
+- Scaled vertices in fullres coordinate space
+
+# Notes
+- Handles GLMakie coordinate system: v[1]=y, v[2]=x (swapped!)
+- Handles X-axis flip: X is horizontally flipped in GLMakie
+"""
+function scale_vertices_to_fullres(
+    vertices_lowres::Vector{Bas3GLMakie.GLMakie.Point2f},
+    image_lowres::Matrix,
+    image_fullres::Matrix
+)
+    local height_lowres = size(image_lowres, 1)
+    local width_lowres = size(image_lowres, 2)
+    local height_fullres = size(image_fullres, 1)
+    local width_fullres = size(image_fullres, 2)
+    
+    local scale_factor_x = Float32(width_fullres) / Float32(width_lowres)
+    local scale_factor_y = Float32(height_fullres) / Float32(height_lowres)
+    
+    # Scale vertices (GLMakie coords: v[1]=y, v[2]=x, X is flipped)
+    local vertices_fullres = [Bas3GLMakie.GLMakie.Point2f(
+        width_fullres - (v[2] * scale_factor_x),  # Flip X: width - x
+        v[1] * scale_factor_y                       # Y is correct
+    ) for v in vertices_lowres]
+    
+    return vertices_fullres
 end
 
 # ============================================================================
@@ -1870,114 +2495,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
     end
     
     # ========================================================================
-    # POLYGON MASK EXPORT FUNCTION (for programmatic access)
-    # ========================================================================
-    
-    """
-    Save polygon mask for a specific column to PNG file.
-    Can be called programmatically for testing or batch processing.
-    
-    Returns: (success::Bool, message::String, output_path::String)
-    """
-    function save_polygon_mask_for_column(col_idx::Int)
-        # Check if polygon is closed
-        if !polygon_complete_per_image[col_idx][]
-            return (false, "Polygon muss geschlossen sein zum Speichern", "")
-        end
-        
-        # Check if column index is valid
-        if col_idx < 1 || col_idx > length(image_observables)
-            return (false, "Ungültiger Spaltenindex: $col_idx", "")
-        end
-        
-        # Get current entry and polygon vertices
-        local entry = current_entries[][col_idx]
-        local vertices_lowres = polygon_vertices_per_image[col_idx][]
-        
-        if length(vertices_lowres) < 3
-            return (false, "Polygon muss mindestens 3 Vertices haben", "")
-        end
-        
-        println("[MASK-EXPORT] Image index: $(entry.image_index) → Patient folder: MuHa_$(lpad(entry.image_index, 3, '0'))")
-        println("[MASK-EXPORT] Polygon vertices (lowres): $(length(vertices_lowres))")
-        
-        # Construct paths
-        local base_dir = dirname(get_database_path())
-        local patient_num = lpad(entry.image_index, 3, '0')
-        local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
-        
-        if !isdir(patient_folder)
-            return (false, "Patient-Ordner nicht gefunden: $patient_folder", "")
-        end
-        
-        local original_filename = "MuHa_$(patient_num)_raw_adj.png"
-        local original_path = joinpath(patient_folder, original_filename)
-        
-        if !isfile(original_path)
-            return (false, "Original-Bild nicht gefunden: $original_path", "")
-        end
-        
-        # Load original full-resolution image
-        println("[MASK-EXPORT] Loading original image: $original_path")
-        local original_img_loaded = Bas3GLMakie.GLMakie.FileIO.load(original_path)
-        println("[MASK-EXPORT] Original loaded size: $(size(original_img_loaded))")
-        
-        # Apply same rotation as UI (rotr90 for landscape viewing)
-        local original_img_rotated = rotr90(original_img_loaded)
-        println("[MASK-EXPORT] Original rotated size: $(size(original_img_rotated))")
-        
-        # Scale vertices from UI coordinate space to fullres
-        # NOTE: The UI image might be downsampled by GLMakie for display!
-        # We need to scale based on the ACTUAL displayed image size, not the array size
-        local rotated_lowres = image_observables[col_idx][]
-        local height_rot_lowres = size(rotated_lowres, 1)   # Height of actual image array in UI
-        local width_rot_lowres = size(rotated_lowres, 2)    # Width of actual image array in UI
-        local height_rot_fullres = size(original_img_rotated, 1)  # Height of rotated fullres image
-        local width_rot_fullres = size(original_img_rotated, 2)   # Width of rotated fullres image
-        
-        # Scale factors (from UI image to fullres)
-        local scale_factor_x = Float32(width_rot_fullres) / Float32(width_rot_lowres)
-        local scale_factor_y = Float32(height_rot_fullres) / Float32(height_rot_lowres)
-        
-        println("[MASK-EXPORT] UI image size: $(height_rot_lowres)×$(width_rot_lowres) (H×W)")
-        println("[MASK-EXPORT] Fullres rotated size: $(height_rot_fullres)×$(width_rot_fullres) (H×W)")
-        println("[MASK-EXPORT] Scale factors: x=$(scale_factor_x), y=$(scale_factor_y)")
-        println("[MASK-EXPORT] Vertices in UI space: ", vertices_lowres)
-        
-        # Scale vertices to fullres (stay in rotated coordinate space)
-        # NOTE: v[1] and v[2] are SWAPPED - v[1]=y, v[2]=x in GLMakie mouse coordinates!
-        # NOTE: X-axis is horizontally flipped - need to invert x-coordinate
-        local vertices_fullres = [Bas3GLMakie.GLMakie.Point2f(
-            width_rot_fullres - (v[2] * scale_factor_x),   # Flip X: width - x
-            v[1] * scale_factor_y                            # Y is correct
-        ) for v in vertices_lowres]
-        println("[MASK-EXPORT] Scaled vertices to fullres rotated space: ", vertices_fullres)
-        
-        # Generate mask in ROTATED fullres space (matches what user sees in UI)
-        local mask_rotated = create_polygon_mask(original_img_rotated, vertices_fullres)
-        println("[MASK-EXPORT] Mask generated in rotated space: $(size(mask_rotated))")
-        println("[MASK-EXPORT] This is the mask that matches the UI display (landscape)")
-        
-        # Construct output path
-        local output_filename = "MuHa_$(patient_num)_polygon_mask.png"
-        local output_path = joinpath(patient_folder, output_filename)
-        
-        println("[MASK-EXPORT] Saving mask in landscape orientation: $output_path")
-        
-        # Save mask as PNG (keep in rotated/landscape orientation to match raw file which is also landscape)
-        local success, msg = save_polygon_mask_png(mask_rotated, output_path)
-        
-        if success
-            println("[MASK-EXPORT] SUCCESS: $msg")
-        else
-            println("[MASK-EXPORT] FAILED: $msg")
-        end
-        
-        return (success, msg, output_path)
-    end
-    
-    # ========================================================================
-    # BUILD PATIENT IMAGES
+    # BUILD PATIENT IMAGES (save_polygon_mask_for_column defined as inner function below)
     # ========================================================================
     # Cache patient image counts (computed once, updated on refresh)
     local patient_image_counts = Bas3GLMakie.GLMakie.Observable(
@@ -2872,6 +3390,152 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
         return (false, "Aktualisierung fehlgeschlagen")
     end
     
+    # Save polygon masks for a column to individual PNG files
+    function save_polygon_mask_for_column(col_idx::Int)
+        local total_time = 0.0
+        local validation_time = 0.0
+        local load_fullres_time = 0.0
+        local mask_creation_time = 0.0
+        local individual_save_time = 0.0
+        
+        total_time = @elapsed begin
+            # Check if column index is valid
+            validation_time = @elapsed begin
+                if col_idx < 1 || col_idx > length(image_observables)
+                    return (false, "Ungültiger Spaltenindex: $col_idx", "")
+                end
+                
+                # Get current entry
+                local entry = current_entries[][col_idx]
+                
+                # NEW: Get ALL polygons for this image (not just active one)
+                local all_polygons = polygons_per_image[col_idx][]
+                
+                if length(all_polygons) == 0
+                    return (false, "Keine Polygone zum Speichern vorhanden", "")
+                end
+            end
+            
+            local entry = current_entries[][col_idx]
+            local all_polygons = polygons_per_image[col_idx][]
+            
+            println("[MASK-EXPORT] Image index: $(entry.image_index) → Patient folder: MuHa_$(lpad(entry.image_index, 3, '0'))")
+            println("[MASK-EXPORT] Total polygons for this image: $(length(all_polygons))")
+            
+            # Construct paths
+            local base_dir = dirname(get_database_path())
+            local patient_num = lpad(entry.image_index, 3, '0')
+            local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+            
+            if !isdir(patient_folder)
+                return (false, "Patient-Ordner nicht gefunden: $patient_folder", "")
+            end
+            
+            local original_filename = "MuHa_$(patient_num)_raw_adj.png"
+            local original_path = joinpath(patient_folder, original_filename)
+            
+            if !isfile(original_path)
+                return (false, "Original-Bild nicht gefunden: $original_path", "")
+            end
+            
+            # Load original full-resolution image
+            local original_img_rotated = nothing
+            load_fullres_time = @elapsed begin
+                println("[MASK-EXPORT] Loading original image: $original_path")
+                local original_img_loaded = Bas3GLMakie.GLMakie.FileIO.load(original_path)
+                println("[MASK-EXPORT] Original loaded size: $(size(original_img_loaded))")
+                
+                # Apply same rotation as UI (rotr90 for landscape viewing)
+                original_img_rotated = rotr90(original_img_loaded)
+                println("[MASK-EXPORT] Original rotated size: $(size(original_img_rotated))")
+            end
+            
+            # Get UI image for size reference
+            local image_lowres = image_observables[col_idx][]
+            
+            println("[MASK-EXPORT] UI image size: $(size(image_lowres)) (H×W)")
+            println("[MASK-EXPORT] Fullres rotated size: $(size(original_img_rotated)) (H×W)")
+            
+            # NEW: Loop through ALL complete polygons and save each separately
+            local saved_count = 0
+            local skipped_count = 0
+            local failed_polygons = Tuple{Int, String, String}[]
+            
+            individual_save_time = @elapsed begin
+                for polygon in all_polygons
+                    # Skip incomplete polygons
+                    if !polygon.complete
+                        println("[MASK-EXPORT] ⊘ Skipping incomplete polygon $(polygon.id) ($(polygon.class_name))")
+                        skipped_count += 1
+                        continue
+                    end
+                    
+                    if length(polygon.vertices) < 3
+                        @warn "[MASK-EXPORT] ⊘ Skipping polygon $(polygon.id): less than 3 vertices"
+                        skipped_count += 1
+                        continue
+                    end
+                    
+                    # Scale vertices for this polygon
+                    local single_polygon_time = @elapsed begin
+                        local vertices_fullres = scale_vertices_to_fullres(
+                            polygon.vertices,
+                            image_lowres,
+                            original_img_rotated
+                        )
+                        
+                        println("[MASK-EXPORT] Processing polygon $(polygon.id) ($(polygon.class_name)): $(length(polygon.vertices)) vertices")
+                        
+                        # Generate mask for THIS polygon only
+                        local mask_single = create_polygon_mask(original_img_rotated, vertices_fullres)
+                        
+                        # Save individual polygon mask (NEW: uses class name in filename)
+                        local (success, msg) = save_polygon_mask_individual(
+                            entry.image_index,
+                            polygon,
+                            mask_single,
+                            patient_folder
+                        )
+                        
+                        if success
+                            saved_count += 1
+                            println("[MASK-EXPORT] ✓ Saved: $msg")
+                        else
+                            push!(failed_polygons, (polygon.id, polygon.class_name, msg))
+                            @warn "[MASK-EXPORT] ✗ Failed: polygon $(polygon.id) ($(polygon.class_name)) - $msg"
+                        end
+                    end
+                    
+                    println("[PERF-SINGLE-POLYGON] ID=$(polygon.id): total_processing=$(round(single_polygon_time*1000, digits=1))ms")
+                end
+            end
+            
+            # NOTE: Composite mask generation removed for performance (was taking 20+ seconds)
+            # Individual polygon PNGs are sufficient for analysis
+            # Composite can be regenerated later if needed using load_polygon_masks_individual()
+            
+            println("[PERF-SAVE-COLUMN] total=$(round(total_time*1000, digits=1))ms, validation=$(round(validation_time*1000, digits=1))ms, load_fullres=$(round(load_fullres_time*1000, digits=1))ms, individual_save=$(round(individual_save_time*1000, digits=1))ms, n_polygons=$(saved_count)")
+            
+            # Summary message
+            local total_count = length(all_polygons)
+            local failed_count = length(failed_polygons)
+            
+            if saved_count == total_count && failed_count == 0
+                local summary_msg = "$(saved_count) Masken gespeichert"
+                return (true, summary_msg, patient_folder)
+            elseif saved_count > 0
+                local failed_summary = join(["$(p[2])_$(p[1])" for p in failed_polygons], ", ")
+                local summary_msg = "$(saved_count)/$(total_count) Masken gespeichert"
+                local detail_msg = skipped_count > 0 ? 
+                    "$(skipped_count) übersprungen, $(failed_count) fehlgeschlagen: $failed_summary" :
+                    "$(failed_count) fehlgeschlagen: $failed_summary"
+                return (true, summary_msg, detail_msg)
+            else
+                return (false, "Alle Masken fehlgeschlagen", "Keine Polygone erfolgreich gespeichert")
+            end
+        end
+    end
+    
     # Build image widgets for current patient
     function build_patient_images!(patient_id::Int)
         try
@@ -3182,7 +3846,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 # Get active polygon ID
                 active_id = active_polygon_id_per_image[col_idx_textbox][]
                 
-                # Only update if there's an active polygon (not in "create new" mode)
+                # Only validate if there's an active polygon (not in "create new" mode)
                 if isnothing(active_id)
                     println("[UI-TEXTBOX-ID] No active polygon, value will be used for creation")
                     return
@@ -3190,11 +3854,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 # Skip if empty (user is clearing)
                 if isempty(new_id_str)
-                    println("[UI-TEXTBOX-ID] Empty textbox")
+                    println("[UI-TEXTBOX-ID] Empty textbox - will revert to current ID on OK")
                     return
                 end
                 
-                # Parse new ID
+                # Parse new ID (validate only, don't update yet)
                 local new_id
                 try
                     new_id = parse(Int, new_id_str)
@@ -3210,25 +3874,30 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                     return
                 end
                 
-                # Attempt to update polygon ID
-                println("[UI-TEXTBOX-ID] Attempting auto-update: $active_id → $new_id")
-                (success, message) = update_polygon_id!(col_idx_textbox, active_id, new_id)
+                # Validate new ID (but don't apply yet - wait for OK button)
+                println("[UI-TEXTBOX-ID] Validating pending ID change: $active_id → $new_id")
                 
-                if success
-                    println("[UI-TEXTBOX-ID] ✓ Auto-update successful")
-                    status_label.text = message
-                    status_label.color = :green
-                    
-                    # Refresh polygon list to show new ID in dropdown
-                    Bas3GLMakie.GLMakie.notify(polygons_per_image[col_idx_textbox])
-                else
-                    println("[UI-TEXTBOX-ID] ✗ Auto-update failed: $message")
-                    status_label.text = message
-                    status_label.color = :red
-                    
-                    # Revert textbox to original ID
-                    polygon_id_textbox.displayed_string[] = string(active_id)
+                # Check for negative/zero
+                if new_id <= 0
+                    status_label.text = "ID muss > 0 sein"
+                    status_label.color = :orange
+                    println("[UI-TEXTBOX-ID] ✗ Invalid ID: $new_id <= 0")
+                    return
                 end
+                
+                # Check for duplicate
+                current_polygons = polygons_per_image[col_idx_textbox][]
+                if any(p -> p.id == new_id && p.id != active_id, current_polygons)
+                    status_label.text = "ID $new_id bereits vergeben"
+                    status_label.color = :red
+                    println("[UI-TEXTBOX-ID] ✗ Duplicate ID: $new_id")
+                    return
+                end
+                
+                # Valid pending change - show hint
+                status_label.text = "ID-Änderung vorbereitet ($active_id → $new_id) - OK drücken"
+                status_label.color = :blue
+                println("[UI-TEXTBOX-ID] ✓ Valid pending ID change: $active_id → $new_id")
             end
             
             # Column 3: Create new polygon button
@@ -3377,44 +4046,36 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 buttoncolor=Bas3GLMakie.GLMakie.RGBf(0.9, 0.3, 0.3)  # Red for destructive action
             )
             
-            # Column 4: Close/OK button (FINALIZE group)
+            # Column 4: Close/OK button (FINALIZE group) - NOW HANDLES EVERYTHING
             local close_poly_btn = Bas3GLMakie.GLMakie.Button(
                 control_grid[1, 4],
                 label="OK",
                 fontsize=FONT_SIZE_BUTTON
             )
             
-            # Column 5: Save PNG button (PERSISTENCE group)
-            local save_mask_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 5],
-                label="PNG",
-                fontsize=FONT_SIZE_BUTTON
-            )
-            
-            # Column 6: Toggle mask button (PERSISTENCE group)
+            # Column 5: Toggle mask button (PERSISTENCE group) - PNG button removed
             local toggle_mask_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 6],
+                control_grid[1, 5],
                 label = initial_label,
                 fontsize = FONT_SIZE_BUTTON,
                 buttoncolor = initial_color
             )
             
-            push!(polygon_buttons_per_image, (create_poly_btn, edit_poly_btn, close_poly_btn, undo_vertex_btn, delete_poly_btn, save_mask_btn, toggle_mask_btn))
+            # Push buttons (save_mask_btn removed from tuple)
+            push!(polygon_buttons_per_image, (create_poly_btn, edit_poly_btn, close_poly_btn, undo_vertex_btn, delete_poly_btn, toggle_mask_btn))
             
-            # Set column sizing for Row 3: 15%, 15%, 15%, 25%, 15%, 15%
+            # Set column sizing for Row 3: 15%, 15%, 15%, 35%, 20% (PNG removed, redistributed)
             Bas3GLMakie.GLMakie.colsize!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.15))  # Bearb
             Bas3GLMakie.GLMakie.colsize!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.15))  # Zurck
             Bas3GLMakie.GLMakie.colsize!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.15))  # Losch
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.25))  # OK (larger - FINALIZE)
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.15))  # PNG
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 6, Bas3GLMakie.GLMakie.Relative(0.15))  # Maske
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.35))  # OK (larger - now includes save)
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.20))  # Maske (slightly larger)
             
             # Set column gaps for visual grouping: EDIT | FINALIZE | PERSISTENCE
             Bas3GLMakie.GLMakie.colgap!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.01))   # Bearb → Zurck (small)
             Bas3GLMakie.GLMakie.colgap!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))   # Zurck → Losch (small)
             Bas3GLMakie.GLMakie.colgap!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.03))   # Losch → OK (larger - group separator)
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.03))   # OK → PNG (larger - group separator)
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.01))   # PNG → Maske (small)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.03))   # OK → Maske (larger - group separator)
             
             # Polygon button callbacks (capture col index for this specific image)
             local col_idx = col
@@ -3467,9 +4128,12 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 sample_num = max_sample + 1
                 println("[UI-BTN-CREATE] Auto-incrementing sample number: $sample_num (existing polygons of this class: $(count(p -> p.class == current_class, current_polygons)))")
                 
+                # Use German class name if custom name is empty
+                final_class_name = isempty(custom_name) ? CLASS_NAMES_DE[current_class] : custom_name
+                
                 # Create new polygon with empty vertices (pass manual_id if provided)
-                println("[UI-BTN-CREATE] Creating polygon: class=$current_class, name='$custom_name', sample=$sample_num, manual_id=$(isnothing(manual_id) ? "auto" : manual_id)")
-                new_id = add_polygon_to_collection!(col_idx, current_class, custom_name, sample_num, Bas3GLMakie.GLMakie.Point2f[]; manual_id=manual_id)
+                println("[UI-BTN-CREATE] Creating polygon: class=$current_class, name='$final_class_name', sample=$sample_num, manual_id=$(isnothing(manual_id) ? "auto" : manual_id)")
+                new_id = add_polygon_to_collection!(col_idx, current_class, final_class_name, sample_num, Bas3GLMakie.GLMakie.Point2f[]; manual_id=manual_id)
                 println("[UI-BTN-CREATE] Polygon created with ID=$new_id")
                 
                 # Populate textbox with created ID (so user sees what ID was assigned)
@@ -3524,7 +4188,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Close polygon button - UPDATED FOR MULTI-POLYGON
+            # Close polygon button - UPDATED FOR MULTI-POLYGON + AUTO-SAVE
             Bas3GLMakie.GLMakie.on(close_poly_btn.clicks) do n
                 println("[UI-BTN-CLOSE] 'OK' button clicked for column $col_idx")
                 active_id = active_polygon_id_per_image[col_idx][]
@@ -3547,45 +4211,160 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 
                 println("[UI-BTN-CLOSE] Closing polygon ID=$active_id with $(length(poly.vertices)) vertices")
                 
+                # NEW: Check if ID was changed in textbox
+                local final_polygon_id = active_id
+                local id_changed = false
+                local old_png_path = nothing
+                polygon_id_str = something(polygon_id_textbox.displayed_string[], "")
+                
+                if !isempty(polygon_id_str)
+                    try
+                        local requested_id = parse(Int, polygon_id_str)
+                        
+                        if requested_id != active_id
+                            # User changed ID - validate and apply
+                            println("[UI-BTN-CLOSE] ID change requested: $active_id → $requested_id")
+                            
+                            if requested_id <= 0
+                                status_label.text = "Ungültige ID: muss > 0 sein"
+                                status_label.color = :red
+                                println("[UI-BTN-CLOSE] ✗ Invalid ID: $requested_id <= 0")
+                                return
+                            end
+                            
+                            current_polygons = polygons_per_image[col_idx][]
+                            if any(p -> p.id == requested_id && p.id != active_id, current_polygons)
+                                status_label.text = "ID $requested_id bereits vergeben"
+                                status_label.color = :red
+                                println("[UI-BTN-CLOSE] ✗ Duplicate ID: $requested_id")
+                                return
+                            end
+                            
+                            # NEW: Build old PNG filename before ID change (for deletion later)
+                            local entry = current_entries[][col_idx]
+                            local base_dir = dirname(get_database_path())
+                            local patient_num = lpad(entry.image_index, 3, '0')
+                            local patient_folder = joinpath(base_dir, "MuHa_$(patient_num)")
+                            local old_filename = construct_polygon_mask_filename(entry.image_index, poly)
+                            old_png_path = joinpath(patient_folder, old_filename)
+                            println("[UI-BTN-CLOSE] Old PNG path (will delete): $old_png_path")
+                            
+                            # Apply ID change
+                            (success, msg) = update_polygon_id!(col_idx, active_id, requested_id)
+                            if !success
+                                status_label.text = msg
+                                status_label.color = :red
+                                println("[UI-BTN-CLOSE] ✗ ID update failed: $msg")
+                                return
+                            end
+                            
+                            final_polygon_id = requested_id
+                            id_changed = true
+                            println("[UI-BTN-CLOSE] ✓ Updated polygon ID: $active_id → $requested_id")
+                            
+                            # Refresh polygon reference after ID change
+                            poly = get_polygon_by_id(col_idx, final_polygon_id)
+                            if isnothing(poly)
+                                status_label.text = "Fehler: Polygon nach ID-Änderung nicht gefunden"
+                                status_label.color = :red
+                                return
+                            end
+                            
+                            # Refresh polygon list to show new ID in dropdown
+                            Bas3GLMakie.GLMakie.notify(polygons_per_image[col_idx])
+                        end
+                    catch e
+                        status_label.text = "Ungültige ID-Eingabe: $polygon_id_str"
+                        status_label.color = :red
+                        println("[UI-BTN-CLOSE] ✗ Failed to parse ID: $polygon_id_str")
+                        return
+                    end
+                end
+                
                 # Extract L*C*h values
                 local entry = current_entries[][col_idx]
                 local img_data = get(cached_lookup, entry.image_index, nothing)
                 
-                if !isnothing(img_data)
-                    println("[UI-BTN-CLOSE] Extracting L*C*h values from image $(entry.image_index)")
-                    local lch_result = extract_polygon_lch_values(
-                        img_data.input_raw,
-                        poly.vertices,
-                        img_data.input_rotated
-                    )
-                    println("[UI-BTN-CLOSE] L*C*h extraction complete: $(lch_result.count) pixels, L*=$(round(lch_result.median_l, digits=2)), C*=$(round(lch_result.median_c, digits=2)), h°=$(round(lch_result.median_h, digits=2))")
-                    
-                    # Update polygon with lch_data and mark complete (preserve class_name and sample_number)
-                    new_poly = PolygonEntry(poly.id, poly.class, poly.class_name, poly.sample_number, poly.vertices, true, lch_result)
-                    update_polygon!(col_idx, active_id, new_poly)
-                    println("[UI-BTN-CLOSE] Polygon ID=$active_id marked as complete")
-                    
-                    # Clear active polygon
-                    active_polygon_id_per_image[col_idx][] = nothing
-                    println("[UI-BTN-CLOSE] Cleared active polygon for column $col_idx")
-                    
-                    # Legacy support: update old state (only if array is large enough)
-                    polygon_complete_per_image[col_idx][] = true
-                    polygon_active_per_image[col_idx][] = false
-                    if col_idx <= length(lch_polygon_data)
-                        lch_polygon_data[col_idx] = lch_result
-                    end
-                    
-                    # Build display name for status
-                    display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
-                    status_label.text = "Polygon $(poly.id) ($display_name #$(poly.sample_number)): $(lch_result.count) Pixel"
-                    status_label.color = :green
-                    println("[UI-BTN-CLOSE] Status updated successfully")
-                else
+                if isnothing(img_data)
                     println("[UI-BTN-CLOSE] ERROR: Image data not available for image $(entry.image_index)")
                     status_label.text = "Fehler: Bilddaten nicht verfügbar"
                     status_label.color = :red
+                    return
                 end
+                
+                println("[UI-BTN-CLOSE] Extracting L*C*h values from image $(entry.image_index)")
+                local lch_result = extract_polygon_lch_values(
+                    img_data.input_raw,
+                    poly.vertices,
+                    img_data.input_rotated
+                )
+                println("[UI-BTN-CLOSE] L*C*h extraction complete: $(lch_result.count) pixels, L*=$(round(lch_result.median_l, digits=2)), C*=$(round(lch_result.median_c, digits=2)), h°=$(round(lch_result.median_h, digits=2))")
+                
+                # Mark polygon as complete
+                new_poly = PolygonEntry(
+                    final_polygon_id,  # Use final ID (after potential change)
+                    poly.class, 
+                    poly.class_name, 
+                    poly.sample_number, 
+                    poly.vertices, 
+                    true,  # complete = true
+                    lch_result
+                )
+                update_polygon!(col_idx, final_polygon_id, new_poly)
+                println("[UI-BTN-CLOSE] Polygon ID=$final_polygon_id marked as complete")
+                
+                # NEW: Save metadata JSON automatically
+                current_polygons = polygons_per_image[col_idx][]
+                json_success = save_multiclass_metadata(entry.image_index, current_polygons)
+                
+                if !json_success
+                    status_label.text = "Fehler beim Speichern der Metadaten"
+                    status_label.color = :red
+                    println("[UI-BTN-CLOSE] ✗ Failed to save metadata")
+                    return
+                end
+                println("[UI-BTN-CLOSE] ✓ Metadata saved successfully")
+                
+                # NEW: Export PNG files automatically
+                status_label.text = "Speichere PNG-Masken..."
+                status_label.color = :blue
+                
+                png_success, png_msg, png_detail = save_polygon_mask_for_column(col_idx)
+                
+                if !png_success
+                    status_label.text = "Metadaten OK, PNG-Fehler: $png_msg"
+                    status_label.color = :orange
+                    println("[UI-BTN-CLOSE] ⚠ PNG export failed: $png_msg")
+                    # Continue anyway - polygon is complete even if PNG failed
+                else
+                    println("[UI-BTN-CLOSE] ✓ PNG export successful: $png_msg")
+                    
+                    # NEW: Delete old PNG file if ID was changed
+                    if id_changed && !isnothing(old_png_path) && isfile(old_png_path)
+                        try
+                            rm(old_png_path)
+                            println("[UI-BTN-CLOSE] ✓ Deleted old PNG file: $(basename(old_png_path))")
+                        catch e
+                            @warn "[UI-BTN-CLOSE] ⚠ Failed to delete old PNG: $old_png_path - $e"
+                        end
+                    end
+                end
+                
+                # Clear active polygon state
+                active_polygon_id_per_image[col_idx][] = nothing
+                polygon_complete_per_image[col_idx][] = true
+                polygon_active_per_image[col_idx][] = false
+                
+                # Legacy support: update old state
+                if col_idx <= length(lch_polygon_data)
+                    lch_polygon_data[col_idx] = lch_result
+                end
+                
+                # Build display name for final status
+                display_name = isempty(poly.class_name) ? CLASS_NAMES_DE[poly.class] : poly.class_name
+                status_label.text = "✓ $display_name #$(poly.sample_number): $(lch_result.count) Pixel gespeichert"
+                status_label.color = :green
+                println("[UI-BTN-CLOSE] ✓ Polygon finalized and saved successfully")
             end
             
             # Undo last vertex button - NEW
@@ -3665,41 +4444,6 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 status_label.color = :green
             end
             
-            # Save polygon mask button - UPDATED FOR MULTI-POLYGON
-            Bas3GLMakie.GLMakie.on(save_mask_btn.clicks) do n
-                println("[MULTI-POLYGON] Save all masks for column $col_idx")
-                
-                current_polygons = polygons_per_image[col_idx][]
-                
-                if isempty(current_polygons)
-                    status_label.text = "Keine Polygone zum Speichern"
-                    status_label.color = :orange
-                    return
-                end
-                
-                # Check if any polygon is incomplete
-                incomplete_count = count(p -> !p.complete, current_polygons)
-                if incomplete_count > 0
-                    status_label.text = "$incomplete_count unvollständige Polygone"
-                    status_label.color = :orange
-                    return
-                end
-                
-                local entry = current_entries[][col_idx]
-                
-                # Save JSON metadata
-                json_success = save_multiclass_metadata(entry.image_index, current_polygons)
-                
-                if json_success
-                    status_label.text = "$(length(current_polygons)) Polygone gespeichert"
-                    status_label.color = :green
-                    
-                    println("[MULTI-POLYGON] Successfully saved $(length(current_polygons)) polygons")
-                else
-                    status_label.text = "Fehler beim Speichern"
-                    status_label.color = :red
-                end
-            end
             
             # Toggle mask overlay button
             Bas3GLMakie.GLMakie.on(toggle_mask_btn.clicks) do n
