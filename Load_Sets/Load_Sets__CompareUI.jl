@@ -3822,7 +3822,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 ))
             end
             
-            # Row 2: Create & Select - Class, ID, Create button, Polygon selector (4 columns)
+            # Row 2: Create & Select - Class, ID, Polygon selector (3 columns)
             local class_selector_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[2, col])
             
             # Column 1: Class menu (no label)
@@ -3900,18 +3900,11 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 println("[UI-TEXTBOX-ID] ✓ Valid pending ID change: $active_id → $new_id")
             end
             
-            # Column 3: Create new polygon button
-            local create_poly_btn = Bas3GLMakie.GLMakie.Button(
-                class_selector_grid[1, 3],
-                label="+ Neu",
-                fontsize=FONT_SIZE_BUTTON
-            )
-            
-            # Column 4: Polygon selector dropdown (no label)
+            # Column 3: Polygon selector dropdown (no label)
             local col_idx_list = col
             local polygon_selector = Bas3GLMakie.GLMakie.Observable{Vector{String}}(["Neu erstellen"])
             local polygon_selector_menu = Bas3GLMakie.GLMakie.Menu(
-                class_selector_grid[1, 4],
+                class_selector_grid[1, 3],
                 options = polygon_selector,
                 default = "Neu erstellen"
             )
@@ -3975,16 +3968,14 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 end
             end
             
-            # Set column proportions for Row 2: 25%, 10%, 15%, 50%
-            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 1, Bas3GLMakie.GLMakie.Relative(0.25))  # Class dropdown
-            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.10))  # ID textbox
-            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 3, Bas3GLMakie.GLMakie.Relative(0.15))  # + Neu button
-            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 4, Bas3GLMakie.GLMakie.Relative(0.50))  # Polygon selector
+            # Set column proportions for Row 2: 30%, 15%, 55%
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 1, Bas3GLMakie.GLMakie.Relative(0.30))  # Class dropdown
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.15))  # ID textbox
+            Bas3GLMakie.GLMakie.colsize!(class_selector_grid, 3, Bas3GLMakie.GLMakie.Relative(0.55))  # Polygon selector
             
             # Add visual grouping gaps
             Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 1, Bas3GLMakie.GLMakie.Relative(0.01))  # Class → ID
-            Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))  # ID → + Neu
-            Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 3, Bas3GLMakie.GLMakie.Relative(0.03))  # + Neu → Selector
+            Bas3GLMakie.GLMakie.colgap!(class_selector_grid, 2, Bas3GLMakie.GLMakie.Relative(0.03))  # ID → Selector
             
             # Wire class menu to observable
             local col_idx_class = col
@@ -4004,7 +3995,7 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
             # Placeholder for custom class name textbox - DEFERRED due to GLMakie layout issues
             local custom_class_textbox = (displayed_string = Ref(""),)  # Mock object with empty string
             
-            # Row 3: Consolidated control buttons (Mask + Polygon controls in single row)
+            # Row 3: Consolidated control buttons (Create + Edit + Finalize + Mask)
             local control_grid = Bas3GLMakie.GLMakie.GridLayout(images_grid[3, col])
             
             # IMPORTANT: Capture loop variable by VALUE to avoid closure issues
@@ -4022,60 +4013,69 @@ function create_compare_figure(sets, input_type; max_images_per_row::Int=6, test
                 initial_visible ? Bas3GLMakie.GLMakie.RGBf(0.9, 0.9, 0.3) : Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Yellow when visible, gray when hidden
             end
             
-            # Row 3: Actions - Reordered into EDIT / FINALIZE / PERSISTENCE groups
-            # Column 1: Edit button (EDIT ACTIONS group)
-            local edit_poly_btn = Bas3GLMakie.GLMakie.Button(
+            # Row 3: Actions - CREATE | EDIT | FINALIZE | PERSISTENCE
+            # Column 1: Create new polygon button (CREATE group)
+            local create_poly_btn = Bas3GLMakie.GLMakie.Button(
                 control_grid[1, 1],
+                label="+ Neu",
+                fontsize=FONT_SIZE_BUTTON
+            )
+            
+            # Column 2: Edit button (EDIT group)
+            local edit_poly_btn = Bas3GLMakie.GLMakie.Button(
+                control_grid[1, 2],
                 label="Bearb",
                 fontsize=FONT_SIZE_BUTTON,
                 buttoncolor=Bas3GLMakie.GLMakie.RGBf(0.7, 0.7, 0.7)  # Start grayed out
             )
             
-            # Column 2: Undo button (EDIT ACTIONS group)
+            # Column 3: Undo button (EDIT group)
             local undo_vertex_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 2],
+                control_grid[1, 3],
                 label="Zurck",
                 fontsize=FONT_SIZE_BUTTON
             )
             
-            # Column 3: Delete button (EDIT ACTIONS group)
+            # Column 4: Delete button (EDIT group)
             local delete_poly_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 3],
+                control_grid[1, 4],
                 label="Losch",
                 fontsize=FONT_SIZE_BUTTON,
                 buttoncolor=Bas3GLMakie.GLMakie.RGBf(0.9, 0.3, 0.3)  # Red for destructive action
             )
             
-            # Column 4: Close/OK button (FINALIZE group) - NOW HANDLES EVERYTHING
+            # Column 5: Close/OK button (FINALIZE group)
             local close_poly_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 4],
+                control_grid[1, 5],
                 label="OK",
                 fontsize=FONT_SIZE_BUTTON
             )
             
-            # Column 5: Toggle mask button (PERSISTENCE group) - PNG button removed
+            # Column 6: Toggle mask button (PERSISTENCE group)
             local toggle_mask_btn = Bas3GLMakie.GLMakie.Button(
-                control_grid[1, 5],
+                control_grid[1, 6],
                 label = initial_label,
                 fontsize = FONT_SIZE_BUTTON,
                 buttoncolor = initial_color
             )
             
-            # Push buttons (save_mask_btn removed from tuple)
+            # Push buttons
             push!(polygon_buttons_per_image, (create_poly_btn, edit_poly_btn, close_poly_btn, undo_vertex_btn, delete_poly_btn, toggle_mask_btn))
             
-            # Set column sizing for Row 3: 15%, 15%, 15%, 35%, 20% (PNG removed, redistributed)
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.15))  # Bearb
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.15))  # Zurck
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.15))  # Losch
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.35))  # OK (larger - now includes save)
-            Bas3GLMakie.GLMakie.colsize!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.20))  # Maske (slightly larger)
+            # Set column sizing for Row 3: 12%, 12%, 12%, 12%, 32%, 20%
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.12))  # + Neu
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.12))  # Bearb
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.12))  # Zurck
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.12))  # Losch
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.32))  # OK (larger - includes save)
+            Bas3GLMakie.GLMakie.colsize!(control_grid, 6, Bas3GLMakie.GLMakie.Relative(0.20))  # Maske
             
-            # Set column gaps for visual grouping: EDIT | FINALIZE | PERSISTENCE
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.01))   # Bearb → Zurck (small)
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))   # Zurck → Losch (small)
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.03))   # Losch → OK (larger - group separator)
-            Bas3GLMakie.GLMakie.colgap!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.03))   # OK → Maske (larger - group separator)
+            # Set column gaps for visual grouping: CREATE | EDIT | FINALIZE | PERSISTENCE
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 1, Bas3GLMakie.GLMakie.Relative(0.02))   # + Neu → Bearb (group separator)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 2, Bas3GLMakie.GLMakie.Relative(0.01))   # Bearb → Zurck (small)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 3, Bas3GLMakie.GLMakie.Relative(0.01))   # Zurck → Losch (small)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 4, Bas3GLMakie.GLMakie.Relative(0.02))   # Losch → OK (group separator)
+            Bas3GLMakie.GLMakie.colgap!(control_grid, 5, Bas3GLMakie.GLMakie.Relative(0.02))   # OK → Maske (group separator)
             
             # Polygon button callbacks (capture col index for this specific image)
             local col_idx = col
